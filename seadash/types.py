@@ -132,6 +132,7 @@ class FuncInfo:
     node: object  # ast.FunctionDef
     owner: StructType | None = None
     locals: list[Var] = field(default_factory=list)  # every local variable, for hoisting
+    var: Var | None = None  # for a nested def: the local variable holding it
 
     def __str__(self) -> str:
         params = ", ".join(f"{p.name}: {p.type}" for p in self.params)
@@ -201,8 +202,10 @@ class Var:
     name: str  # the source name
     cpp_name: str  # unique within its function, e.g. 'a', 'a_1'
     type: Type
-    kind: str  # 'local', 'param', 'global', 'comp' (comprehension loop variable)
+    kind: str  # 'local', 'param', 'global', 'comp' (comprehension loop variable), 'lambda' (lambda parameter)
     loc: Loc
+    frame: int = 0  # which function/lambda body created it
+    captured: bool = False  # read or written by a closure: stored in a shared cell
 
     def __repr__(self) -> str:
         return f"Var({self.cpp_name}: {self.type})"

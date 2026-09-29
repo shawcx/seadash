@@ -126,6 +126,8 @@ class CodeGen:
         self.loop_labels: list[list] = []
         # Inside a lambda that uses `self`, self is a captured copy named sd_self.
         self.lambda_self = 0
+        # Nested functions that call themselves: (FuncInfo, name of the self parameter).
+        self.recursion: list[tuple[FuncInfo, str]] = []
         # Expressions already evaluated into temporaries (see `in_order`).
         self.precomputed: dict[int, str] = {}
         self.module_values = {
@@ -354,12 +356,13 @@ class CodeGen:
     def params(self, fn: FuncInfo) -> list[str]:
         modified = modified_names(fn.node.body)
         out = []
-        for p in fn.params:
+        for p, var in zip(fn.params, self.param_vars(fn)):
             t = self.cpp_type(p.type)
+            name = f"sd_arg_{var.cpp_name}" if var.captured else ident(p.name)
             by_value = p.name in modified or p.type in (INT, FLOAT, BOOL) or (
                 isinstance(p.type, StructType) and p.type.kind == "class"
             )
-            out.append(f"{t} {ident(p.name)}" if by_value else f"const {t}& {ident(p.name)}")
+            out.append(f"{t} {name}" if by_value else f"const {t}& {name}")
         return out
 
     def function(self, fn: FuncInfo) -> None:
@@ -369,6 +372,7 @@ class CodeGen:
         self.func = fn
         self.open(header)
         self.hoist(fn.locals)
+        self.cell_params(fn)
         self.block(fn.node.body)
         if isinstance(fn.ret, OptionalType) and not ends_with_return(fn.node.body):
             self.line("return std::nullopt;")
@@ -377,8 +381,24 @@ class CodeGen:
 
     def hoist(self, variables: list[Var]) -> None:
         for var in variables:
-            if var.kind != "global":
-                self.line(f"{self.cpp_type(var.type)} {ident(var.cpp_name)}{{}};")
+            if var.kind == "global":
+                continue
+            t = self.cpp_type(var.type)
+            if var.captured:  # shared with a closure: a cell both sides point to
+                self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>();")
+            else:
+                self.line(f"{t} {ident(var.cpp_name)}{{}};")
+
+    def param_vars(self, fn: FuncInfo) -> list[Var]:
+        nodes = fn.node.params[1:] if fn.owner is not None else fn.node.params
+        return [p.sym for p in nodes]
+
+    def cell_params(self, fn: FuncInfo) -> None:
+        """Parameters captured by a closure are copied into cells on entry."""
+        for var in self.param_vars(fn):
+            if var.captured:
+                t = self.cpp_type(var.type)
+                self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>(sd_arg_{var.cpp_name});")
 
     # =========================================================================
     # Statements
@@ -425,6 +445,10 @@ class CodeGen:
             case A.Assert(test, msg):
                 message = f"sd::str({self.expr(msg)})" if msg is not None else '""s'
                 self.line(f'if (!{self.cond(test)}) sd::raise("AssertionError", {message});')
+            case A.FunctionDef():
+                self.nested_def(s)
+            case A.Nonlocal() | A.Global():
+                pass
             case A.Raise(exc):
                 if exc is None:
                     self.line("throw;")
@@ -447,6 +471,50 @@ class CodeGen:
                 )
             case _:
                 raise NotImplementedError(f"codegen for {type(s).__name__}")
+
+    def nested_def(self, s: A.FunctionDef) -> None:
+        """A nested def becomes a C++ lambda stored in its (std::function) variable.
+
+        Closures capture by value ([=]); variables they share with the enclosing
+        function are cells (shared_ptr), so copying the pointer shares the variable.
+        A function that calls itself takes itself as an extra parameter instead of
+        capturing its own cell, which would be a reference cycle.
+        """
+        from .checker import walk
+
+        info: FuncInfo = s.sym
+        ret = self.cpp_type(info.ret)
+        params = self.params(info)
+        capture = "[=]"
+        self_names = [n for n in walk(s.body) if isinstance(n, A.Name) and is_self(n)]
+        if self_names:
+            capture = f"[=, sd_self = {self.var_code(self_names[0].sym, self_names[0].sym.type)}]"
+        recursive = any(isinstance(n, A.Call) and isinstance(n.sym, CallTarget) and n.sym.kind == "self_call"
+                        and n.sym.target is info for n in walk(s.body))
+        if recursive:
+            fn, rec = self.fresh("fn"), self.fresh("rec")
+            self.recursion.append((info, rec))
+            header = f"auto {fn} = {capture}(auto& {rec}{''.join(', ' + p for p in params)}) mutable -> {ret}"
+        else:
+            header = f"{self.var_ref(info.var)} = {capture}({', '.join(params)}) mutable -> {ret}"
+        saved = (self.func, self.loop_labels, self.lambda_self)
+        self.func, self.loop_labels = info, []
+        if self_names:
+            self.lambda_self += 1
+        self.open(header)
+        self.hoist(info.locals)
+        self.cell_params(info)
+        self.block(s.body)
+        if isinstance(info.ret, OptionalType) and not ends_with_return(s.body):
+            self.line("return std::nullopt;")
+        self.close(";")
+        self.func, self.loop_labels, self.lambda_self = saved
+        if recursive:
+            self.recursion.pop()
+            names = [self.fresh("p") for _ in info.params]
+            typed = ", ".join(f"{self.cpp_type(p.type)} {n}" for p, n in zip(info.params, names))
+            call = f"{fn}({', '.join([fn, *names])})"
+            self.line(f"{self.var_ref(info.var)} = [{fn}]({typed}) mutable -> {ret} {{ return {call}; }};")
 
     def return_stmt(self, value: A.Expr | None) -> None:
         ret = self.func.ret if self.func else NONE
@@ -506,7 +574,7 @@ class CodeGen:
                 self.depth += 1
             if h.name is not None:
                 var: Var = h.name.sym
-                self.line(f"{ident(var.cpp_name)} = std::dynamic_pointer_cast<{class_name(var.type)}>({caught}.exc);")
+                self.line(f"{self.var_ref(var)} = std::dynamic_pointer_cast<{class_name(var.type)}>({caught}.exc);")
             self.block(h.body)
         self.depth -= 1
         self.line("} else {")
@@ -556,7 +624,7 @@ class CodeGen:
         match target:
             case A.Name():
                 var: Var = target.sym
-                self.line(f"{ident(var.cpp_name)} = {self.coerce(code, ty, var.type)};")
+                self.line(f"{self.var_ref(var)} = {self.coerce(code, ty, var.type)};")
             case A.Attribute():
                 self.line(f"{self.attribute(target)} = {self.coerce(code, ty, target.ty)};")
             case A.Index(container, index):
@@ -579,16 +647,16 @@ class CodeGen:
         if isinstance(target, A.Name):
             write: Var = target.sym
             if op == "+" and isinstance(read_type, ListType) and write is read_var:
-                self.line(f"sd::list_extend({ident(write.cpp_name)}, {self.expr(value)});")
+                self.line(f"sd::list_extend({self.var_ref(write)}, {self.expr(value)});")
                 return
             current = self.var_code(read_var, read_type)
             if write is read_var and read_type == result == write.type == value.ty and (
                 (op in ("+", "-", "*") and is_numeric(result)) or (op == "+" and result == STR)
             ):
-                self.line(f"{ident(write.cpp_name)} {op}= {self.expr(value)};")  # the readable form
+                self.line(f"{self.var_ref(write)} {op}= {self.expr(value)};")  # the readable form
                 return
             new = self.binop_code(op, current, read_type, self.expr(value), value.ty, result)
-            self.line(f"{ident(write.cpp_name)} = {self.coerce(new, result, write.type)};")
+            self.line(f"{self.var_ref(write)} = {self.coerce(new, result, write.type)};")
             return
         ref = self.fresh("ref")
         lvalue = self.attribute(target) if isinstance(target, A.Attribute) else self.index(target)
@@ -683,7 +751,7 @@ class CodeGen:
                 return self.lambda_code(e)
             case A.NamedExpr(target, value):
                 var: Var = target.sym
-                code = f"({ident(var.cpp_name)} = {self.expr_as(value, var.type)})"
+                code = f"({self.var_ref(var)} = {self.expr_as(value, var.type)})"
                 return self.view(code, var.type, e.ty)
             case A.Call():
                 return self.call(e)
@@ -699,6 +767,11 @@ class CodeGen:
             return f"(*{code})"
         return code
 
+    def var_ref(self, var: Var) -> str:
+        """The C++ lvalue for a variable. Variables shared with closures live in a cell."""
+        name = ident(var.cpp_name)
+        return f"(*{name})" if var.captured else name
+
     def var_code(self, var: Var, seen: Type) -> str:
         if var.name == "self" and var.kind == "param":
             if self.lambda_self:
@@ -708,7 +781,7 @@ class CodeGen:
             if var.type.is_exception:  # shared_from_this() gives the BaseException pointer
                 return f"std::static_pointer_cast<{class_name(var.type)}>(this->shared_from_this())"
             return "this->shared_from_this()"
-        return self.view(ident(var.cpp_name), var.type, seen)
+        return self.view(self.var_ref(var), var.type, seen)
 
     def name(self, e: A.Name) -> str:
         sym = e.sym
@@ -947,6 +1020,11 @@ class CodeGen:
                 if st.kind == "class":
                     return f"std::make_shared<{class_name(st)}>({', '.join(args)})"
                 return f"{class_name(st)}({', '.join(args)})"
+            case "self_call":
+                fn: FuncInfo = target.target
+                rec = next(r for info, r in reversed(self.recursion) if info is fn)
+                args = [self.expr_as(a, p.type) for a, p in zip(e.args, fn.params)]
+                return f"{rec}({', '.join([rec, *args])})"
             case "value":
                 ft: FuncType = target.target
                 args = ", ".join(self.expr_as(a, pt) for a, pt in zip(e.args, ft.params))

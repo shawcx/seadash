@@ -334,6 +334,20 @@ class Return(Stmt):
 
 
 @dataclass
+class Nonlocal(Stmt):
+    """`nonlocal a, b`: assignments in this nested function go to the enclosing function's variables."""
+
+    names: list[str]
+
+
+@dataclass
+class Global(Stmt):
+    """`global a`: assignments in this function go to the module-level variable."""
+
+    names: list[str]
+
+
+@dataclass
 class Assert(Stmt):
     test: Expr
     msg: Expr | None = None

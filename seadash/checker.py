@@ -114,6 +114,10 @@ class FunctionScope:
     locals: list[Var]
     vars: dict[tuple[str, Type], Var] = field(default_factory=dict)
     cpp_names: set[str] = field(default_factory=set)
+    nonlocals: set[str] = field(default_factory=set)  # `nonlocal x` in this (nested) function
+    global_names: set[str] = field(default_factory=set)  # `global x` in this function
+    frame: int = 0
+    outer_assigned: set[str] = field(default_factory=set)  # locals of enclosing functions
 
     @property
     def is_module(self) -> bool:
@@ -172,6 +176,10 @@ class Checker:
         self.handler_depth = 0  # inside an `except` block (bare `raise` allowed)
         self.finally_loops: list[int] = []  # loop depth on entering each enclosing `finally`
         self.lambda_depth = 0
+        # Every function body and lambda gets a frame number; a variable read from
+        # a different frame than it was created in is captured by a closure.
+        self.frame = 0
+        self.frame_count = 0
 
     def error(self, message: str, node: A.Node | Loc) -> CheckError:
         return CheckError(message, node if isinstance(node, Loc) else node.loc)
@@ -371,17 +379,49 @@ class Checker:
         if not assignable(t, expected):
             raise self.error(f"{what} must be {expected}, not {t}", expr)
 
-    def check_function_body(self, info: FuncInfo) -> None:
+    def check_function_body(self, info: FuncInfo, outer: State | None = None) -> None:
+        """Check a function's body. `outer` is the enclosing function's state for a nested def."""
         node: A.FunctionDef = info.node
-        scope = FunctionScope(info, info.ret, assigned_names(node.body), info.locals)
+        nonlocals, global_names = declared_names(node.body)
+        if nonlocals and outer is None:
+            raise self.error("'nonlocal' is only allowed in nested functions", next(iter(nonlocals.values())))
+        declared = set(nonlocals) | set(global_names)
+        self.frame_count += 1
+        scope = FunctionScope(
+            info, info.ret, assigned_names(node.body) - declared, info.locals,
+            nonlocals=set(nonlocals), global_names=set(global_names), frame=self.frame_count,
+        )
         state = State()
+        param_names = {p.name for p in node.params}
+        if outer is not None:
+            scope.outer_assigned = self.scope.assigned | self.scope.outer_assigned
+            for name, entry in outer.names.items():
+                if name in scope.assigned or name in param_names:
+                    continue
+                # The closure may run after the variable changes, so narrowing doesn't carry in.
+                state.names[name] = Bound(entry.var, entry.var.type) if isinstance(entry, Bound) else entry
+        for name, stmt in nonlocals.items():
+            entry = state.names.get(name)
+            if not isinstance(entry, Bound) or entry.var.kind not in ("local", "param"):
+                raise self.error(f"no variable '{name}' in an enclosing function for 'nonlocal' to use", stmt)
+            entry.var.captured = True
+        for name, stmt in global_names.items():
+            var = self.globals.get(name)
+            if var is None:
+                if name in self.module_assign_counts:
+                    raise self.error(
+                        f"'global {name}' needs a module-level variable assigned exactly once; "
+                        f"'{name}' is assigned {self.module_assign_counts[name]} times", stmt,
+                    )
+                raise self.error(f"no module-level variable '{name}' for 'global' to use", stmt)
+            state.names[name] = Bound(var, var.type)
         if info.owner is not None:
-            self_var = Var("self", "self", info.owner, "param", node.params[0].loc)
+            self_var = Var("self", "self", info.owner, "param", node.params[0].loc, frame=scope.frame)
             state.names["self"] = Bound(self_var, info.owner)
             node.params[0].sym = self_var
         param_nodes = node.params[1:] if info.owner is not None else node.params
         for p, pnode in zip(info.params, param_nodes):
-            var = Var(p.name, p.name, p.type, "param", p.loc)
+            var = Var(p.name, p.name, p.type, "param", p.loc, frame=scope.frame)
             scope.vars[(p.name, p.type)] = var
             scope.cpp_names.add(p.name)
             state.names[p.name] = Bound(var, p.type)
@@ -394,6 +434,29 @@ class Checker:
                 f"(it's declared to return {info.ret})", node,
             )
 
+    def check_nested_def(self, node: A.FunctionDef) -> None:
+        """A def inside a function: a local variable holding a closure."""
+        if node.type_params:
+            raise self.error("generic functions are not supported yet", node)
+        info = self.resolve_signature(node, owner=None)
+        for p in info.params:
+            if p.default is not None:
+                raise self.error(f"default values aren't supported in nested functions yet ('{p.name}')", p.default)
+        name = A.Name(node.name, loc=node.loc)
+        self.bind(name, FuncType(tuple(p.type for p in info.params), info.ret), node)
+        info.var = name.sym
+        saved = (self.scope, self.state, self.loops, self.handler_depth, self.finally_loops, self.lambda_depth, self.frame)
+        try:
+            self.check_function_body(info, outer=self.state)
+        finally:
+            (self.scope, self.state, self.loops, self.handler_depth,
+             self.finally_loops, self.lambda_depth, self.frame) = saved
+
+    def note_capture(self, var: Var) -> None:
+        """A variable used from a different function/lambda body is shared with it through a cell."""
+        if var.kind in ("local", "param") and var.frame != self.frame and var.name != "self":
+            var.captured = True
+
     def enter(self, scope: FunctionScope, state: State) -> None:
         self.scope = scope
         self.state = state
@@ -401,6 +464,7 @@ class Checker:
         self.handler_depth = 0
         self.finally_loops = []
         self.lambda_depth = 0
+        self.frame = scope.frame
 
     # =========================================================================
     # Type annotations
@@ -500,9 +564,14 @@ class Checker:
             case A.For():
                 self.check_for(stmt)
             case A.FunctionDef():
-                raise self.error("functions can only be defined at the top level of a module (for now)", stmt)
+                self.check_nested_def(stmt)
+            case A.Nonlocal():
+                if self.scope.is_module or self.scope.info.var is None:
+                    raise self.error("'nonlocal' is only allowed in nested functions", stmt)
+            case A.Global():
+                pass  # handled when the function body starts
             case A.ClassDef():
-                raise self.error(f"{stmt.kind}s can only be defined at the top level of a module", stmt)
+                raise self.error(f"a {stmt.kind} can only be defined at the top level of a module", stmt)
             case A.Import() | A.ImportFrom():
                 raise self.error("imports must be at the top level of a module", stmt)
             case _:
@@ -611,7 +680,13 @@ class Checker:
         With exact=True (annotated assignment) the variable's type is exactly `t`.
         """
         entry = self.state.names.get(name.id)
-        if not exact and isinstance(entry, Bound) and assignable(t, entry.var.type):
+        if name.id in self.scope.nonlocals or name.id in self.scope.global_names:
+            kind = "nonlocal" if name.id in self.scope.nonlocals else "global"
+            if exact or not assignable(t, entry.var.type):
+                raise self.error(f"can't change the type of {kind} '{name.id}' from {entry.var.type} to {t}", value)
+            var = entry.var
+            self.note_capture(var)
+        elif not exact and isinstance(entry, Bound) and assignable(t, entry.var.type):
             var = entry.var
         else:
             if t == NONE:
@@ -647,7 +722,7 @@ class Checker:
         kind = "local"
         if scope.is_module and self.module_assign_counts.get(name) == 1:
             kind = "global"
-        var = Var(name, cpp_name, t, kind, loc)
+        var = Var(name, cpp_name, t, kind, loc, frame=self.frame)
         scope.vars[key] = var
         scope.cpp_names.add(cpp_name)
         scope.locals.append(var)
@@ -970,6 +1045,7 @@ class Checker:
         entry = self.state.names.get(name)
         if isinstance(entry, Bound):
             e.sym = entry.var
+            self.note_capture(entry.var)
             return entry.ty
         if isinstance(entry, Conflict):
             versions = sorted(entry.sources, key=lambda s: (s[1].line, s[1].col))
@@ -1007,6 +1083,11 @@ class Checker:
         if name in builtins.VALUES:
             e.sym = builtins.VALUES[name]
             return builtins.VALUES[name].type
+        if name in self.scope.outer_assigned:
+            raise self.error(
+                f"'{name}' isn't assigned yet where this nested function is defined; "
+                f"assign it before the def", e,
+            )
         raise self.error(f"name '{name}' is not defined", e)
 
     def check_lambda(self, e: A.Lambda, expected: Type | None) -> Type:
@@ -1025,17 +1106,25 @@ class Checker:
                 f"can't tell the types of this lambda's parameters from here; give it a type, "
                 f"e.g. `f: ({example}) -> int = lambda ...`", e,
             )
-        outer = self.state
-        self.state = outer.copy()
+        outer, outer_frame = self.state, self.frame
+        # The lambda may run after captured variables change, so narrowing doesn't carry in.
+        self.state = State(
+            {n: Bound(en.var, en.var.type) if isinstance(en, Bound) else en for n, en in outer.names.items()},
+            outer.dead,
+        )
         self.lambda_depth += 1
+        self.frame_count += 1
+        self.frame = self.frame_count
         for p, t in zip(e.params, param_types):
-            var = Var(p.name, p.name, t, "lambda", p.loc)
+            var = Var(p.name, p.name, t, "lambda", p.loc, frame=self.frame)
             self.state.names[p.name] = Bound(var, t)
             p.sym = var
         hint = expected.ret if isinstance(expected, FuncType) else None
-        body = self.check_expr(e.body, hint)
-        self.lambda_depth -= 1
-        self.state = outer
+        try:
+            body = self.check_expr(e.body, hint)
+        finally:
+            self.lambda_depth -= 1
+            self.state, self.frame = outer, outer_frame
         if isinstance(body, IterType):
             raise self.error(f"a lambda can't return {body.kind}(...); make a list with list(...)", e.body)
         ret = hint if hint is not None and hint != NONE and assignable(body, hint) else body
@@ -1340,6 +1429,15 @@ class Checker:
 
     def check_call(self, e: A.Call, expected: Type | None) -> Type:
         func = e.func
+        own = self.scope.info.var if self.scope.info is not None else None
+        if own is not None and isinstance(func, A.Name) and (entry := self.state.names.get(func.id)):
+            if isinstance(entry, Bound) and entry.var is own:
+                # A nested function calling itself: compiled without capturing itself
+                # (which would make a reference cycle, and leak).
+                func.sym, func.ty = own, entry.ty
+                ret = self.call_value(e, entry.ty)
+                e.sym = CallTarget("self_call", self.scope.info)
+                return ret
         if isinstance(func, A.Name) and func.id not in self.state.names and func.id not in self.scope.assigned:
             name = func.id
             if name in self.functions:
@@ -1495,7 +1593,10 @@ def assigned_targets(stmts: list[A.Stmt]) -> list[str]:
             for item in node:
                 visit(item)
             return
-        if not isinstance(node, A.Node) or isinstance(node, (A.FunctionDef, A.ClassDef) + COMPREHENSIONS):
+        if isinstance(node, A.FunctionDef):
+            names.append(node.name)  # a nested def assigns its name; its body is its own scope
+            return
+        if not isinstance(node, A.Node) or isinstance(node, (A.ClassDef, A.Lambda) + COMPREHENSIONS):
             return
         match node:
             case A.Assign(targets):
@@ -1511,6 +1612,30 @@ def assigned_targets(stmts: list[A.Stmt]) -> list[str]:
 
     visit(stmts)
     return names
+
+
+def declared_names(stmts: list[A.Stmt]) -> tuple[dict[str, A.Stmt], dict[str, A.Stmt]]:
+    """`nonlocal` and `global` declarations in a function body (not in nested functions)."""
+    nonlocals: dict[str, A.Stmt] = {}
+    global_names: dict[str, A.Stmt] = {}
+
+    def visit(node) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, A.Node) or isinstance(node, (A.FunctionDef, A.ClassDef)):
+            return
+        if isinstance(node, A.Nonlocal):
+            nonlocals.update(dict.fromkeys(node.names, node))
+        elif isinstance(node, A.Global):
+            global_names.update(dict.fromkeys(node.names, node))
+        for f in dataclasses.fields(node):
+            if f.name not in ("loc", "sym", "ty"):
+                visit(getattr(node, f.name))
+
+    visit(stmts)
+    return nonlocals, global_names
 
 
 def assigned_names(stmts: list[A.Stmt]) -> set[str]:

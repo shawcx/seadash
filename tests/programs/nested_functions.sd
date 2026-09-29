@@ -1,0 +1,91 @@
+def counter() -> Callable[[], int]:
+    n = 0
+    def bump() -> int:
+        nonlocal n
+        n += 1
+        return n
+    return bump
+
+c1 = counter()
+c2 = counter()
+print(c1(), c1(), c1(), c2())
+
+def collect(words: list[str]) -> list[str]:
+    found: list[str] = []
+    def keep(w: str):
+        if len(w) > 3:
+            found.append(w.upper())
+    for w in words:
+        keep(w)
+    return found
+
+print(collect(["a", "tree", "is", "green"]))
+
+def fib_upto(limit: int) -> list[int]:
+    def fib(k: int) -> int:
+        if k < 2:
+            return k
+        return fib(k - 1) + fib(k - 2)
+    return [fib(k) for k in range(limit)]
+
+print(fib_upto(10))
+
+def count_paths(grid: list[list[int]]) -> int:
+    rows = len(grid)
+    cols = len(grid[0])
+    memo: dict[tuple[int, int], int] = {}
+    def walk(r: int, c: int) -> int:
+        if r >= rows or c >= cols or grid[r][c] == 1:
+            return 0
+        if r == rows - 1 and c == cols - 1:
+            return 1
+        key = (r, c)
+        if key in memo:
+            return memo[key]
+        total = walk(r + 1, c) + walk(r, c + 1)
+        memo[key] = total
+        return total
+    result = walk(0, 0)
+    print("memo size", len(memo))
+    return result
+
+print(count_paths([[0, 0, 0], [0, 1, 0], [0, 0, 0]]))
+
+def make_account(balance: float) -> tuple[Callable[[float], float], Callable[[], float]]:
+    def deposit(amount: float) -> float:
+        nonlocal balance
+        balance += amount
+        return balance
+    def get() -> float:
+        return balance
+    return deposit, get
+
+deposit, get = make_account(10)
+deposit(5)
+deposit(2.5)
+print(get())
+
+total_calls = 0
+
+def tracked(x: int) -> int:
+    global total_calls
+    total_calls += 1
+    def helper(y: int) -> int:
+        return y * x
+    return helper(3)
+
+print(tracked(2), tracked(5), total_calls)
+
+def outer() -> int:
+    level = 1
+    def middle() -> int:
+        def inner() -> int:
+            nonlocal level
+            level += 10
+            return level
+        inner()
+        return inner()
+    middle()
+    return level
+
+print(outer())

@@ -618,7 +618,7 @@ def test_unknown_module_member():
     ("def f[T](x: T) -> T:\n    return x", "generic functions are not supported yet"),
     ("x: int | str = 1", "union types are not supported yet (T? for 'T or None' is)"),
     ("class A: pass\nclass B(A): pass", "inheritance is only supported for exception classes (for now), e.g. `class B(Exception):`"),
-    ("def f():\n    def g(): pass", "functions can only be defined at the top level of a module (for now)"),
+    ("def f():\n    class C: pass", "a class can only be defined at the top level of a module"),
 ])
 def test_not_yet_supported(src, msg):
     assert err(src).message == msg
@@ -766,3 +766,72 @@ def test_callback_results_can_be_ignored():
         run(double)
         run(lambda n: print(n))
     """)
+
+
+# ---- nested functions and closures -----------------------------------------------
+
+
+def captured(info: ModuleInfo, function: str) -> list[str]:
+    [fn] = [f for f in info.functions if f.name == function]
+    return sorted(v.cpp_name for v in fn.locals if v.captured)
+
+
+def test_captured_variables_are_marked():
+    info = ok("""
+        def f() -> int:
+            shared = 1
+            private = 2
+            def g() -> int:
+                return shared + 1
+            h: () -> int = lambda: shared * 2
+            return g() + h() + private
+    """)
+    assert captured(info, "f") == ["shared"]
+
+
+def test_self_recursion_does_not_capture_itself():
+    info = ok("""
+        def f() -> int:
+            def fact(n: int) -> int:
+                return 1 if n <= 1 else n * fact(n - 1)
+            return fact(5)
+    """)
+    assert captured(info, "f") == []
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("def f():\n    nonlocal x", "'nonlocal' is only allowed in nested functions"),
+    ("nonlocal x", "'nonlocal' is only allowed in nested functions"),
+    ("def f():\n    def g():\n        nonlocal y\n        y = 1", "no variable 'y' in an enclosing function for 'nonlocal' to use"),
+    ("def f():\n    n = 0\n    def g():\n        nonlocal n\n        n = 'x'", "can't change the type of nonlocal 'n' from int to str"),
+    ("def f():\n    global g\n    g = 1", "no module-level variable 'g' for 'global' to use"),
+    ("x = 1\nx = 2\ndef f():\n    global x\n    x = 3", "'global x' needs a module-level variable assigned exactly once; 'x' is assigned 2 times"),
+    ("def f():\n    def g(a: int = 1) -> int:\n        return a", "default values aren't supported in nested functions yet ('a')"),
+    ("def f():\n    def g():\n        print(later)\n    later = 1", "'later' isn't assigned yet where this nested function is defined; assign it before the def"),
+    ("def f(p: int?):\n    if p is not None:\n        def g() -> int:\n            return p + 1",
+     "unsupported operand types for +: int? and int"),
+    ("def f(p: int?):\n    if p is not None:\n        h: () -> int = lambda: p + 1",
+     "unsupported operand types for +: int? and int"),
+])
+def test_closure_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_global_counter():
+    info = ok("""
+        count = 0
+        def bump():
+            global count
+            count += 1
+    """)
+    assert variables(info) == ["count: int"]
+
+
+def test_nested_def_is_a_function_value():
+    info = ok("""
+        def make() -> (int) -> int:
+            def double(x: int) -> int:
+                return x * 2
+            return double
+    """)
+    assert variables(info, "make") == ["double: (int) -> int"]

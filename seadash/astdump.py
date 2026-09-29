@@ -123,6 +123,10 @@ def stmt(s: A.Stmt, depth: int) -> list[str]:
             return [pad + sexp("return", *([expr(value)] if value else []))]
         case A.Assert(test, msg):
             return [pad + sexp("assert", expr(test), *([expr(msg)] if msg else []))]
+        case A.Nonlocal(names):
+            return [pad + sexp("nonlocal", *names)]
+        case A.Global(names):
+            return [pad + sexp("global", *names)]
         case A.Import(names):
             return [pad + sexp("import", *map(alias, names))]
         case A.ImportFrom(module, names):

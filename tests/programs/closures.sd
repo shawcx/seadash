@@ -1,9 +1,9 @@
-# seadash lambdas capture *values* when they're created (safe to return and store)
+# closures share variables with the function that created them, like Python
 
 def make_counters() -> list[() -> int]:
     fns: list[() -> int] = []
     for i in range(3):
-        fns.append(lambda: i * 10)   # Python would give 20, 20, 20 (late binding)
+        fns.append(lambda: i * 10)   # all three share `i`, so all see its final value
     return fns
 
 print([f() for f in make_counters()])
@@ -11,7 +11,7 @@ print([f() for f in make_counters()])
 x = 1
 get_x: () -> int = lambda: x
 x = 2
-print(get_x(), x)                     # captured 1; the module variable is now 2
+print(get_x(), x)                     # the lambda sees the updated x
 
 class Button:
     label: str
@@ -41,7 +41,7 @@ struct Temperature:
 t = Temperature(21.5)
 fmt = t.formatter()
 t.celsius = 30
-print(fmt("C"), t.celsius)            # structs are values: the lambda kept its own copy
+print(fmt("C"), t.celsius)            # but `self` in a struct is a value: the lambda has a copy
 
 tick = Button("x", lambda s: None).click
 tick()

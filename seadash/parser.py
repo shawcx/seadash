@@ -36,7 +36,7 @@ COMPARISON_OPS = {"<", ">", "==", "!=", "<=", ">="}
 AUGMENTED_OPS = {"+=", "-=", "*=", "/=", "//=", "%=", "**=", "@=", "&=", "|=", "^=", "<<=", ">>="}
 
 # Python keywords we recognise but don't implement yet, so users get an honest error.
-NOT_YET_SUPPORTED = {"with", "global", "nonlocal", "del", "yield"}
+NOT_YET_SUPPORTED = {"with", "del", "yield"}
 
 
 def parse(source: str) -> A.Module:
@@ -157,6 +157,12 @@ class Parser:
                     exc = self.parse_expr()
                     cause = self.parse_expr() if self.accept("from") else None
                     return A.Raise(exc, cause, loc=loc)
+                case "nonlocal" | "global":
+                    self.next()
+                    names = [self.expect_name(f"a name after '{tok.value}'").value]
+                    while self.accept(","):
+                        names.append(self.expect_name(f"a name after '{tok.value}'").value)
+                    return (A.Nonlocal if tok.value == "nonlocal" else A.Global)(names, loc=loc)
                 case "assert":
                     self.next()
                     test = self.parse_expr()
