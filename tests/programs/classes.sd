@@ -1,0 +1,35 @@
+# classes are shared references
+class Counter:
+    count: int
+    step: int
+
+    def __init__(self, step: int = 1):
+        self.count = 0
+        self.step = step
+
+    def tick(self) -> int:
+        self.count += self.step
+        return self.count
+
+class Node:
+    value: int
+    next: Node?
+
+def total(head: Node?) -> int:
+    s = 0
+    node = head
+    while node is not None:
+        s += node.value
+        node = node.next
+    return s
+
+c = Counter()
+same = c
+same.tick()
+c.tick()
+print(c.count, same.count, c is same, c is Counter(), Counter(step=5).tick())
+
+head = Node(1, Node(2, Node(3, None)))
+print(total(head), total(None))
+head.next = None
+print(total(head), head)

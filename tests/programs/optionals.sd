@@ -1,0 +1,39 @@
+def find(xs: list[str], target: str) -> int?:
+    for i, x in enumerate(xs):
+        if x == target:
+            return i
+    return None
+
+names = ["ann", "bob", "cy"]
+for target in ["bob", "zed"]:
+    i = find(names, target)
+    if i is not None:
+        print(target, "at", i, "->", names[i])
+    else:
+        print(target, "missing")
+
+if (j := find(names, "cy")) is not None:
+    print("cy at", j + 1 - 1)
+
+k = find(names, "ann") or -1
+print(k, find(names, "nope") or -1)
+
+scores = {"ann": 3}
+best: int? = None
+for name in names:
+    s = scores.get(name)
+    if s is None:
+        continue
+    if best is None or s > best:
+        best = s
+print(best)
+
+def first_char(s: str?) -> str:
+    if not s:
+        return "?"
+    return s[0]
+
+print(first_char("xyz"), first_char(""), first_char(None))
+maybe: float? = 2
+assert maybe is not None
+print(maybe * 2)

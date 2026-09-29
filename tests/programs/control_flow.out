@@ -1,0 +1,16 @@
+-5 negative
+0 zero
+7 small
+100 large
+odd 1
+odd 3
+odd 5
+odd 7
+for-else ran (no break)
+found 4
+while-else ran, n = -1
+True False True
+big
+max is big: 8
+True True False
+10 7 4 1 

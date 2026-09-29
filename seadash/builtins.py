@@ -110,7 +110,7 @@ class Module:
 
 
 def printable(t: Type) -> bool:
-    return not isinstance(t, (IterType, ModuleType)) and t != NONE
+    return not isinstance(t, (IterType, ModuleType))
 
 
 def sized(t: Type) -> bool:

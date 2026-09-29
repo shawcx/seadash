@@ -1,0 +1,10 @@
+import math
+import sys
+from math import sqrt, pi
+
+print(math.sqrt(16), sqrt(2) ** 2 > 1.99, math.floor(-2.5), math.ceil(2.1), math.gcd(12, 18))
+print(round(pi, 4), math.isnan(math.nan), math.inf > 10 ** 18, math.log(math.e), math.log(8, 2))
+print(len(sys.argv) >= 1)
+print("exiting with 3")
+sys.exit(3)
+print("never printed")

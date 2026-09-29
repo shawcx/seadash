@@ -1,0 +1,15 @@
+def divmod2(a: int, b: int) -> tuple[int, int]:
+    return a // b, a % b
+
+q, r = divmod2(17, 5)
+print(q, r)
+a, b = 1, "one"
+print(a, b)
+b, a = a, b
+print(a, b)
+point = (3, 4.5, "p")
+print(point, point[0], point[2], point[-1], len(point))
+pairs = [(1, "a"), (2, "b")]
+for num, letter in pairs:
+    print(num, letter)
+print((1,), (), (1, 2) + (3,), (1, 2) < (1, 3))

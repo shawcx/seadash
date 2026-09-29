@@ -1,0 +1,51 @@
+def classify(n: int) -> str:
+    if n < 0:
+        return "negative"
+    elif n == 0:
+        return "zero"
+    elif n < 10:
+        return "small"
+    else:
+        return "large"
+
+for n in [-5, 0, 7, 100]:
+    print(n, classify(n))
+
+i = 0
+while i < 10:
+    i += 1
+    if i % 2 == 0:
+        continue
+    if i > 7:
+        break
+    print("odd", i)
+
+for x in range(3):
+    pass
+else:
+    print("for-else ran (no break)")
+
+for x in range(10):
+    if x == 4:
+        print("found", x)
+        break
+else:
+    print("not printed")
+
+n = 5
+while n > 0:
+    n -= 2
+else:
+    print("while-else ran, n =", n)
+
+x = 5
+print(1 < x < 10, 1 < x > 10, 0 <= x <= 5 < 6)
+print("big" if x > 3 else "small")
+values = [3, 8, 1]
+if (m := max(values)) > 5:
+    print("max is big:", m)
+print(x > 3 and x < 10, x < 3 or x == 5, not x)
+
+for i in range(10, 0, -3):
+    print(i, end=" ")
+print()

@@ -1,0 +1,39 @@
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+def greet(name: str, greeting: str = "hello", punct: str = "!") -> str:
+    return f"{greeting}, {name}{punct}"
+
+def is_even(n: int) -> bool:
+    return n == 0 or is_odd(n - 1)
+
+def is_odd(n: int) -> bool:
+    return n != 0 and is_even(n - 1)
+
+def stats(xs: list[float]) -> tuple[float, float]:
+    return min(xs), max(xs)
+
+def add_one(xs: list[int]) -> list[int]:
+    xs.append(1)
+    return xs
+
+LIMIT = 5
+seen: list[int] = []
+
+def remember(n: int):
+    if n < LIMIT:
+        seen.append(n)
+
+print([fib(i) for i in range(10)])
+print(greet("ann"), greet("bob", "hi"), greet("cy", punct="?"), greet(greeting="yo", name="dee"))
+print(is_even(10), is_odd(7))
+lo, hi = stats([3.5, 1, 9])
+print(lo, hi)
+original = [0]
+changed = add_one(original)
+print(original, changed)
+for i in range(8):
+    remember(i)
+print(seen)

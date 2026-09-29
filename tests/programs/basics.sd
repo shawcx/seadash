@@ -1,0 +1,17 @@
+# printing, f-strings, and number formatting
+print("hello, seadash")
+print(1, 2.5, True, None, "x", sep=" | ")
+print("no newline", end="")
+print(" ...continued")
+name = "world"
+n = 42
+print(f"hi {name}! n={n}, n*2={n * 2}, pi~{3.14159:.2f}, padded=[{n:>5}] [{name:<7}]")
+print(3.0, 0.1 + 0.2, 1e16, 1e15, 1 / 3, -0.0, 2 ** 0.5)
+print(7 // 2, -7 // 2, 7 % 3, -7 % 3, 7.5 // 2, -7.5 % 2, 2 ** 10, 10 / 4)
+print(int("  17 "), int(3.9), int(-3.9), float("2.5"), float(3), str(12) + "!", bool(0), bool("a"))
+print(round(2.5), round(3.5), round(2.675, 2), abs(-4), abs(-2.5))
+print(min(3, 1, 2), max(1.5, 2), min([4, 2, 8]), max("apple", "pear"))
+print(repr("it's"), repr('say "hi"'), repr("tab\there"))
+print(ord("A"), chr(97), chr(233), len("héllo"))
+big = 2 ** 62
+print(big * 4)  # wraps around in seadash (Python would give a bigger number)

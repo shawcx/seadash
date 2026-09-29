@@ -1,0 +1,38 @@
+# structs are values: assignment and passing copy them
+import math
+
+struct Vec:
+    x: float
+    y: float = 0.0
+
+    def length(self) -> float:
+        return math.hypot(self.x, self.y)
+
+    def scale(self, k: float):
+        self.x *= k
+        self.y *= k
+
+    def plus(self, other: Vec) -> Vec:
+        return Vec(self.x + other.x, self.y + other.y)
+
+struct Particle:
+    pos: Vec
+    name: str
+    tags: list[str]
+
+a = Vec(3, 4)
+print(a, a.length())
+b = a
+b.scale(2)
+print(a, b)
+print(a.plus(b), a == Vec(3, 4), a == b, Vec(1))
+
+p = Particle(Vec(1, 2), "dust", ["small"])
+p.pos.x = 10
+p.tags.append("fast")
+print(p)
+ps = [p, Particle(Vec(0), "rock", [])]
+ps[1].pos.y = 7
+for q in ps:
+    q.name = "renamed"   # q is a copy
+print([q.name for q in ps], ps[1].pos)

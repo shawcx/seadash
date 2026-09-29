@@ -1,0 +1,3 @@
+x = 5
+assert x > 0, "x must be positive"
+assert x > 10, f"x is only {x}"

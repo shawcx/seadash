@@ -520,7 +520,9 @@ class Checker:
             self.bind(target, result, stmt)
         elif not assignable(result, current):
             raise self.error(f"'{op}=' would change this {current} into a {result}", stmt)
-        stmt.sym = read_sym  # the variable read; target.sym is the one written
+        # For codegen: what was read (and its type there) and the operation's
+        # result type. target.sym is the variable written, which may differ.
+        stmt.sym = (read_sym, current, result)
 
     def assign(self, target: A.Expr, t: Type, value: A.Expr) -> None:
         match target:
@@ -880,7 +882,7 @@ class Checker:
         raise self.error(f"name '{name}' is not defined", e)
 
     def check_printable(self, t: Type, e: A.Expr) -> None:
-        if isinstance(t, (IterType, ModuleType)) or t == NONE:
+        if isinstance(t, (IterType, ModuleType)):
             raise self.error(f"{t} can't be converted to a string", e)
 
     def check_sequence_literal(self, e, elts, expected, ctor, word: str) -> Type:

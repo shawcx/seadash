@@ -1,0 +1,24 @@
+# a name can change type; each type gets its own C++ variable
+a = 2
+print(a + 1)
+a = str(a)
+print(a + "!")
+a = [a, a]
+print(a)
+
+def describe(n: int) -> str:
+    n = n * 2
+    n = f"doubled: {n}"
+    return n
+
+print(describe(21))
+
+total = 0
+for x in [1, 2, 3]:
+    total += x
+total = total / 2
+print(total)
+
+count = 1
+count += 0.5
+print(count)

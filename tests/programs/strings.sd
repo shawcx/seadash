@@ -1,0 +1,19 @@
+s = "Hello, World"
+print(s.upper(), s.lower(), len(s))
+print(s[0], s[-1], s[7:], s[:5], s[::-1], s[::2], s[-5:-1])
+print("World" in s, "world" in s, s.find("o"), s.find("z"), s.count("l"))
+print(s.replace("World", "seadash"), s.startswith("Hell"), s.endswith("x"))
+words = "  the quick  brown fox ".split()
+print(words, len(words))
+print("a,b,,c".split(","), "-".join(words), "".join(["x", "y"]))
+print("  padded  ".strip() + "|", "xxhixx".strip("x"), "  left".lstrip(), "right  ".rstrip() + "|")
+print("hello world".title(), "hello".capitalize(), "123".isdigit(), "abc".isalpha(), "a1".isalnum())
+print("line1\nline2\nline3".splitlines())
+for ch in "abc":
+    print(ch, end=".")
+print()
+greeting = "hi"
+greeting += " there"
+greeting = greeting * 2
+print(greeting)
+print(sorted("banana"), list("abc"))

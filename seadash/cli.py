@@ -3,13 +3,21 @@
     sd tokens FILE     print the token stream (for debugging the lexer)
     sd ast FILE        print the syntax tree (for debugging the parser)
     sd check FILE      type-check a file and list each function's variables
+    sd emit FILE       print the generated C++
+    sd build FILE      compile to a native binary (named after FILE, or -o NAME)
+    sd run FILE ARGS   build to a temporary binary and run it
 """
 
 import argparse
+import os
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from .astdump import dump
 from .checker import check
+from .driver import BuildError, BuildOptions, compile_cpp, to_cpp
 from .errors import CompileError
 from .lexer import TokenKind, tokenize
 from .parser import parse
@@ -72,6 +80,52 @@ def cmd_check(path: str) -> int:
     return 0
 
 
+def translate(path: str) -> str | None:
+    """seadash source -> C++, printing any compile error. None on failure."""
+    source = read_source(path)
+    try:
+        return to_cpp(source)
+    except CompileError as e:
+        print(e.render(source, path), file=sys.stderr)
+        return None
+
+
+def cmd_emit(path: str) -> int:
+    cpp = translate(path)
+    if cpp is None:
+        return 1
+    print(cpp, end="")
+    return 0
+
+
+def build(path: str, output: Path, options: BuildOptions) -> bool:
+    cpp = translate(path)
+    if cpp is None:
+        return False
+    with tempfile.TemporaryDirectory(prefix="seadash-") as tmp:
+        cpp_path = Path(tmp) / (Path(path).stem + ".cpp")
+        cpp_path.write_text(cpp)
+        try:
+            compile_cpp(cpp_path, output, options)
+        except BuildError as e:
+            print(f"sd: {e}", file=sys.stderr)
+            return False
+    return True
+
+
+def cmd_build(path: str, output: str | None, options: BuildOptions) -> int:
+    out = Path(output) if output else Path(Path(path).stem)
+    return 0 if build(path, out, options) else 1
+
+
+def cmd_run(path: str, args: list[str], options: BuildOptions) -> int:
+    with tempfile.TemporaryDirectory(prefix="seadash-") as tmp:
+        binary = Path(tmp) / Path(path).stem
+        if not build(path, binary, options):
+            return 1
+        return subprocess.run([str(binary), *args]).returncode
+
+
 def read_source(path: str) -> str:
     try:
         with open(path, encoding="utf-8") as f:
@@ -89,6 +143,16 @@ def main(argv: list[str] | None = None) -> int:
     p_ast.add_argument("file")
     p_check = sub.add_parser("check", help="type-check a file")
     p_check.add_argument("file")
+    p_emit = sub.add_parser("emit", help="print the generated C++")
+    p_emit.add_argument("file")
+    p_build = sub.add_parser("build", help="compile to a native binary")
+    p_build.add_argument("file")
+    p_build.add_argument("-o", "--output", help="binary name (default: the file's name without .sd)")
+    p_run = sub.add_parser("run", help="build and run")
+    p_run.add_argument("file")
+    p_run.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the program")
+    for p in (p_build, p_run):
+        p.add_argument("--debug", action="store_true", help="compile without optimization (faster build)")
     args = parser.parse_args(argv)
 
     if args.command == "tokens":
@@ -97,6 +161,13 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_ast(args.file)
     if args.command == "check":
         return cmd_check(args.file)
+    if args.command == "emit":
+        return cmd_emit(args.file)
+    options = BuildOptions(optimize=not getattr(args, "debug", False), cxx=os.environ.get("SEADASH_CXX"))
+    if args.command == "build":
+        return cmd_build(args.file, args.output, options)
+    if args.command == "run":
+        return cmd_run(args.file, args.args, options)
     return 2
 
 
