@@ -45,12 +45,13 @@ def binaries(tmp_path_factory) -> dict[str, Path | str]:
 
 
 @pytest.mark.parametrize("name", CASES)
-def test_program(name: str, binaries):
+def test_program(name: str, binaries, tmp_path):
     binary = binaries[name]
     if isinstance(binary, str):
         pytest.fail(binary, pytrace=False)
 
-    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+    # Each program runs in its own empty directory, so file tests can write freely.
+    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10, cwd=tmp_path)
 
     expected_out = (PROGRAMS / f"{name}.out").read_text()
     err_file = PROGRAMS / f"{name}.err"

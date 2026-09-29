@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (available: base64, math, sys, zlib)"
+    assert err("import requests").message == "no module named 'requests' (available: base64, math, os, sys, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -884,3 +884,62 @@ def test_module_exception_classes():
         def g(e: zlib.error) -> str:
             return str(e)
     """)
+
+
+# ---- files and with ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("src,ty", [
+    ('open("f")', "TextIO"),
+    ('open("f", "rb")', "BinaryIO"),
+    ('open("f", mode="w", encoding="utf-8")', "TextIO"),
+    ('open("f").read()', "str"),
+    ('open("f", "rb").read(10)', "bytes"),
+    ('open("f").readlines()', "list[str]"),
+    ('[line for line in open("f", "rb")]', "list[bytes]"),
+    ('open("f", "w").write("x")', "int"),
+])
+def test_file_types(src, ty):
+    [v] = ok(f"x = {src}\n").globals
+    assert str(v.type) == ty
+
+
+@pytest.mark.parametrize("src,msg", [
+    ('m = "r"\nf = open("x", m)', "open() mode must be a string literal like 'r', 'w' or 'rb' (it decides whether you get str or bytes)"),
+    ('f = open("x", "rw")', "invalid mode: 'rw'"),
+    ('f = open("x", "rb", encoding="utf-8")', "binary mode doesn't take an encoding argument"),
+    ('open("x", "wb").write("x")', "BinaryIO.write() argument must be bytes, not str"),
+    ("with 5:\n    pass", "int can't be used in a 'with' statement (it needs __enter__ and __exit__ methods)"),
+    ("class C:\n    def __enter__(self): pass\nwith C():\n    pass", "C can't be used in a 'with' statement: it has no __exit__ method"),
+    ("class C:\n    def __enter__(self): pass\n    def __exit__(self, t: int, v: int, tb: int): pass\nwith C():\n    pass",
+     "__exit__ takes either no parameters, or one `exc: Exception?` (None when the block finished normally)"),
+    ("class C:\n    def __enter__(self): pass\n    def __exit__(self): pass\nwith C() as c:\n    pass",
+     "__enter__ doesn't return anything, so there's nothing to bind with 'as'"),
+    ("import os\nos.makedirs('a', exists_ok=True)", "os.makedirs() got an unexpected keyword argument 'exists_ok'"),
+    ("from typing import Callable\nx = Callable", "'Callable' is a type; it can only be used in annotations"),
+])
+def test_file_and_with_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_typing_names_are_accepted():
+    info = ok("""
+        from typing import Callable, Optional, List, Dict, TextIO
+        def f(g: Callable[[int], int], xs: List[int], d: Dict[str, int], o: Optional[int], out: TextIO) -> int:
+            return g(xs[0])
+        x: Optional[int] = None
+    """)
+    assert variables(info) == ["x: int?"]
+
+
+def test_variables_after_suppressing_with_may_be_unassigned():
+    e = err("""
+        class Quiet:
+            def __enter__(self): pass
+            def __exit__(self, exc: Exception?) -> bool:
+                return True
+        with Quiet():
+            value = int("x")
+        print(value)
+    """)
+    assert e.message == "'value' might not be assigned yet"

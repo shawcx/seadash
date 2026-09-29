@@ -36,7 +36,7 @@ COMPARISON_OPS = {"<", ">", "==", "!=", "<=", ">="}
 AUGMENTED_OPS = {"+=", "-=", "*=", "/=", "//=", "%=", "**=", "@=", "&=", "|=", "^=", "<<=", ">>="}
 
 # Python keywords we recognise but don't implement yet, so users get an honest error.
-NOT_YET_SUPPORTED = {"with", "del", "yield"}
+NOT_YET_SUPPORTED = {"del", "yield"}
 
 
 def parse(source: str) -> A.Module:
@@ -112,6 +112,8 @@ class Parser:
                     return [self.parse_class()]
                 case "try":
                     return [self.parse_try()]
+                case "with":
+                    return [self.parse_with()]
                 case "elif" | "else":
                     raise self.error(f"'{tok.value}' without a matching 'if'")
                 case "except" | "finally":
@@ -284,6 +286,47 @@ class Parser:
         if not handlers and not finalbody:
             raise self.error(f"expected 'except' or 'finally' after the 'try' block, found {describe(self.peek())}")
         return A.Try(body, handlers, orelse, finalbody, loc=loc)
+
+    def parse_with(self) -> A.With:
+        """`with a as x, b as y:`, also parenthesized: `with (a as x, b as y):`."""
+        loc = self.next().loc
+        parenthesized = self.at("(") and self.parenthesized_with_items()
+        if parenthesized:
+            self.next()
+        items = [self.parse_with_item()]
+        while self.accept(","):
+            if parenthesized and self.at(")"):
+                break
+            items.append(self.parse_with_item())
+        if parenthesized:
+            self.expect(")", " after with items")
+        return A.With(items, self.parse_block("'with'"), loc=loc)
+
+    def parenthesized_with_items(self) -> bool:
+        """Is `with (` the start of an item list, rather than a parenthesized expression?"""
+        depth = 0
+        for i in range(self.i, len(self.tokens)):
+            tok = self.tokens[i]
+            if tok.kind == K.OP and tok.value in "([{":
+                depth += 1
+            elif tok.kind == K.OP and tok.value in ")]}":
+                depth -= 1
+                if depth == 0:
+                    return self.tokens[i + 1].kind == K.OP and self.tokens[i + 1].value == ":" and any(
+                        t.kind == K.KEYWORD and t.value == "as" for t in self.tokens[self.i : i]
+                    )
+            elif tok.kind == K.NEWLINE:
+                return False
+        return False
+
+    def parse_with_item(self) -> A.WithItem:
+        context = self.parse_expr()
+        target = None
+        if self.accept("as"):
+            # A single target: in `with a as x, b:` the comma starts the next item.
+            target = self.parse_binary()
+            self.check_target(target)
+        return A.WithItem(context, target, loc=context.loc)
 
     def parse_def(self) -> A.FunctionDef:
         loc = self.next().loc

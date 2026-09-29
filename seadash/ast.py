@@ -408,6 +408,20 @@ class Try(Stmt):
 
 
 @dataclass
+class WithItem(Node):
+    """`context as target` in a with statement (target may be None)."""
+
+    context: Expr
+    target: Expr | None = None
+
+
+@dataclass
+class With(Stmt):
+    items: list[WithItem]
+    body: list[Stmt]
+
+
+@dataclass
 class Param(Node):
     name: str
     annotation: TypeExpr | None = None

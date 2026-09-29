@@ -10,7 +10,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <format>
 #include <functional>
 #include <initializer_list>
@@ -24,6 +26,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -58,6 +61,7 @@ struct BaseException : std::enable_shared_from_this<BaseException> {
     };
 
 SD_EXCEPTION(Exception, BaseException)
+SD_EXCEPTION(OSError, Exception)
 SD_EXCEPTION(ArithmeticError, Exception)
 SD_EXCEPTION(ZeroDivisionError, ArithmeticError)
 SD_EXCEPTION(OverflowError, ArithmeticError)
@@ -78,9 +82,13 @@ SD_EXCEPTION(AssertionError, Exception)
 SD_EXCEPTION(RuntimeError, Exception)
 SD_EXCEPTION(NotImplementedError, RuntimeError)
 SD_EXCEPTION(EOFError, Exception)
+SD_EXCEPTION(FileNotFoundError, OSError)
+SD_EXCEPTION(FileExistsError, OSError)
+SD_EXCEPTION(PermissionError, OSError)
+SD_EXCEPTION(IsADirectoryError, OSError)
+SD_EXCEPTION(NotADirectoryError, OSError)
 SD_EXCEPTION(UnicodeError, ValueError)
 SD_EXCEPTION(UnicodeDecodeError, UnicodeError)
-SD_EXCEPTION(OSError, Exception)
 #undef SD_EXCEPTION
 
 struct Thrown {
@@ -136,6 +144,7 @@ struct Finally {
         armed = false;
         body();
     }
+    void disarm() { armed = false; }
     ~Finally() noexcept(false) {
         if (armed) {
             armed = false;
@@ -492,7 +501,7 @@ inline std::string KeyError::sd_repr() const {
 }
 
 template <class... Ts>
-void print(std::string_view sep, std::string_view end, const Ts&... xs) {
+std::string print_line(std::string_view sep, std::string_view end, const Ts&... xs) {
     std::string out;
     bool first = true;
     auto add = [&](const auto& x) {
@@ -503,6 +512,12 @@ void print(std::string_view sep, std::string_view end, const Ts&... xs) {
     (add(xs), ...);
     (void)add;  // print() with no arguments
     out += end;
+    return out;
+}
+
+template <class... Ts>
+void print(std::string_view sep, std::string_view end, const Ts&... xs) {
+    std::string out = print_line(sep, end, xs...);
     std::fwrite(out.data(), 1, out.size(), stdout);
 }
 
@@ -747,6 +762,8 @@ decltype(auto) iter(T&& x) {
         return out;
     } else if constexpr (is_dict<U>::value) {
         return x.keys();
+    } else if constexpr (requires { file_lines(x); }) {
+        return file_lines(x);
     } else if constexpr (std::is_lvalue_reference_v<T>) {
         return (x);
     } else {
@@ -1216,6 +1233,175 @@ bytes to_bytes(It&& it) {
 // Module functions that take bytes also accept str (as its UTF-8 bytes).
 inline const std::string& raw(const bytes& b) { return b.data; }
 inline const std::string& raw(const std::string& s) { return s; }
+
+// ============================================================================
+// Files
+// ============================================================================
+
+// OSError subclasses with Python's message: [Errno 2] No such file or directory: 'x.txt'
+[[noreturn]] inline void raise_os(int err, const std::string& path) {
+    std::string msg = "[Errno " + std::to_string(err) + "] " + std::strerror(err) + ": " + repr_str(path);
+    switch (err) {
+        case ENOENT: raise<FileNotFoundError>(msg);
+        case EEXIST: raise<FileExistsError>(msg);
+        case EACCES:
+        case EPERM: raise<PermissionError>(msg);
+        case EISDIR: raise<IsADirectoryError>(msg);
+        case ENOTDIR: raise<NotADirectoryError>(msg);
+        default: raise<OSError>(msg);
+    }
+}
+
+struct FileBase {
+    std::FILE* fp;
+    std::string path, mode;
+    FileBase(std::FILE* f, std::string p, std::string m) : fp(f), path(std::move(p)), mode(std::move(m)) {}
+    FileBase(const FileBase&) = delete;
+    FileBase& operator=(const FileBase&) = delete;
+    virtual ~FileBase() {
+        if (fp) std::fclose(fp);  // files close when the last reference goes away
+    }
+    std::FILE* handle() const {
+        if (!fp) raise("ValueError", "I/O operation on closed file.");
+        return fp;
+    }
+    std::string read_raw(std::int64_t n) {
+        std::FILE* f = handle();
+        std::string out;
+        if (n < 0) {
+            char buf[64 * 1024];
+            std::size_t k;
+            while ((k = std::fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, k);
+        } else {
+            out.resize(static_cast<std::size_t>(n));
+            out.resize(std::fread(out.data(), 1, out.size(), f));
+        }
+        if (std::ferror(f)) raise_os(errno, path);
+        return out;
+    }
+    std::string readline_raw() {
+        std::FILE* f = handle();
+        char* line = nullptr;
+        std::size_t capacity = 0;
+        ssize_t len = ::getline(&line, &capacity, f);  // binary-safe, unlike fgets
+        std::string out = len > 0 ? std::string(line, static_cast<std::size_t>(len)) : std::string();
+        std::free(line);
+        return out;
+    }
+    std::int64_t write_raw(const std::string& s) {
+        std::FILE* f = handle();
+        if (std::fwrite(s.data(), 1, s.size(), f) != s.size()) raise_os(errno, path);
+        return static_cast<std::int64_t>(s.size());
+    }
+    void close() {
+        if (fp) {
+            std::fclose(fp);
+            fp = nullptr;
+        }
+    }
+    void flush() { std::fflush(handle()); }
+};
+
+// `for line in f:` reads one line at a time, so big files don't need to fit in memory.
+template <class F, class Line>
+struct LineRange {
+    std::shared_ptr<F> file;
+    struct sentinel {};
+    struct iterator {
+        F* file;
+        Line line;
+        bool done = false;
+        void advance() {
+            line = Line(file->readline_raw());
+            done = line.empty();
+        }
+        const Line& operator*() const { return line; }
+        iterator& operator++() {
+            advance();
+            return *this;
+        }
+        bool operator!=(sentinel) const { return !done; }
+    };
+    iterator begin() const {
+        iterator it{file.get(), Line{}};
+        it.advance();
+        return it;
+    }
+    sentinel end() const { return {}; }
+};
+
+struct TextFile : FileBase {
+    using FileBase::FileBase;
+    std::string read(std::int64_t n = -1) { return read_raw(n); }
+    std::string readline() { return readline_raw(); }
+    std::vector<std::string> readlines() {
+        std::vector<std::string> out;
+        for (std::string line; !(line = readline_raw()).empty();) out.push_back(line);
+        return out;
+    }
+    std::int64_t write(const std::string& s) { return write_raw(s); }
+    template <class It>
+    void writelines(It&& lines) {
+        for (auto&& line : iter(std::forward<It>(lines))) write_raw(line);
+    }
+    std::string sd_repr() const { return "<TextIO name=" + repr_str(path) + " mode=" + repr_str(mode) + ">"; }
+};
+
+struct BinaryFile : FileBase {
+    using FileBase::FileBase;
+    bytes read(std::int64_t n = -1) { return bytes(read_raw(n)); }
+    bytes readline() { return bytes(readline_raw()); }
+    std::vector<bytes> readlines() {
+        std::vector<bytes> out;
+        for (std::string line; !(line = readline_raw()).empty();) out.emplace_back(line);
+        return out;
+    }
+    std::int64_t write(const bytes& b) { return write_raw(b.data); }
+    template <class It>
+    void writelines(It&& lines) {
+        for (auto&& line : iter(std::forward<It>(lines))) write_raw(line.data);
+    }
+    std::string sd_repr() const { return "<BinaryIO name=" + repr_str(path) + " mode=" + repr_str(mode) + ">"; }
+};
+
+inline LineRange<TextFile, std::string> file_lines(const std::shared_ptr<TextFile>& f) {
+    f->handle();
+    return {f};
+}
+inline LineRange<BinaryFile, bytes> file_lines(const std::shared_ptr<BinaryFile>& f) {
+    f->handle();
+    return {f};
+}
+
+inline std::FILE* open_file(const std::string& path, const std::string& mode) {
+    // Python's "x" (create, fail if it exists) is "wx" in C.
+    std::string c_mode;
+    for (char ch : mode)
+        if (ch != 't') c_mode += ch == 'x' ? std::string("wx") : std::string(1, ch);
+    if (c_mode.find('b') == std::string::npos) c_mode += 'b';  // no newline translation; text is UTF-8
+    std::FILE* f = std::fopen(path.c_str(), c_mode.c_str());
+    if (!f) raise_os(errno, path);
+    struct stat info;
+    if (fstat(fileno(f), &info) == 0 && S_ISDIR(info.st_mode)) {
+        std::fclose(f);
+        raise_os(EISDIR, path);
+    }
+    return f;
+}
+
+inline std::shared_ptr<TextFile> open_text(const std::string& path, const std::string& mode = "r",
+                                           const std::string& encoding = "utf-8") {
+    check_encoding(encoding);
+    return std::make_shared<TextFile>(open_file(path, mode), path, mode);
+}
+inline std::shared_ptr<BinaryFile> open_binary(const std::string& path, const std::string& mode) {
+    return std::make_shared<BinaryFile>(open_file(path, mode), path, mode);
+}
+
+template <class... Ts>
+void print_to(const std::shared_ptr<TextFile>& file, std::string_view sep, std::string_view end, const Ts&... xs) {
+    file->write_raw(print_line(sep, end, xs...));
+}
 
 inline std::string input(const std::string& prompt = "") {
     std::fwrite(prompt.data(), 1, prompt.size(), stdout);

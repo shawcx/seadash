@@ -1,0 +1,21 @@
+'alpha\n'
+['beta\n', 'gamma\n', 'delta:4\n']
+['alpha', 'beta', 'gamma', 'delta:4']
+33 5 epsilon
+alpha | 
+be | 'ta\n'
+b'\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\xff\n\x00end' 16 b'end'
+[12, 4]
+not found: [Errno 2] No such file or directory: 'missing.txt'
+exists: [Errno 17] File exists: 'data.txt'
+closed: I/O operation on closed file.
+2
+AB
+['deeper'] ['still', 'x.txt']
+True True True 2
+x.txt sub/deeper ('archive.tar', '.gz') ('.bashrc', '')
+False True
+remove: [Errno 2] No such file or directory: 'sub/y.txt'
+mkdir: [Errno 17] File exists: 'sub'
+None default
+/abs/b a/ True

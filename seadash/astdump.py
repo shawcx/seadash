@@ -145,6 +145,9 @@ def stmt(s: A.Stmt, depth: int) -> list[str]:
             if finalbody:
                 out += [pad + "finally:"] + stmt_lines(finalbody, depth + 1)
             return out
+        case A.With(items, body):
+            parts = [expr(i.context) + (f" as {expr(i.target)}" if i.target else "") for i in items]
+            return header(f"with {', '.join(parts)}:", body)
         case A.If(test, body, orelse):
             return header(f"if {expr(test)}:", body, orelse)
         case A.While(test, body, orelse):

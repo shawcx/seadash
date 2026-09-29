@@ -100,6 +100,20 @@ class IterType(Type):
 
 
 @dataclass(frozen=True)
+class FileType(Type):
+    """What open() returns: TextIO (reads/writes str) or BinaryIO (bytes)."""
+
+    binary: bool
+
+    def __str__(self) -> str:
+        return "BinaryIO" if self.binary else "TextIO"
+
+
+TEXT_FILE = FileType(False)
+BINARY_FILE = FileType(True)
+
+
+@dataclass(frozen=True)
 class ModuleType(Type):
     name: str
 
@@ -287,6 +301,8 @@ def element_type(t: Type) -> Type | None:
             return STR
         case Prim("bytes"):
             return INT
+        case FileType(binary):
+            return BYTES if binary else STR  # a file iterates over its lines
     return None
 
 

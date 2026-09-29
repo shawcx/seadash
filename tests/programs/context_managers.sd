@@ -1,0 +1,63 @@
+# seadash's context manager protocol: __enter__(self) -> T, and __exit__(self)
+# or __exit__(self, exc: Exception?) -> bool (return True to swallow the exception)
+log: list[str] = []
+
+class Timer:
+    name: str
+
+    def __enter__(self) -> Timer:
+        log.append(f"enter {self.name}")
+        return self
+
+    def __exit__(self):
+        log.append(f"exit {self.name}")
+
+class Suppress:
+    caught: list[str]
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc: Exception?) -> bool:
+        if exc is None:
+            return False
+        self.caught.append(str(exc))
+        return "ignore" in exc.message
+
+with Timer("outer") as t:
+    with Timer("inner"):
+        log.append(f"body of {t.name}")
+print(log)
+
+def early() -> int:
+    with Timer("early"):
+        return 42
+
+print(early(), log[-1])
+
+s = Suppress([])
+with s:
+    raise ValueError("please ignore this")
+print("after suppressed:", s.caught)
+try:
+    with s:
+        raise ValueError("real problem")
+except ValueError as e:
+    print("propagated:", e, s.caught)
+with s:
+    pass
+print("normal exit:", len(s.caught))
+
+for i in range(3):
+    with Timer(f"loop{i}"):
+        if i == 1:
+            continue
+        if i == 2:
+            break
+print(log[-4:])
+
+try:
+    with Timer("failing"):
+        raise KeyError("boom")
+except KeyError:
+    print("exit ran before the handler:", log[-1])

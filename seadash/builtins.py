@@ -15,7 +15,8 @@ from .errors import CheckError
 from .errors import Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, NONE, STR,
-    DictType, Field, FuncType, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
+    BINARY_FILE, TEXT_FILE,
+    DictType, Field, FileType, FuncType, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
 
@@ -116,6 +117,7 @@ class Function:
     name: str
     check: Callable[[CallContext], Type]
     cpp: str | None = None  # C++ function to call with the arguments as given, if that's all it takes
+    params: tuple | None = None  # for keyword support: ((name, type[, C++ default]), ...)
 
 
 @dataclass
@@ -126,9 +128,16 @@ class Value:
 
 
 @dataclass
+class TypeAlias:
+    """A name from `typing` (Callable, TextIO, ...): importable so code also runs under Python."""
+
+    name: str
+
+
+@dataclass
 class Module:
     name: str
-    members: dict[str, Function | Value | StructType]  # StructType: an exception class like zlib.error
+    members: dict[str, Function | Value | StructType | Module | TypeAlias]  # StructType: e.g. zlib.error
     header: str | None = None  # runtime header to #include, relative to the runtime directory
     libs: tuple[str, ...] = ()  # libraries to link, e.g. ("z",) for -lz
 
@@ -156,12 +165,38 @@ def bytes_like(t: Type) -> bool:
 
 
 def b_print(ctx: CallContext) -> Type:
-    ctx.arity(0, MANY, keywords=("sep", "end"))
+    ctx.arity(0, MANY, keywords=("sep", "end", "file"))
     for i in range(len(ctx.args)):
         ctx.need(i, printable, "something printable")
     ctx.keyword("sep", STR)
     ctx.keyword("end", STR)
+    ctx.keyword("file", TEXT_FILE)
     return NONE
+
+
+OPEN_MODES = set("rwaxb+t")
+
+
+def b_open(ctx: CallContext) -> Type:
+    n = ctx.arity(1, 2, keywords=("mode", "encoding"))
+    ctx.expect(0, STR)
+    mode_node = ctx.args[1] if n == 2 else ctx.keyword_arg("mode")
+    mode = "r"
+    if mode_node is not None:
+        if not isinstance(mode_node, A.StrLit):
+            raise ctx.error("open() mode must be a string literal like 'r', 'w' or 'rb' "
+                            "(it decides whether you get str or bytes)", mode_node)
+        ctx.checker.check_expr(mode_node)
+        mode = mode_node.value
+        kinds = sum(mode.count(c) for c in "rwax")
+        if not mode or set(mode) - OPEN_MODES or kinds != 1 or len(set(mode)) != len(mode) or ("b" in mode and "t" in mode):
+            raise ctx.error(f"invalid mode: {mode!r}", mode_node)
+    encoding = ctx.keyword_arg("encoding")
+    if encoding is not None:
+        if "b" in mode:
+            raise ctx.error("binary mode doesn't take an encoding argument", encoding)
+        ctx.keyword("encoding", STR)
+    return BINARY_FILE if "b" in mode else TEXT_FILE
 
 
 def b_len(ctx: CallContext) -> Type:
@@ -379,6 +414,7 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "all": b_any_all,
     "input": b_input,
     "bytes": b_bytes,
+    "open": b_open,
     "ord": b_ord,
     "chr": b_chr,
     "round": b_round,
@@ -520,8 +556,33 @@ SET_METHODS = {
 }
 
 
+def content(f: FileType) -> Type:
+    return BYTES if f.binary else STR
+
+
+def file_writelines(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    elem = ctx.iterable(0)
+    if elem != content(ctx.receiver):
+        raise ctx.error(f"{ctx.receiver}.writelines() needs {content(ctx.receiver)} items, not {elem}", ctx.args[0])
+    return NONE
+
+
+FILE_METHODS = {
+    "read": returns(content, 0, 1, (INT,)),
+    "readline": returns(content),
+    "readlines": returns(lambda f: ListType(content(f))),
+    "write": returns(INT, args=(content,)),
+    "writelines": file_writelines,
+    "close": returns(NONE),
+    "flush": returns(NONE),
+}
+
+
 def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
     match t:
+        case FileType():
+            return FILE_METHODS.get(name)
         case ListType():
             table = LIST_METHODS
         case DictType():
@@ -615,6 +676,7 @@ MODULES: dict[str, Module] = {
 EXCEPTION_TREE = [
     ("BaseException", None),
     ("Exception", "BaseException"),
+    ("OSError", "Exception"),
     ("ArithmeticError", "Exception"),
     ("ZeroDivisionError", "ArithmeticError"),
     ("OverflowError", "ArithmeticError"),
@@ -627,9 +689,13 @@ EXCEPTION_TREE = [
     ("RuntimeError", "Exception"),
     ("NotImplementedError", "RuntimeError"),
     ("EOFError", "Exception"),
+    ("FileNotFoundError", "OSError"),
+    ("FileExistsError", "OSError"),
+    ("PermissionError", "OSError"),
+    ("IsADirectoryError", "OSError"),
+    ("NotADirectoryError", "OSError"),
     ("UnicodeError", "ValueError"),
     ("UnicodeDecodeError", "UnicodeError"),
-    ("OSError", "Exception"),
 ]
 
 
@@ -692,3 +758,87 @@ MODULES["zlib"] = runtime_module(
     Z_DEFAULT_COMPRESSION=(INT, "(-1_i)"),
     ZLIB_VERSION=(STR, "std::string(ZLIB_VERSION)"),
 )
+
+
+def signature(result: Type, *params: tuple) -> Callable[[CallContext], Type]:
+    """A module function with named parameters: each is (name, type) or (name, type, C++ default).
+    Keyword arguments work; codegen passes every parameter in order (see Function.params)."""
+
+    def handler(ctx: CallContext) -> Type:
+        names = [p[0] for p in params]
+        if len(ctx.args) > len(params):
+            raise ctx.error(f"{ctx.what} takes at most {len(params)} arguments ({len(ctx.args)} given)")
+        for kw in ctx.call.keywords:
+            if kw.name not in names:
+                raise ctx.error(f"{ctx.what} got an unexpected keyword argument '{kw.name}'", kw)
+            if names.index(kw.name) < len(ctx.args):
+                raise ctx.error(f"{ctx.what} got multiple values for argument '{kw.name}'", kw)
+        for i, p in enumerate(params):
+            node = ctx.args[i] if i < len(ctx.args) else ctx.keyword_arg(p[0])
+            if node is None:
+                if len(p) < 3:
+                    raise ctx.error(f"{ctx.what} is missing argument '{p[0]}'")
+                continue
+            actual = ctx.checker.check_expr(node, p[1])
+            if not assignable(actual, p[1]):
+                raise ctx.error(f"{ctx.what} argument '{p[0]}' must be {p[1]}, not {actual}", node)
+        return result
+
+    handler.params = params
+    return handler
+
+
+def os_getenv(ctx: CallContext) -> Type:
+    n = ctx.arity(1, 2)
+    ctx.expect(0, STR)
+    if n == 2:
+        ctx.expect(1, STR)
+        return STR
+    return OptionalType(STR)
+
+
+def path_join(ctx: CallContext) -> Type:
+    for i in range(ctx.arity(1, MANY)):
+        ctx.expect(i, STR)
+    return STR
+
+
+def module_with_params(mod: Module) -> Module:
+    for m in mod.members.values():
+        if isinstance(m, Function) and hasattr(m.check, "params"):
+            m.params = m.check.params
+    return mod
+
+
+OS_PATH = module_with_params(runtime_module(
+    "os.path", "modules/os.hpp",
+    exists=(signature(BOOL, ("path", STR)), "sd::os::path::exists"),
+    isfile=(signature(BOOL, ("path", STR)), "sd::os::path::isfile"),
+    isdir=(signature(BOOL, ("path", STR)), "sd::os::path::isdir"),
+    join=(path_join, "sd::os::path::join"),
+    basename=(signature(STR, ("path", STR)), "sd::os::path::basename"),
+    dirname=(signature(STR, ("path", STR)), "sd::os::path::dirname"),
+    abspath=(signature(STR, ("path", STR)), "sd::os::path::abspath"),
+    splitext=(signature(TupleType((STR, STR)), ("path", STR)), "sd::os::path::splitext"),
+    getsize=(signature(INT, ("path", STR)), "sd::os::path::getsize"),
+    sep=(STR, "sd::os::path::sep()"),
+))
+
+MODULES["os"] = module_with_params(runtime_module(
+    "os", "modules/os.hpp",
+    getcwd=(signature(STR), "sd::os::getcwd"),
+    listdir=(signature(ListType(STR), ("path", STR, '"."s')), "sd::os::listdir"),
+    mkdir=(signature(NONE, ("path", STR)), "sd::os::mkdir"),
+    makedirs=(signature(NONE, ("name", STR), ("exist_ok", BOOL, "false")), "sd::os::makedirs"),
+    remove=(signature(NONE, ("path", STR)), "sd::os::remove"),
+    unlink=(signature(NONE, ("path", STR)), "sd::os::remove"),
+    rmdir=(signature(NONE, ("path", STR)), "sd::os::rmdir"),
+    rename=(signature(NONE, ("src", STR), ("dst", STR)), "sd::os::rename"),
+    getenv=(os_getenv, "sd::os::getenv"),
+    sep=(STR, "sd::os::path::sep()"),
+))
+MODULES["os"].members["path"] = OS_PATH
+
+MODULES["typing"] = Module("typing", {
+    name: TypeAlias(name) for name in ("Callable", "TextIO", "BinaryIO", "Optional", "List", "Dict", "Set", "Tuple")
+})

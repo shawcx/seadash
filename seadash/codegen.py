@@ -34,7 +34,7 @@ from . import builtins
 from .checker import CallTarget, ModuleInfo
 from .types import (
     BOOL, BYTES, FLOAT, INT, NONE, STR,
-    DictType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
+    DictType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric,
 )
 
@@ -195,6 +195,8 @@ class CodeGen:
                 return f"sd::list<{self.cpp_type(elem)}>"
             case FuncType(params, ret):
                 return f"std::function<{self.cpp_type(ret)}({', '.join(self.cpp_type(p) for p in params)})>"
+            case FileType(binary):
+                return f"std::shared_ptr<sd::{'BinaryFile' if binary else 'TextFile'}>"
         raise NotImplementedError(f"no C++ type for {t}")
 
     def coerce(self, code: str, src: Type, dst: Type) -> str:
@@ -470,6 +472,8 @@ class CodeGen:
                     self.line(f"throw sd::Thrown{{{self.expr(exc)}}};")
             case A.Try():
                 self.try_stmt(s)
+            case A.With(items, body):
+                self.with_stmt(items, body)
             case A.If():
                 self.if_stmt(s)
             case A.While(test, body, orelse):
@@ -556,6 +560,63 @@ class CodeGen:
         self.line("} catch (...) {")
         self.depth += 1
         self.line(f"{fin}.run_now();")
+        self.line("throw;")
+        self.close()
+        self.close()
+
+    def with_stmt(self, items: list[A.WithItem], body: list[A.Stmt]) -> None:
+        """Each item: evaluate, __enter__, then guarantee __exit__ (or close()) on every way out.
+
+        Like try/finally, a Finally guard handles normal exits and return/break;
+        exceptions are caught to call __exit__ outside of stack unwinding, which
+        also lets an __exit__ that takes the exception decide to swallow it.
+        """
+        if not items:
+            self.block(body)
+            return
+        item = items[0]
+        info = item.sym
+        ctx = self.fresh("ctx")
+        self.open("")
+        self.line(f"auto {ctx} = {self.expr(item.context)};")
+        exit_param = None
+        if info.kind == "file":
+            enter, exit_call = ctx, f"{ctx}->close()"
+        else:
+            st: StructType = item.context.ty
+            arrow = "->" if st.kind == "class" else "."
+            enter = f"{ctx}{arrow}{ident('__enter__')}()"
+            exit_fn = f"{ctx}{arrow}{ident('__exit__')}"
+            if info.exit.params:
+                exit_param = info.exit.params[0].type  # an optional exception class
+                exit_call = f"{exit_fn}({self.cpp_type(exit_param)}{{}})"
+            else:
+                exit_call = f"{exit_fn}()"
+        if item.target is not None:
+            self.assign(item.target, enter, info.enter_type)
+        elif info.kind != "file":
+            self.line(f"{enter};")
+        guard = self.fresh("with")
+        self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
+        self.open("try")
+        self.with_stmt(items[1:], body)
+        self.depth -= 1
+        if exit_param is not None:
+            caught = self.fresh("exc")
+            exc_class = class_name(exit_param.inner)
+            self.line(f"}} catch (const sd::Thrown& {caught}) {{")
+            self.depth += 1
+            self.line(f"{guard}.disarm();")
+            passed = f"{self.cpp_type(exit_param)}(std::dynamic_pointer_cast<{exc_class}>({caught}.exc))"
+            if info.suppresses:
+                self.line(f"if (!{exit_fn}({passed})) throw;  // __exit__ returned True: swallow it")
+            else:
+                self.line(f"{exit_fn}({passed});")
+                self.line("throw;")
+            self.depth -= 1
+        self.line("} catch (...) {")
+        self.depth += 1
+        self.line(f"{guard}.run_now();")
         self.line("throw;")
         self.close()
         self.close()
@@ -687,7 +748,7 @@ class CodeGen:
         code = self.expr(e)
         return code if e.ty == BOOL else f"sd::truthy({code})"
 
-    def in_order(self, operands: list[A.Expr], build) -> str:
+    def in_order(self, operands: list[A.Expr], build, keep_refs: bool = False) -> str:
         """Evaluate operands left to right, as Python does.
 
         C++ leaves the order of function arguments and of most binary
@@ -697,19 +758,25 @@ class CodeGen:
         from those. `build` is called with no arguments and uses self.expr as
         usual; the temporaries are substituted transparently.
         """
-        if sum(has_call(x) for x in operands) < 2:
+        # One operand with side effects is enough if another operand could observe
+        # them: `print(f(), log[-1])` must call f() before reading log.
+        if not any(has_call(x) for x in operands) or sum(not is_literal(x) for x in operands) < 2:
             return build()
         decls = []
         for x in operands:
             tmp = self.fresh("a")
-            decls.append(f"auto&& {tmp} = {self.expr(x)};")
+            # A value, not auto&&: the expression may return a reference into a temporary.
+            decls.append(f"auto {tmp} = {self.expr(x)};")
             self.precomputed[id(x)] = tmp
         try:
             inner = build()
         finally:
             for x in operands:
                 del self.precomputed[id(x)]
-        return f"[&]() {{ {' '.join(decls)} return {inner}; }}()"
+        # keep_refs: a call like d.setdefault(k, []) returns a reference into its receiver
+        # (never into the temporaries here), and `.append()` on it must reach the dict.
+        ret = " -> decltype(auto)" if keep_refs else ""
+        return f"[&](){ret} {{ {' '.join(decls)} return {inner}; }}()"
 
     def expr(self, e: A.Expr) -> str:
         if id(e) in self.precomputed:
@@ -1012,7 +1079,7 @@ class CodeGen:
     # =========================================================================
 
     def call(self, e: A.Call) -> str:
-        return self.in_order([*e.args, *(k.value for k in e.keywords)], lambda: self.call_inner(e))
+        return self.in_order([*e.args, *(k.value for k in e.keywords)], lambda: self.call_inner(e), keep_refs=True)
 
     def call_inner(self, e: A.Call) -> str:
         target: CallTarget = e.sym
@@ -1053,7 +1120,7 @@ class CodeGen:
                 return self.method_call(recv_type, name, e)
             case "module_func":
                 mod, name = target.target
-                return self.module_call(mod.name, name, e)
+                return self.module_call(mod, name, e)
         raise NotImplementedError(f"codegen for call kind {target.kind}")
 
     def call_args(self, slots: list[A.Expr | None], fn: FuncInfo) -> str:
@@ -1081,7 +1148,16 @@ class CodeGen:
                 sep = self.keyword(e, "sep")
                 end = self.keyword(e, "end")
                 head = [self.expr(sep) if sep else '" "', self.expr(end) if end else r'"\n"']
+                if file := self.keyword(e, "file"):
+                    return f"sd::print_to({', '.join([self.expr(file), *head, *args])})"
                 return f"sd::print({', '.join(head + args)})"
+            case "open":
+                mode = e.args[1] if len(e.args) > 1 else self.keyword(e, "mode")
+                mode_code = self.expr(mode) if mode else '"r"s'
+                if e.ty.binary:
+                    return f"sd::open_binary({a}, {mode_code})"
+                encoding = self.keyword(e, "encoding")
+                return f"sd::open_text({', '.join([a, mode_code, *([self.expr(encoding)] if encoding else [])])})"
             case "len":
                 return f"sd::len({a})"
             case "str":
@@ -1139,6 +1215,8 @@ class CodeGen:
             return f"sd::str_{name}({r}{rest})"
         if recv_type == BYTES:
             return f"sd::bytes_{name}({r}{rest})"
+        if isinstance(recv_type, FileType):
+            return f"{r}->{name}({', '.join(args)})"
         match recv_type:
             case ListType():
                 match name:
@@ -1192,9 +1270,17 @@ class CodeGen:
                         return f"sd::set_issubset({args[0]}, {r})"
         raise NotImplementedError(f"codegen for {recv_type}.{name}()")
 
-    def module_call(self, mod: str, name: str, e: A.Call) -> str:
+    def module_call(self, module: builtins.Module, name: str, e: A.Call) -> str:
+        mod = module.name
+        member = module.members[name]
+        if member.params is not None:
+            # Named parameters: fill each in order from positional args, keywords, or its default.
+            codes = []
+            for i, (pname, ptype, *default) in enumerate(member.params):
+                node = e.args[i] if i < len(e.args) else self.keyword(e, pname)
+                codes.append(self.expr_as(node, ptype) if node is not None else default[0])
+            return f"{member.cpp}({', '.join(codes)})"
         args = [self.expr(a) for a in e.args]
-        member = builtins.MODULES[mod].members[name]
         if member.cpp is not None:
             return f"{member.cpp}({', '.join(args)})"
         doubles = [self.expr_as(a, FLOAT) for a in e.args]
@@ -1249,6 +1335,13 @@ def walk_expr(e: A.Node, into_lambdas: bool = True):
 
 def is_self(e: A.Expr) -> bool:
     return isinstance(e, A.Name) and isinstance(e.sym, Var) and e.sym.name == "self" and e.sym.kind == "param"
+
+
+def is_literal(e: A.Expr) -> bool:
+    """A constant: evaluating it neither causes nor observes side effects."""
+    return isinstance(e, (A.IntLit, A.FloatLit, A.StrLit, A.BytesLit, A.BoolLit, A.NoneLit, A.Lambda)) or (
+        isinstance(e, A.UnaryOp) and isinstance(e.operand, (A.IntLit, A.FloatLit))
+    )
 
 
 def is_simple(e: A.Expr) -> bool:

@@ -1,0 +1,7 @@
+['enter outer', 'enter inner', 'body of outer', 'exit inner', 'exit outer']
+42 exit early
+after suppressed: ['please ignore this']
+propagated: real problem ['please ignore this', 'real problem']
+normal exit: 2
+['enter loop1', 'exit loop1', 'enter loop2', 'exit loop2']
+exit ran before the handler: exit failing

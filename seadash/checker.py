@@ -33,8 +33,8 @@ from . import ast as A
 from . import builtins
 from .errors import CheckError, Loc
 from .types import (
-    BOOL, BYTES, FLOAT, INT, NONE, PRIMITIVES, STR,
-    DictType, Field, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param,
+    BINARY_FILE, BOOL, BYTES, FLOAT, INT, NONE, PRIMITIVES, STR, TEXT_FILE,
+    DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param,
     SetType, StructType, TupleType, Type, Var,
     assignable, element_type, is_hashable, is_numeric, join, strip_optional,
 )
@@ -145,6 +145,19 @@ class CallTarget:
     target: object
     args: list[A.Expr | None] | None = None
     params: list[Param] | None = None  # for 'ctor': the parameters `args` line up with
+
+
+@dataclass
+class WithInfo:
+    """How a `with` item is entered and exited; stored in WithItem.sym for codegen."""
+
+    kind: str  # 'file' (close() on exit) or 'object' (__enter__/__exit__)
+    enter_type: Type
+    exit: FuncInfo | None
+    suppresses: bool  # __exit__ returns bool: it may swallow the exception
+
+
+TYPING_ALIASES = {"List": "list", "Dict": "dict", "Set": "set", "Tuple": "tuple"}
 
 
 @dataclass
@@ -263,7 +276,11 @@ class Checker:
         if isinstance(node, A.Import):
             for alias in node.names:
                 mod = self.find_module(alias.name, alias)
-                self.modules[alias.asname or alias.name] = mod
+                if alias.asname or "." not in alias.name:
+                    self.modules[alias.asname or alias.name] = mod
+                else:  # `import os.path` binds `os`, like Python
+                    top = alias.name.split(".")[0]
+                    self.modules[top] = self.find_module(top, alias)
             return
         mod = self.find_module(node.module, node)
         for alias in node.names:
@@ -272,7 +289,12 @@ class Checker:
             self.imported[alias.asname or alias.name] = (mod, alias.name)
 
     def find_module(self, name: str, node: A.Node) -> builtins.Module:
-        mod = builtins.MODULES.get(name)
+        first, *rest = name.split(".")
+        mod = builtins.MODULES.get(first)
+        for part in rest:
+            mod = mod.members.get(part) if mod is not None else None
+            if not isinstance(mod, builtins.Module):
+                mod = None
         if mod is None:
             raise self.error(f"no module named '{name}' (available: {', '.join(sorted(builtins.MODULES))})", node)
         return mod
@@ -498,6 +520,13 @@ class Checker:
         raise self.error("invalid type", t)
 
     def resolve_type_name(self, node: A.TypeName, name: str, args: list[A.TypeExpr]) -> Type:
+        if name in ("TextIO", "BinaryIO") and not args:
+            return BINARY_FILE if name == "BinaryIO" else TEXT_FILE
+        if name == "Optional" and len(args) == 1:  # typing.Optional[T] is T?
+            inner = self.resolve_type(args[0])
+            return inner if isinstance(inner, OptionalType) else OptionalType(inner)
+        if name in TYPING_ALIASES:  # typing.List[int] is list[int]
+            name = TYPING_ALIASES[name]
         if name in PRIMITIVES or self.lookup_struct(name):
             if args:
                 raise self.error(f"'{name}' doesn't take type arguments", node)
@@ -573,6 +602,8 @@ class Checker:
                 self.check_raise(stmt, exc, cause)
             case A.Try():
                 self.check_try(stmt)
+            case A.With():
+                self.check_with(stmt)
             case A.If():
                 self.check_if(stmt)
             case A.While():
@@ -827,6 +858,58 @@ class Checker:
         self.state.dead = self.state.dead or dead
         self.finally_loops.pop()
 
+    def check_with(self, stmt: A.With) -> None:
+        """`with ctx as x:` calls __enter__ first and __exit__ on every way out.
+        If an __exit__ may swallow exceptions (returns bool), code after the with
+        block can be reached from any point in the body, as after a try/except."""
+        can_suppress = False
+        for item in stmt.items:
+            t = self.check_expr(item.context)
+            info = self.context_manager(t, item.context)
+            item.sym = info
+            can_suppress = can_suppress or info.suppresses
+            if item.target is not None:
+                if info.enter_type == NONE:
+                    raise self.error("__enter__ doesn't return anything, so there's nothing to bind with 'as'", item.target)
+                self.assign(item.target, info.enter_type, item.context)
+        snapshots = [self.state.copy()]
+        for s in stmt.body:
+            self.check_stmt(s)
+            snapshots.append(self.state.copy())
+        if can_suppress:
+            raised = merge(snapshots)
+            raised.dead = False
+            self.state = merge([self.state, raised])
+
+    def context_manager(self, t: Type, node: A.Expr) -> WithInfo:
+        if isinstance(t, FileType):
+            return WithInfo("file", t, None, False)
+        if isinstance(t, StructType):
+            enter = t.find_method("__enter__")
+            exit_ = t.find_method("__exit__")
+            if enter is None or exit_ is None:
+                missing = "__enter__" if enter is None else "__exit__"
+                raise self.error(f"{t.name} can't be used in a 'with' statement: it has no {missing} method", node)
+            if enter.params:
+                raise self.error("__enter__ can't take parameters (other than self)", enter.node)
+            if len(exit_.params) > 1 or (
+                exit_.params and not (
+                    isinstance(exit_.params[0].type, OptionalType)
+                    and isinstance(exit_.params[0].type.inner, StructType)
+                    and exit_.params[0].type.inner.is_exception
+                )
+            ):
+                raise self.error(
+                    "__exit__ takes either no parameters, or one `exc: Exception?` "
+                    "(None when the block finished normally)", exit_.node,
+                )
+            if exit_.ret not in (NONE, BOOL):
+                raise self.error("__exit__ must return nothing, or a bool (True to swallow the exception)", exit_.node)
+            return WithInfo("object", enter.ret, exit_, exit_.ret == BOOL)
+        raise self.error(
+            f"{t} can't be used in a 'with' statement (it needs __enter__ and __exit__ methods)", node
+        )
+
     def check_handler_types(self, handler: A.ExceptHandler) -> StructType:
         """The classes an `except` clause catches; returns the type bound by `as e`."""
         if handler.type is None:
@@ -955,7 +1038,7 @@ class Checker:
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
         ok = t in (INT, FLOAT, BOOL, STR, BYTES) or isinstance(
-            t, (ListType, DictType, SetType, TupleType, OptionalType)
+            t, (ListType, DictType, SetType, TupleType, OptionalType, FileType)
         )
         if not ok:
             raise self.error(f"{t} can't be used as a condition", e)
@@ -1404,6 +1487,11 @@ class Checker:
             raise self.error(f"'{mod.name}.{member}' can only be called here (functions aren't values yet)", e)
         if isinstance(m, StructType):
             raise self.error(f"'{mod.name}.{member}' is a class; it can be called, raised or caught", e)
+        if isinstance(m, builtins.Module):
+            e.sym = m
+            return ModuleType(m.name)
+        if isinstance(m, builtins.TypeAlias):
+            raise self.error(f"'{member}' is a type; it can only be used in annotations", e)
         e.sym = m
         return m.type
 

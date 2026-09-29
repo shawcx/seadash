@@ -16,3 +16,10 @@ print(note("p", 1) < note("q", 2))
 print(f"{note('f1', 1)} then {note('f2', 2)}")
 t = (note("t1", 1), note("t2", 2))
 print(log)
+counter = [0]
+
+def bump() -> int:
+    counter[0] += 1
+    return counter[0]
+
+print(bump(), counter[0], counter)
