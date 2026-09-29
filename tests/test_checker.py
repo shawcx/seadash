@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (available: base64, math, os, sys, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (available: base64, json, math, os, sys, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -943,3 +943,53 @@ def test_variables_after_suppressing_with_may_be_unassigned():
         print(value)
     """)
     assert e.message == "'value' might not be assigned yet"
+
+
+# ---- json and literal inference -------------------------------------------------
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("import json\nx = json.loads('1')", "json.loads() needs to know what type to produce; annotate the variable, e.g. `data: dict[str, int] = ...`, or use `json.Value` for any JSON"),
+    ("import json\nx: dict[int, str] = json.loads('{}')", "JSON object keys are strings, so dict[int, str] can't be decoded"),
+    ("import json\nx: bytes = json.loads('1')", "bytes can't be converted to or from JSON"),
+    ("import json\nf: (int) -> int = lambda n: n\ns = json.dumps(f)", "(int) -> int can't be converted to or from JSON"),
+    ("import json\ns = json.dumps([1], indent='  ')", "json.dumps() argument 'indent' must be int?, not str"),
+    ("import json\nv: json.Value = json.loads('1')\nx = v[1.5]", "a json.Value is indexed by int (arrays) or str (objects), not float"),
+    ("import json\nx = json.Value", "'Value' is a type; it can only be used in annotations"),
+])
+def test_json_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_json_accepts_structs_and_nested_types():
+    ok("""
+        import json
+        from json import Value
+        struct P:
+            x: float
+            tags: set[str]
+        class Tree:
+            name: str
+            kids: list[Tree]
+        a: list[P] = json.loads("[]")
+        b: Tree = json.loads("{}")
+        c: dict[str, tuple[int, str?]] = json.loads("{}")
+        d: Value = json.loads("[]")
+        s = json.dumps({1: [P(1.0, {"a"})]}, indent=2, sort_keys=True)
+    """)
+
+
+@pytest.mark.parametrize("expr,ty", [
+    ('{"a": [1.5], "b": []}', "dict[str, list[float]]"),
+    ('{"a": [1.5], "b": [None]}', "dict[str, list[float?]]"),
+    ('[[1], [], [None]]', "list[list[int?]]"),
+    ('[{"k": 1}, {}]', "list[dict[str, int]]"),
+    ('[[1.0, None], [3.0]]', "list[list[float?]]"),
+])
+def test_literal_items_take_types_from_siblings(expr, ty):
+    [v] = ok(f"x = {expr}\n").globals
+    assert str(v.type) == ty
+
+
+def test_literal_items_that_really_differ():
+    assert err('x = {"a": [1], "b": {}}').message.startswith("dict values have different types")

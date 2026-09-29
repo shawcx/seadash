@@ -1,0 +1,22 @@
+ann 31 ['admin'] Oslo {'math': 9.5, 'art': 7.0}
+bob 25 [] - {}
+User(name='ann', age=31, tags=['admin'], address=Address(city='Oslo', zip='0150'), scores={'math': 9.5, 'art': 7.0})
+{"name": "bob", "age": 25, "tags": [], "address": null, "scores": {}}
+{
+  "city": "Oslo",
+  "zip": "0150"
+}
+('x', 5) ["x", 5]
+None
+error: json: expected an int at $[0].age, got a string
+error: json: missing field 'age' at $[0]
+error: json: expected a string at $[0].tags[0], got an int
+error: json: expected an array at $, got an object
+2 ann 32 True
+ann True False None ['address', 'age', 'ignored']
+bob True False None ['address', 'age', 'name']
+{'math': 9.5, 'art': 7}
+7.0 True
+{"city": "Oslo", "zip": "0150"} False
+type error: this json.Value is a string, not an int
+key error: 'missing'

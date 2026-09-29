@@ -33,7 +33,7 @@ from . import ast as A
 from . import builtins
 from .checker import CallTarget, ModuleInfo
 from .types import (
-    BOOL, BYTES, FLOAT, INT, NONE, STR,
+    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, STR,
     DictType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric,
 )
@@ -133,6 +133,8 @@ class CodeGen:
         self.loop_labels: list[list] = []
         # Inside a lambda that uses `self`, self is a captured copy named sd_self.
         self.lambda_self = 0
+        # Structs/classes get JSON conversion hooks when the program imports json.
+        self.uses_json = any(m.name == "json" for m in info.imports)
         # Nested functions that call themselves: (FuncInfo, name of the self parameter).
         self.recursion: list[tuple[FuncInfo, str]] = []
         # Expressions already evaluated into temporaries (see `in_order`).
@@ -175,6 +177,8 @@ class CodeGen:
                 return "std::string"
             case _ if t == BYTES:
                 return "sd::bytes"
+            case _ if t == JSON_VALUE:
+                return "sd::json::Value"
             case _ if t == NONE:
                 return "void"
             case ListType(elem):
@@ -315,6 +319,9 @@ class CodeGen:
         self.line("std::string sd_repr() const;")
         if st.kind == "struct":
             self.line(f"bool operator==(const {name}&) const = default;")
+        if self.json_hooks(st):
+            self.line("sd::json::Value sd_to_json() const;")
+            self.line(f"static {self.cpp_type(st)} sd_from_json(const sd::json::Value& v, const std::string& path);")
         self.close(";")
         self.line()
 
@@ -357,12 +364,52 @@ class CodeGen:
         parts.append(cpp_string(")"))
         self.line(f"std::string {name}::sd_repr() const {{ return {' + '.join(parts)}; }}")
         self.line()
+        if self.json_hooks(st):
+            self.json_members(st)
         for m in st.methods.values():
             if m.name == "__init__":
                 params = ", ".join(["sd::init_t", *self.params(m)])
                 self.function_body(m, f"{name}::{name}({params})")
             else:
                 self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{ident(m.name)}({', '.join(self.params(m))})")
+
+    def json_hooks(self, st: StructType) -> bool:
+        return self.uses_json and not st.is_exception and (
+            builtins.json_problem(st, decoding=False) is None or builtins.json_problem(st, decoding=True) is None
+        )
+
+    def json_members(self, st: StructType) -> None:
+        """A struct/class as a JSON object: fields in declaration order, matched by name."""
+        name = ident(st.name)
+        fields = list(st.all_fields().values())
+        if builtins.json_problem(st, decoding=False) is None:
+            self.open(f"sd::json::Value {name}::sd_to_json() const")
+            self.line("sd::json::Value out = sd::json::Value::object();")
+            for f in fields:
+                self.line(f"out.set({cpp_string(f.name)}, sd::json::to_value({ident(f.name)}));")
+            self.line("return out;")
+            self.close()
+            self.line()
+        if builtins.json_problem(st, decoding=True) is None:
+            self.open(f"{self.cpp_type(st)} {name}::sd_from_json(const sd::json::Value& v, const std::string& path)")
+            if st.kind == "class":
+                self.line(f"auto out = std::make_shared<{name}>();")
+                target = "out->"
+            else:
+                self.line(f"{name} out;")
+                target = "out."
+            self.line("sd::json::expect_object(v, path);")
+            for f in fields:
+                self.line(f"if (const sd::json::Value* sd_f = v.find({cpp_string(f.name)})) {{")
+                self.line(f"    {target}{ident(f.name)} = sd::json::decode<{self.cpp_type(f.type)}>"
+                          f"(*sd_f, path + {cpp_string('.' + f.name)});")
+                if f.default is None and not isinstance(f.type, OptionalType):
+                    self.line(f"}} else {{ sd::json::missing_field({cpp_string(f.name)}, path); }}")
+                else:
+                    self.line("}")
+            self.line("return out;")
+            self.close()
+            self.line()
 
     def signature(self, fn: FuncInfo) -> str:
         return f"{self.cpp_type(fn.ret)} {ident(fn.name)}({', '.join(self.params(fn))})"
@@ -1217,6 +1264,8 @@ class CodeGen:
             return f"sd::bytes_{name}({r}{rest})"
         if isinstance(recv_type, FileType):
             return f"{r}->{name}({', '.join(args)})"
+        if recv_type == JSON_VALUE:
+            return f"{r}.{name}({', '.join(args)})"
         match recv_type:
             case ListType():
                 match name:
@@ -1273,6 +1322,8 @@ class CodeGen:
     def module_call(self, module: builtins.Module, name: str, e: A.Call) -> str:
         mod = module.name
         member = module.members[name]
+        if member.cpp is not None and "{T}" in member.cpp:  # the result type picks the template: json.loads
+            member = builtins.Function(member.name, member.check, member.cpp.replace("{T}", self.cpp_type(e.ty)), member.params)
         if member.params is not None:
             # Named parameters: fill each in order from positional args, keywords, or its default.
             codes = []

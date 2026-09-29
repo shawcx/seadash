@@ -1,0 +1,42 @@
+# Runs unchanged under python3 and seadash.
+
+def lcg(seed: int) -> int:
+    return (seed * 1103515245 + 12345) % 2147483648
+
+def build_list(n: int) -> list[int]:
+    xs: list[int] = []
+    seed = 42
+    for i in range(n):
+        seed = lcg(seed)
+        xs.append(seed % 100000)
+    return xs
+
+def word_counts(xs: list[int]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for x in xs:
+        key = f"w{x % 5000}"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+def group_by_digit(xs: list[int]) -> dict[int, list[int]]:
+    groups: dict[int, list[int]] = {}
+    for x in xs:
+        d = x % 10
+        if d not in groups:
+            groups[d] = []
+        groups[d].append(x)
+    return groups
+
+def main():
+    xs = build_list(2_000_000)
+    squares = [x * x % 1000 for x in xs]
+    evens = [x for x in xs if x % 2 == 0]
+    ordered = sorted(xs)
+    counts = word_counts(xs)
+    groups = group_by_digit(xs)
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+    total = sum(squares) + len(evens) + ordered[len(ordered) // 2]
+    sizes = [len(groups[d]) for d in range(10)]
+    print(total, len(counts), top, sizes)
+
+main()

@@ -1,0 +1,37 @@
+import json
+
+scores: dict[str, list[int]] = json.loads('{"ann": [90, 85], "bob": [], "cy": [70]}')
+print(scores, sum(scores["ann"]), list(scores.keys()))
+
+values: list[float] = json.loads("[1, 2.5, -3e2, 1E-3, 1e400]")
+print(values)
+
+names: list[str] = json.loads('["plain", "tab\\there", "quote\\"s", "\\u00e9t\\u00e9", "\\ud83d\\ude00", "a\\/b"]')
+print(names)
+
+grid: list[list[int]] = [[1, 2], [3, 4]]
+print(json.dumps(grid), json.dumps(grid, separators=(",", ":")))
+print(json.dumps(names))
+print(json.dumps(names, ensure_ascii=False))
+print(json.dumps({"b": 1, "a": 2}, sort_keys=True), json.dumps({"b": 1, "a": 2}))
+print(json.dumps({"x": [1.5, 0.1, 1e16, 3.0], "empty": [], "none": [None, None]}))
+print(json.dumps({"nested": {"list": [[], [1]], "more": [[2, 3]]}, "empty": {}}, indent=4))
+print(json.dumps([[1, 2], [3]], indent=0))
+print(json.dumps({1: "one", 2: "two"}), json.dumps({True: 1}), json.dumps(["x"], indent=2))
+print(json.dumps("control \x01 chars \x7f"), json.dumps(float("nan")), json.dumps([float("inf"), -float("inf")]))
+
+round_trip: dict[str, list[int]] = json.loads(json.dumps(scores))
+print(round_trip == scores)
+
+for bad in ['', '[1, 2', '{"a" 1}', '{"a": 1 "b": 2}', '[1,]', '{"a": 1,}', '{a: 1}', '"abc', '[1] x', '"\\q"', '"a\nb"', '01', '  \n  nope']:
+    try:
+        v: list[int] = json.loads(bad)
+        print("parsed", v)
+    except json.JSONDecodeError as e:
+        print(repr(bad), "->", e)
+
+with open("data.json", "w") as f:
+    json.dump(scores, f, indent=2)
+with open("data.json") as f:
+    back: dict[str, list[int]] = json.load(f)
+print(back == scores, open("data.json").read().count("\n"))

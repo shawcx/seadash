@@ -30,6 +30,8 @@ BOOL = Prim("bool")
 STR = Prim("str")
 BYTES = Prim("bytes")
 NONE = Prim("None")
+JSON_VALUE = Prim("json.Value")  # a dynamically typed JSON value (the json module)
+UNKNOWN = Prim("?")  # only while inferring literals: the element type of an empty []
 
 PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "None": NONE}
 
@@ -301,6 +303,8 @@ def element_type(t: Type) -> Type | None:
             return STR
         case Prim("bytes"):
             return INT
+        case Prim("json.Value"):
+            return JSON_VALUE  # iterating a JSON array
         case FileType(binary):
             return BYTES if binary else STR  # a file iterates over its lines
     return None
@@ -312,3 +316,42 @@ def common_base(a: StructType, b: StructType) -> StructType | None:
         if b.is_subclass_of(t):
             return t
     return None
+
+
+def widen(a: Type, b: Type) -> Type | None:
+    """Like join, but also combines container types element by element:
+    widen(list[float?], list[float]) is list[float?]. Only safe where the values can
+    be rebuilt at the wider type (container literals), so join() doesn't do this."""
+    if a == UNKNOWN:
+        return b
+    if b == UNKNOWN:
+        return a
+    if (j := join(a, b)) is not None:
+        return j
+    match a, b:
+        case ListType(x), ListType(y):
+            inner = widen(x, y)
+            return ListType(inner) if inner else None
+        case SetType(x), SetType(y):
+            inner = widen(x, y)
+            return SetType(inner) if inner else None
+        case DictType(k1, v1), DictType(k2, v2):
+            k, v = widen(k1, k2), widen(v1, v2)
+            return DictType(k, v) if k and v else None
+        case TupleType(xs), TupleType(ys) if len(xs) == len(ys):
+            parts = [widen(x, y) for x, y in zip(xs, ys)]
+            return TupleType(tuple(parts)) if all(parts) else None
+    return None
+
+
+def contains_unknown(t: Type) -> bool:
+    match t:
+        case _ if t == UNKNOWN:
+            return True
+        case ListType(x) | SetType(x) | OptionalType(x):
+            return contains_unknown(x)
+        case DictType(k, v):
+            return contains_unknown(k) or contains_unknown(v)
+        case TupleType(xs):
+            return any(contains_unknown(x) for x in xs)
+    return False

@@ -14,7 +14,7 @@ from . import ast as A
 from .errors import CheckError
 from .errors import Loc
 from .types import (
-    BOOL, BYTES, FLOAT, INT, NONE, STR,
+    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, STR,
     BINARY_FILE, TEXT_FILE,
     DictType, Field, FileType, FuncType, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
@@ -128,6 +128,14 @@ class Value:
 
 
 @dataclass
+class NamedType:
+    """A type a module defines, usable in annotations: `json.Value`."""
+
+    name: str
+    type: Type
+
+
+@dataclass
 class TypeAlias:
     """A name from `typing` (Callable, TextIO, ...): importable so code also runs under Python."""
 
@@ -137,7 +145,7 @@ class TypeAlias:
 @dataclass
 class Module:
     name: str
-    members: dict[str, Function | Value | StructType | Module | TypeAlias]  # StructType: e.g. zlib.error
+    members: dict[str, Function | Value | StructType | Module | TypeAlias | NamedType]  # StructType: e.g. zlib.error
     header: str | None = None  # runtime header to #include, relative to the runtime directory
     libs: tuple[str, ...] = ()  # libraries to link, e.g. ("z",) for -lz
 
@@ -150,7 +158,7 @@ def printable(t: Type) -> bool:
 
 
 def sized(t: Type) -> bool:
-    return t in (STR, BYTES) or isinstance(t, (ListType, DictType, SetType, TupleType))
+    return t in (STR, BYTES, JSON_VALUE) or isinstance(t, (ListType, DictType, SetType, TupleType))
 
 
 def ordered(t: Type) -> bool:
@@ -579,8 +587,31 @@ FILE_METHODS = {
 }
 
 
+def json_value_get(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    ctx.expect(0, STR)
+    return OptionalType(JSON_VALUE)
+
+
+JSON_VALUE_METHODS = {
+    "as_int": returns(INT),
+    "as_float": returns(FLOAT),
+    "as_str": returns(STR),
+    "as_bool": returns(BOOL),
+    "as_list": returns(ListType(JSON_VALUE)),
+    "as_dict": returns(DictType(STR, JSON_VALUE)),
+    **{name: returns(BOOL) for name in ("is_null", "is_int", "is_float", "is_str", "is_bool", "is_list", "is_dict")},
+    "keys": returns(ListType(STR)),
+    "values": returns(ListType(JSON_VALUE)),
+    "items": returns(ListType(TupleType((STR, JSON_VALUE)))),
+    "get": json_value_get,
+}
+
+
 def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
     match t:
+        case _ if t == JSON_VALUE:
+            return JSON_VALUE_METHODS.get(name)
         case FileType():
             return FILE_METHODS.get(name)
         case ListType():
@@ -842,3 +873,88 @@ MODULES["os"].members["path"] = OS_PATH
 MODULES["typing"] = Module("typing", {
     name: TypeAlias(name) for name in ("Callable", "TextIO", "BinaryIO", "Optional", "List", "Dict", "Set", "Tuple")
 })
+
+
+# ---- json -------------------------------------------------------------------
+
+
+def json_problem(t: Type, decoding: bool, seen: frozenset = frozenset()) -> str | None:
+    """Why `t` can't be converted to/from JSON, or None if it can."""
+    match t:
+        case _ if t in (INT, FLOAT, BOOL, STR, JSON_VALUE):
+            return None
+        case ListType(elem) | SetType(elem) | OptionalType(elem):
+            return json_problem(elem, decoding, seen)
+        case TupleType(elts):
+            return next((p for e in elts if (p := json_problem(e, decoding, seen))), None)
+        case DictType(key, value):
+            keys_ok = key == STR if decoding else key in (STR, INT, FLOAT, BOOL)
+            if not keys_ok:
+                return f"JSON object keys are strings, so {t} can't be {'decoded' if decoding else 'encoded'}"
+            return json_problem(value, decoding, seen)
+        case StructType() if not t.is_exception:
+            if t in seen:
+                return None
+            for f in t.all_fields().values():
+                if p := json_problem(f.type, decoding, seen | {t}):
+                    return p
+            return None
+    return f"{t} can't be converted to or from JSON"
+
+
+def json_loads_fn(from_file: bool) -> Callable[[CallContext], Type]:
+    """json.loads(text) / json.load(file): the result type comes from the context."""
+
+    def handler(ctx: CallContext) -> Type:
+        ctx.arity(1)
+        if from_file:
+            ctx.expect(0, TEXT_FILE)
+        else:
+            ctx.need(0, bytes_like, "str or bytes")
+        target = ctx.expected
+        if target is None:
+            raise ctx.error(
+                f"{ctx.what} needs to know what type to produce; annotate the variable, e.g. "
+                f"`data: dict[str, int] = ...`, or use `json.Value` for any JSON"
+            )
+        if problem := json_problem(target, decoding=True):
+            raise ctx.error(problem)
+        return target
+
+    return handler
+
+
+def json_dumps_fn(to_file: bool) -> Callable[[CallContext], Type]:
+    options = (
+        ("indent", OptionalType(INT), "std::nullopt"),
+        ("sort_keys", BOOL, "false"),
+        ("ensure_ascii", BOOL, "true"),
+        ("separators", OptionalType(TupleType((STR, STR))), "std::nullopt"),
+    )
+    params = (("obj", None),) + ((("fp", TEXT_FILE),) if to_file else ()) + options
+
+    def handler(ctx: CallContext) -> Type:
+        if not ctx.args:
+            raise ctx.error(f"{ctx.what} is missing argument 'obj'")
+        obj = ctx.arg(0)
+        if problem := json_problem(obj, decoding=False):
+            raise ctx.error(problem, ctx.args[0])
+        rest = signature(NONE, *params[1:])
+        shifted = CallContext(ctx.checker, A.Call(ctx.call.func, ctx.args[1:], ctx.call.keywords, loc=ctx.call.loc),
+                              ctx.what, None)
+        rest(shifted)
+        return NONE if to_file else STR
+
+    handler.params = params
+    return handler
+
+
+MODULES["json"] = module_with_params(runtime_module(
+    "json", "modules/json.hpp",
+    loads=(json_loads_fn(False), "sd::json::loads<{T}>"),
+    load=(json_loads_fn(True), "sd::json::load<{T}>"),
+    dumps=(json_dumps_fn(False), "sd::json::dumps"),
+    dump=(json_dumps_fn(True), "sd::json::dump"),
+    JSONDecodeError=exception_class("JSONDecodeError", "sd::json::JSONDecodeError", "ValueError"),
+))
+MODULES["json"].members["Value"] = NamedType("Value", JSON_VALUE)

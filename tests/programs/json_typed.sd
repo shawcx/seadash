@@ -1,0 +1,59 @@
+# seadash json: decode into the type you ask for; json.Value for unknown shapes
+import json
+
+struct Address:
+    city: str
+    zip: str = ""
+
+class User:
+    name: str
+    age: int
+    tags: list[str]
+    address: Address?
+    scores: dict[str, float] = {}
+
+text = """
+[
+  {"name": "ann", "age": 31, "tags": ["admin"], "address": {"city": "Oslo", "zip": "0150"},
+   "scores": {"math": 9.5, "art": 7}, "ignored": "extra fields are skipped"},
+  {"name": "bob", "age": 25, "tags": [], "address": null}
+]
+"""
+users: list[User] = json.loads(text)
+for u in users:
+    addr = u.address
+    city = addr.city if addr is not None else "-"
+    print(u.name, u.age, u.tags, city, u.scores)
+print(users[0])
+
+print(json.dumps(users[1]))
+print(json.dumps(users[0].address, indent=2))
+pair: tuple[str, int] = json.loads('["x", 5]')
+print(pair, json.dumps(pair))
+maybe: int? = json.loads("null")
+print(maybe)
+
+for bad in ['[{"name": "x", "age": "old", "tags": [], "address": null}]',
+            '[{"name": "x", "tags": [], "address": null}]',
+            '[{"name": "x", "age": 1, "tags": [1], "address": null}]',
+            '{"name": "x"}']:
+    try:
+        wrong: list[User] = json.loads(bad)
+    except ValueError as e:
+        print("error:", e)
+
+data: json.Value = json.loads(text)
+print(len(data), data[0]["name"].as_str(), data[0]["age"].as_int() + 1, data[1]["address"].is_null())
+for item in data:
+    print(item["name"], "age" in item, "email" in item, item.get("email"), sorted(item.keys())[:3])
+print(data[0]["scores"])
+print(data[0]["scores"]["art"].as_float(), data[0]["scores"]["art"].is_int())
+print(json.dumps(data[0]["address"], sort_keys=True), bool(data[1]["tags"]))
+try:
+    print(data[0]["name"].as_int())
+except TypeError as e:
+    print("type error:", e)
+try:
+    print(data[0]["missing"])
+except KeyError as e:
+    print("key error:", e)

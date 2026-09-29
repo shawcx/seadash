@@ -33,10 +33,10 @@ from . import ast as A
 from . import builtins
 from .errors import CheckError, Loc
 from .types import (
-    BINARY_FILE, BOOL, BYTES, FLOAT, INT, NONE, PRIMITIVES, STR, TEXT_FILE,
+    BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PRIMITIVES, STR, TEXT_FILE,
     DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param,
     SetType, StructType, TupleType, Type, Var,
-    assignable, element_type, is_hashable, is_numeric, join, strip_optional,
+    UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
 
 INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
@@ -527,6 +527,10 @@ class Checker:
             return inner if isinstance(inner, OptionalType) else OptionalType(inner)
         if name in TYPING_ALIASES:  # typing.List[int] is list[int]
             name = TYPING_ALIASES[name]
+        if name in self.imported and not args:  # `from json import Value`
+            mod, member = self.imported[name]
+            if isinstance(mod.members.get(member), builtins.NamedType):
+                return mod.members[member].type
         if name in PRIMITIVES or self.lookup_struct(name):
             if args:
                 raise self.error(f"'{name}' doesn't take type arguments", node)
@@ -553,6 +557,8 @@ class Checker:
             mod = self.modules.get(mod_name)
             if mod is not None and isinstance(mod.members.get(member), StructType):
                 return mod.members[member]
+            if mod is not None and isinstance(mod.members.get(member), builtins.NamedType):
+                return mod.members[member].type
             raise self.error(f"unknown type '{name}'", node)
         raise self.error(f"unknown type '{name}'", node)
 
@@ -1037,7 +1043,7 @@ class Checker:
         return state
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
-        ok = t in (INT, FLOAT, BOOL, STR, BYTES) or isinstance(
+        ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE) or isinstance(
             t, (ListType, DictType, SetType, TupleType, OptionalType, FileType)
         )
         if not ok:
@@ -1267,8 +1273,10 @@ class Checker:
                     f"e.g. `xs: {word}[int] = {'[]' if word == 'list' else 'set()'}`", e,
                 )
             return expected
+        if hint is None:
+            return ctor(self.join_items(elts, f"{word} items"))
         types = [self.check_expr(x, hint) for x in elts]
-        if hint is not None and all(assignable(t, hint) for t in types):
+        if all(assignable(t, hint) for t in types):
             return expected
         return ctor(self.join_all(types, elts, f"{word} items"))
 
@@ -1277,24 +1285,76 @@ class Checker:
             if isinstance(expected, (DictType, SetType)):
                 return expected  # `s: set[int] = {}` is allowed and means an empty set
             raise self.error("can't tell what type of dict this is; annotate the variable, e.g. `d: dict[str, int] = {}`", e)
-        khint, vhint = (expected.key, expected.value) if isinstance(expected, DictType) else (None, None)
-        kts = [self.check_expr(k, khint) for k in keys]
-        vts = [self.check_expr(v, vhint) for v in values]
-        if khint is not None and all(assignable(t, khint) for t in kts) and all(assignable(t, vhint) for t in vts):
+        if not isinstance(expected, DictType):
+            k = self.join_items(keys, "dict keys")
+            self.check_hashable(k, "dict keys", keys[0])
+            return DictType(k, self.join_items(values, "dict values"))
+        kts = [self.check_expr(k, expected.key) for k in keys]
+        vts = [self.check_expr(v, expected.value) for v in values]
+        if all(assignable(t, expected.key) for t in kts) and all(assignable(t, expected.value) for t in vts):
             return expected
         k = self.join_all(kts, keys, "dict keys")
         self.check_hashable(k, "dict keys", keys[0])
         return DictType(k, self.join_all(vts, values, "dict values"))
 
+    def join_items(self, nodes: list[A.Expr], what: str) -> Type:
+        """The common type of a literal's items, with no annotation to go on. Items like `[]`
+        or `[None]` get their type from their siblings: {"a": [1.5], "b": [None]} is
+        dict[str, list[float?]]."""
+        if not any(needs_context(n) for n in nodes) or all(needs_context(n) for n in nodes):
+            return self.join_all([self.check_expr(n) for n in nodes], nodes, what)
+        result = None
+        for n in nodes:
+            t = self.literal_shape(n) if needs_context(n) else self.check_expr(n)
+            joined = t if result is None else widen(result, t)
+            if joined is None:
+                raise self.error(f"{what} have different types: {result} and {t}", n)
+            result = joined
+        if contains_unknown(result) or result == NONE:
+            raise self.error(f"can't tell the type of these {what}; annotate the variable", nodes[0])
+        for n in nodes:
+            # Re-check anything not already exactly `result`, now that the siblings have decided it:
+            # [None] and [] adopt it, and [1.5] becomes a list[float?] rather than needing a conversion.
+            if needs_context(n) or (n.ty != result and not is_scalar(n.ty)):
+                t = self.check_expr(n, result)
+                if not assignable(t, result):
+                    raise self.error(f"{what} have different types: {t} and {result}", n)
+        return result
+
+    def literal_shape(self, e: A.Expr) -> Type:
+        """What a context-dependent literal can tell us: [None] is a list of None, [] a list of UNKNOWN."""
+        match e:
+            case A.NoneLit():
+                return NONE
+            case A.ListLit(elts) | A.SetLit(elts):
+                inner = UNKNOWN
+                for x in elts:
+                    inner = widen(inner, self.literal_shape(x)) or inner
+                return ListType(inner) if isinstance(e, A.ListLit) else SetType(inner)
+            case A.DictLit(keys, values):
+                key = self.join_all([self.check_expr(k) for k in keys], keys, "dict keys") if keys else UNKNOWN
+                value = UNKNOWN
+                for v in values:
+                    value = widen(value, self.literal_shape(v)) or value
+                return DictType(key, value)
+        return UNKNOWN
+
     def join_all(self, types: list[Type], nodes: list[A.Expr], what: str) -> Type:
+        """The common type of a literal's items. Nested container literals may be widened
+        to fit each other, e.g. [[1.0, None], [3.0]] is a list[list[float?]]."""
         result = types[0]
         for t, node in zip(types[1:], nodes[1:]):
-            joined = join(result, t)
+            joined = join(result, t) or widen(result, t)
             if joined is None:
                 raise self.error(f"{what} have different types: {result} and {t}", node)
             result = joined
         if result == NONE:
             raise self.error(f"{what} can't all be None", nodes[0])
+        for t, node in zip(types, nodes):
+            if not assignable(t, result):
+                rechecked = self.check_expr(node, result)  # a nested literal adopts the wider type
+                if not assignable(rechecked, result):
+                    raise self.error(f"{what} have different types: {rechecked} and {result}", node)
         return result
 
     def check_comprehension(self, gens: list[A.Comprehension], check_element):
@@ -1438,6 +1498,8 @@ class Checker:
                     ok = lt == STR
                 case _ if rt == BYTES:
                     ok = lt in (BYTES, INT)
+                case _ if rt == JSON_VALUE:
+                    ok = lt == STR  # a key of a JSON object
                 case _:
                     raise self.error(f"'{op}' needs a list, set, dict, tuple or str on the right, not {rt}", right)
             if not ok:
@@ -1490,7 +1552,7 @@ class Checker:
         if isinstance(m, builtins.Module):
             e.sym = m
             return ModuleType(m.name)
-        if isinstance(m, builtins.TypeAlias):
+        if isinstance(m, (builtins.TypeAlias, builtins.NamedType)):
             raise self.error(f"'{member}' is a type; it can only be used in annotations", e)
         e.sym = m
         return m.type
@@ -1529,6 +1591,11 @@ class Checker:
             case _ if vt == BYTES:
                 self.expect_type(index, INT, "bytes index")
                 return INT
+            case _ if vt == JSON_VALUE:
+                it = self.check_expr(index)
+                if it not in (INT, STR):
+                    raise self.error(f"a json.Value is indexed by int (arrays) or str (objects), not {it}", index)
+                return JSON_VALUE
             case OptionalType():
                 raise self.error(f"{vt} might be None; check it before indexing", value)
         raise self.error(f"{vt} can't be indexed", e)
@@ -1563,7 +1630,7 @@ class Checker:
                 return self.check_constructor(e, st)
             if name in self.imported and name not in self.module_assign_counts:
                 mod, member = self.imported[name]
-                return self.check_module_call(e, mod, member)
+                return self.check_module_call(e, mod, member, expected)
             if name in builtins.FUNCTIONS and name not in self.module_assign_counts:
                 ctx = builtins.CallContext(self, e, f"{name}()", expected)
                 e.sym = CallTarget("builtin", name)
@@ -1571,7 +1638,7 @@ class Checker:
         if isinstance(func, A.Attribute):
             owner = self.check_expr(func.value)
             if isinstance(owner, ModuleType):
-                return self.check_module_call(e, func.value.sym, func.attr)
+                return self.check_module_call(e, func.value.sym, func.attr, expected)
             if isinstance(owner, StructType):
                 method = owner.find_method(func.attr)
                 if method is None or method.name == "__init__":
@@ -1613,7 +1680,7 @@ class Checker:
         e.sym = CallTarget("value", t)
         return t.ret
 
-    def check_module_call(self, e: A.Call, mod: builtins.Module, member: str) -> Type:
+    def check_module_call(self, e: A.Call, mod: builtins.Module, member: str, expected: Type | None = None) -> Type:
         f = mod.members.get(member)
         if f is None:
             raise self.error(f"module '{mod.name}' has no member '{member}'", e.func)
@@ -1622,7 +1689,7 @@ class Checker:
         if not isinstance(f, builtins.Function):
             raise self.error(f"'{mod.name}.{member}' is not a function", e.func)
         e.sym = CallTarget("module_func", (mod, member))
-        return f.check(builtins.CallContext(self, e, f"{mod.name}.{member}()", None))
+        return f.check(builtins.CallContext(self, e, f"{mod.name}.{member}()", expected))
 
     def check_constructor(self, e: A.Call, st: StructType) -> Type:
         params = self.constructor_params(st, e)
@@ -1770,6 +1837,23 @@ def count_assignments(stmts: list[A.Stmt]) -> dict[str, int]:
             for name in assigned_targets([stmt]):
                 counts[name] = counts.get(name, 0) + 1
     return counts
+
+
+def is_scalar(t: Type) -> bool:
+    """Values C++ converts implicitly where needed (int -> float); containers need re-checking."""
+    return t in (INT, FLOAT, BOOL, STR, BYTES)
+
+
+def needs_context(e: A.Expr) -> bool:
+    """A literal whose type can only come from its surroundings: [], {}, None, [None, None]..."""
+    match e:
+        case A.NoneLit():
+            return True
+        case A.ListLit(elts) | A.SetLit(elts):
+            return all(needs_context(x) for x in elts)
+        case A.DictLit(keys, values):
+            return all(needs_context(v) for v in values)
+    return False
 
 
 def constant_int(e: A.Expr) -> int | None:

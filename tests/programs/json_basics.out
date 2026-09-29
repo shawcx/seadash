@@ -1,0 +1,53 @@
+{'ann': [90, 85], 'bob': [], 'cy': [70]} 175 ['ann', 'bob', 'cy']
+[1.0, 2.5, -300.0, 0.001, inf]
+['plain', 'tab\there', 'quote"s', 'été', '😀', 'a/b']
+[[1, 2], [3, 4]] [[1,2],[3,4]]
+["plain", "tab\there", "quote\"s", "\u00e9t\u00e9", "\ud83d\ude00", "a/b"]
+["plain", "tab\there", "quote\"s", "été", "😀", "a/b"]
+{"a": 2, "b": 1} {"b": 1, "a": 2}
+{"x": [1.5, 0.1, 1e+16, 3.0], "empty": [], "none": [null, null]}
+{
+    "nested": {
+        "list": [
+            [],
+            [
+                1
+            ]
+        ],
+        "more": [
+            [
+                2,
+                3
+            ]
+        ]
+    },
+    "empty": {}
+}
+[
+[
+1,
+2
+],
+[
+3
+]
+]
+{"1": "one", "2": "two"} {"true": 1} [
+  "x"
+]
+"control \u0001 chars \u007f" NaN [Infinity, -Infinity]
+True
+'' -> Expecting value: line 1 column 1 (char 0)
+'[1, 2' -> Expecting ',' delimiter: line 1 column 6 (char 5)
+'{"a" 1}' -> Expecting ':' delimiter: line 1 column 6 (char 5)
+'{"a": 1 "b": 2}' -> Expecting ',' delimiter: line 1 column 9 (char 8)
+'[1,]' -> Expecting value: line 1 column 4 (char 3)
+'{"a": 1,}' -> Expecting property name enclosed in double quotes: line 1 column 9 (char 8)
+'{a: 1}' -> Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+'"abc' -> Unterminated string starting at: line 1 column 1 (char 0)
+'[1] x' -> Extra data: line 1 column 5 (char 4)
+'"\\q"' -> Invalid \escape: line 1 column 2 (char 1)
+'"a\nb"' -> Invalid control character at: line 1 column 3 (char 2)
+'01' -> Extra data: line 1 column 2 (char 1)
+'  \n  nope' -> Expecting value: line 2 column 3 (char 5)
+True 9

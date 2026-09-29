@@ -224,6 +224,8 @@ std::string str(const T& x) {
         } else {
             return repr(x);
         }
+    } else if constexpr (requires { x.sd_str(); }) {
+        return x.sd_str();
     } else {
         return repr(x);
     }
@@ -537,6 +539,8 @@ bool truthy(const T& x) {
         return std::tuple_size_v<T> != 0;
     } else if constexpr (is_shared<T>::value || is_function<T>::value) {
         return static_cast<bool>(x);
+    } else if constexpr (requires { x.sd_truthy(); }) {
+        return x.sd_truthy();
     } else if constexpr (requires { x.empty(); }) {
         return !x.empty();
     } else {
