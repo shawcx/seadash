@@ -33,7 +33,7 @@ from . import ast as A
 from . import builtins
 from .errors import CheckError, Loc
 from .types import (
-    BOOL, FLOAT, INT, NONE, PRIMITIVES, STR,
+    BOOL, BYTES, FLOAT, INT, NONE, PRIMITIVES, STR,
     DictType, Field, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param,
     SetType, StructType, TupleType, Type, Var,
     assignable, element_type, is_hashable, is_numeric, join, strip_optional,
@@ -278,7 +278,19 @@ class Checker:
         return mod
 
     def lookup_struct(self, name: str) -> StructType | None:
+        if name in self.imported:  # `from zlib import error`
+            mod, member = self.imported[name]
+            m = mod.members.get(member)
+            return m if isinstance(m, StructType) else None
         return self.structs.get(name) or builtins.EXCEPTIONS.get(name)
+
+    def module_struct(self, e: A.Expr) -> StructType | None:
+        """`zlib.error`: a class defined by a module."""
+        if isinstance(e, A.Attribute) and isinstance(e.value, A.Name) and e.value.id in self.modules:
+            if e.value.id not in self.state.names:
+                m = self.modules[e.value.id].members.get(e.attr)
+                return m if isinstance(m, StructType) else None
+        return None
 
     def resolve_base(self, st: StructType) -> None:
         """Only exception classes can inherit (for now): `class NotFound(ValueError): ...`"""
@@ -508,7 +520,11 @@ class Checker:
                 case "tuple":
                     return TupleType(tuple(resolved))
         if "." in name:
-            raise self.error("types from modules are not supported yet", node)
+            mod_name, _, member = name.rpartition(".")
+            mod = self.modules.get(mod_name)
+            if mod is not None and isinstance(mod.members.get(member), StructType):
+                return mod.members[member]
+            raise self.error(f"unknown type '{name}'", node)
         raise self.error(f"unknown type '{name}'", node)
 
     def check_hashable(self, t: Type, what: str, node: A.Node) -> None:
@@ -656,7 +672,7 @@ class Checker:
                     case DictType(key, val):
                         self.expect_type(index, key, "dict key")
                         slot = val
-                    case _ if ct == STR or isinstance(ct, TupleType):
+                    case _ if ct in (STR, BYTES) or isinstance(ct, TupleType):
                         raise self.error(f"{ct} can't be changed in place (it's immutable)", target)
                     case _:
                         raise self.error(f"{ct} doesn't support item assignment", target)
@@ -819,7 +835,7 @@ class Checker:
         exprs = handler.type.elts if isinstance(handler.type, A.TupleLit) else [handler.type]
         classes: list[StructType] = []
         for e in exprs:
-            st = self.lookup_struct(e.id) if isinstance(e, A.Name) else None
+            st = self.lookup_struct(e.id) if isinstance(e, A.Name) else self.module_struct(e)
             if st is None or not st.is_exception:
                 raise self.error("'except' needs an exception class, like `except ValueError:`", e)
             classes.append(st)
@@ -938,7 +954,7 @@ class Checker:
         return state
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
-        ok = t in (INT, FLOAT, BOOL, STR) or isinstance(
+        ok = t in (INT, FLOAT, BOOL, STR, BYTES) or isinstance(
             t, (ListType, DictType, SetType, TupleType, OptionalType)
         )
         if not ok:
@@ -968,6 +984,8 @@ class Checker:
                 return FLOAT
             case A.StrLit():
                 return STR
+            case A.BytesLit():
+                return BYTES
             case A.BoolLit():
                 return BOOL
             case A.NoneLit():
@@ -1244,7 +1262,7 @@ class Checker:
             case "+":
                 if numeric:
                     return widened
-                if l == r and (l == STR or isinstance(l, ListType)):
+                if l == r and (l in (STR, BYTES) or isinstance(l, ListType)):
                     return l
                 if isinstance(l, TupleType) and isinstance(r, TupleType):
                     return TupleType(l.elts + r.elts)
@@ -1256,9 +1274,9 @@ class Checker:
             case "*":
                 if numeric:
                     return widened
-                if (l == STR or isinstance(l, ListType)) and r == INT:
+                if (l in (STR, BYTES) or isinstance(l, ListType)) and r == INT:
                     return l
-                if l == INT and (r == STR or isinstance(r, ListType)):
+                if l == INT and (r in (STR, BYTES) or isinstance(r, ListType)):
                     return r
             case "/":
                 if numeric:
@@ -1282,7 +1300,9 @@ class Checker:
                 if l == r and isinstance(l, SetType):
                     return l
         hint = ""
-        if op == "+" and STR in (l, r):
+        if {l, r} == {STR, BYTES}:
+            hint = " (convert with s.encode() or b.decode())"
+        elif op == "+" and STR in (l, r):
             hint = " (convert with str(...), or use an f-string)"
         raise self.error(f"unsupported operand types for {op}: {l} and {r}{hint}", e)
 
@@ -1316,7 +1336,7 @@ class Checker:
     def check_comparison(self, op: str, lt: Type, rt: Type, left: A.Expr, right: A.Expr, e: A.Compare) -> None:
         if op in ("<", ">", "<=", ">="):
             ordered = (is_numeric(lt) and is_numeric(rt)) or (
-                lt == rt and (lt == STR or isinstance(lt, (TupleType, ListType)))
+                lt == rt and (lt in (STR, BYTES) or isinstance(lt, (TupleType, ListType)))
             )
             if not ordered:
                 raise self.error(f"'{op}' isn't supported between {lt} and {rt}", e)
@@ -1333,6 +1353,8 @@ class Checker:
                     ok = any(join(lt, t) for t in elts)
                 case _ if rt == STR:
                     ok = lt == STR
+                case _ if rt == BYTES:
+                    ok = lt in (BYTES, INT)
                 case _:
                     raise self.error(f"'{op}' needs a list, set, dict, tuple or str on the right, not {rt}", right)
             if not ok:
@@ -1380,13 +1402,15 @@ class Checker:
             raise self.error(f"module '{mod.name}' has no member '{member}'", e)
         if isinstance(m, builtins.Function):
             raise self.error(f"'{mod.name}.{member}' can only be called here (functions aren't values yet)", e)
+        if isinstance(m, StructType):
+            raise self.error(f"'{mod.name}.{member}' is a class; it can be called, raised or caught", e)
         e.sym = m
         return m.type
 
     def check_index(self, e: A.Index, value: A.Expr, index: A.Expr) -> Type:
         vt = self.check_expr(value)
         if isinstance(index, A.Slice):
-            if not (isinstance(vt, ListType) or vt == STR):
+            if not (isinstance(vt, ListType) or vt in (STR, BYTES)):
                 raise self.error(f"{vt} can't be sliced", e)
             for part in (index.lower, index.upper, index.step):
                 if part is not None:
@@ -1414,6 +1438,9 @@ class Checker:
             case _ if vt == STR:
                 self.expect_type(index, INT, "string index")
                 return STR
+            case _ if vt == BYTES:
+                self.expect_type(index, INT, "bytes index")
+                return INT
             case OptionalType():
                 raise self.error(f"{vt} might be None; check it before indexing", value)
         raise self.error(f"{vt} can't be indexed", e)
@@ -1502,6 +1529,8 @@ class Checker:
         f = mod.members.get(member)
         if f is None:
             raise self.error(f"module '{mod.name}' has no member '{member}'", e.func)
+        if isinstance(f, StructType):
+            return self.check_constructor(e, f)  # raise zlib.error("...")
         if not isinstance(f, builtins.Function):
             raise self.error(f"'{mod.name}.{member}' is not a function", e.func)
         e.sym = CallTarget("module_func", (mod, member))

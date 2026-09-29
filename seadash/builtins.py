@@ -14,7 +14,7 @@ from . import ast as A
 from .errors import CheckError
 from .errors import Loc
 from .types import (
-    BOOL, FLOAT, INT, NONE, STR,
+    BOOL, BYTES, FLOAT, INT, NONE, STR,
     DictType, Field, FuncType, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -115,18 +115,22 @@ MANY = 1_000
 class Function:
     name: str
     check: Callable[[CallContext], Type]
+    cpp: str | None = None  # C++ function to call with the arguments as given, if that's all it takes
 
 
 @dataclass
 class Value:
     name: str
     type: Type
+    cpp: str | None = None  # C++ expression for a module constant
 
 
 @dataclass
 class Module:
     name: str
-    members: dict[str, Function | Value]
+    members: dict[str, Function | Value | StructType]  # StructType: an exception class like zlib.error
+    header: str | None = None  # runtime header to #include, relative to the runtime directory
+    libs: tuple[str, ...] = ()  # libraries to link, e.g. ("z",) for -lz
 
 
 # ---- predicates -------------------------------------------------------------
@@ -137,11 +141,15 @@ def printable(t: Type) -> bool:
 
 
 def sized(t: Type) -> bool:
-    return t == STR or isinstance(t, (ListType, DictType, SetType, TupleType))
+    return t in (STR, BYTES) or isinstance(t, (ListType, DictType, SetType, TupleType))
 
 
 def ordered(t: Type) -> bool:
-    return t in (INT, FLOAT, STR) or isinstance(t, (TupleType, ListType))
+    return t in (INT, FLOAT, STR, BYTES) or isinstance(t, (TupleType, ListType))
+
+
+def bytes_like(t: Type) -> bool:
+    return t in (BYTES, STR)
 
 
 # ---- built-in functions -----------------------------------------------------
@@ -313,6 +321,17 @@ def b_input(ctx: CallContext) -> Type:
     return STR
 
 
+def b_bytes(ctx: CallContext) -> Type:
+    if not ctx.arity(0, 1):
+        return BYTES
+    t = ctx.arg(0)
+    if t == STR:
+        raise ctx.error("bytes(str) needs an encoding; use s.encode() instead", ctx.args[0])
+    if t != INT and element_type(t) != INT:
+        raise ctx.error(f"bytes() needs a length or a list of ints (0-255), not {t}", ctx.args[0])
+    return BYTES
+
+
 def b_ord(ctx: CallContext) -> Type:
     ctx.arity(1)
     ctx.expect(0, STR)
@@ -359,6 +378,7 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "any": b_any_all,
     "all": b_any_all,
     "input": b_input,
+    "bytes": b_bytes,
     "ord": b_ord,
     "chr": b_chr,
     "round": b_round,
@@ -453,6 +473,14 @@ STR_METHODS = {
     "splitlines": returns(ListType(STR)),
     "replace": returns(STR, args=(STR, STR)),
     "join": str_join,
+    "encode": returns(BYTES, 0, 1, (STR,)),
+}
+
+BYTES_METHODS = {
+    "decode": returns(STR, 0, 1, (STR,)),
+    "hex": returns(STR),
+    **{name: returns(BOOL, args=(BYTES,)) for name in ("startswith", "endswith")},
+    **{name: returns(INT, args=(BYTES,)) for name in ("find", "count")},
 }
 
 LIST_METHODS = {
@@ -502,6 +530,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = SET_METHODS
         case _ if t == STR:
             table = STR_METHODS
+        case _ if t == BYTES:
+            table = BYTES_METHODS
         case _:
             return None
     return table.get(name)
@@ -547,6 +577,19 @@ def module(name: str, **members: Callable[[CallContext], Type] | Type) -> Module
     return Module(name, table)
 
 
+def bytes_fn(result: Type, lo: int = 1, hi: int = 1, extra: tuple[Type, ...] = ()) -> Callable[[CallContext], Type]:
+    """A function whose first argument is bytes (a str is accepted and encoded as UTF-8)."""
+
+    def handler(ctx: CallContext) -> Type:
+        n = ctx.arity(lo, hi)
+        ctx.need(0, bytes_like, "bytes or str")
+        for i in range(1, n):
+            ctx.expect(i, extra[i - 1])
+        return result
+
+    return handler
+
+
 MODULES: dict[str, Module] = {
     "math": module(
         "math",
@@ -584,6 +627,8 @@ EXCEPTION_TREE = [
     ("RuntimeError", "Exception"),
     ("NotImplementedError", "RuntimeError"),
     ("EOFError", "Exception"),
+    ("UnicodeError", "ValueError"),
+    ("UnicodeDecodeError", "UnicodeError"),
     ("OSError", "Exception"),
 ]
 
@@ -601,3 +646,49 @@ def make_exceptions() -> dict[str, StructType]:
 
 EXCEPTIONS: dict[str, StructType] = make_exceptions()
 BASE_EXCEPTION = EXCEPTIONS["BaseException"]
+
+
+# ---- modules backed by runtime headers --------------------------------------
+
+
+def runtime_module(name: str, header: str, libs: tuple[str, ...] = (), **members) -> Module:
+    """Functions are (handler, "C++ name"); constants are (Type, "C++ expression")."""
+    table: dict[str, Function | Value | StructType] = {}
+    for member, spec in members.items():
+        if isinstance(spec, StructType):
+            table[member] = spec
+        elif isinstance(spec[0], Type):
+            table[member] = Value(member, spec[0], spec[1])
+        else:
+            table[member] = Function(member, spec[0], spec[1])
+    return Module(name, table, header, libs)
+
+
+def exception_class(name: str, cpp: str, base: str = "Exception") -> StructType:
+    return StructType(name, "class", None, base=EXCEPTIONS[base], builtin=True, cpp_name=cpp)
+
+
+MODULES["base64"] = runtime_module(
+    "base64", "modules/base64.hpp",
+    b64encode=(bytes_fn(BYTES), "sd::base64::b64encode"),
+    b64decode=(bytes_fn(BYTES), "sd::base64::b64decode"),
+    standard_b64encode=(bytes_fn(BYTES), "sd::base64::b64encode"),
+    standard_b64decode=(bytes_fn(BYTES), "sd::base64::b64decode"),
+    urlsafe_b64encode=(bytes_fn(BYTES), "sd::base64::urlsafe_b64encode"),
+    urlsafe_b64decode=(bytes_fn(BYTES), "sd::base64::urlsafe_b64decode"),
+    b16encode=(bytes_fn(BYTES), "sd::base64::b16encode"),
+    b16decode=(bytes_fn(BYTES), "sd::base64::b16decode"),
+)
+
+MODULES["zlib"] = runtime_module(
+    "zlib", "modules/zlib.hpp", ("z",),
+    compress=(bytes_fn(BYTES, 1, 2, (INT,)), "sd::zlib::compress"),
+    decompress=(bytes_fn(BYTES), "sd::zlib::decompress"),
+    crc32=(bytes_fn(INT, 1, 2, (INT,)), "sd::zlib::crc32"),
+    adler32=(bytes_fn(INT, 1, 2, (INT,)), "sd::zlib::adler32"),
+    error=exception_class("error", "sd::zlib::error"),
+    Z_BEST_SPEED=(INT, "1_i"),
+    Z_BEST_COMPRESSION=(INT, "9_i"),
+    Z_DEFAULT_COMPRESSION=(INT, "(-1_i)"),
+    ZLIB_VERSION=(STR, "std::string(ZLIB_VERSION)"),
+)

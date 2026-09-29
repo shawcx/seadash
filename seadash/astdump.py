@@ -23,7 +23,7 @@ def expr(e: A.Expr | None) -> str:
     match e:
         case None:
             return "_"
-        case A.IntLit(v) | A.FloatLit(v) | A.StrLit(v) | A.BoolLit(v):
+        case A.IntLit(v) | A.FloatLit(v) | A.StrLit(v) | A.BytesLit(v) | A.BoolLit(v):
             return repr(v)
         case A.NoneLit():
             return "None"

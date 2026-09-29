@@ -28,9 +28,10 @@ INT = Prim("int")
 FLOAT = Prim("float")
 BOOL = Prim("bool")
 STR = Prim("str")
+BYTES = Prim("bytes")
 NONE = Prim("None")
 
-PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "None": NONE}
+PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "None": NONE}
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,7 @@ class StructType(Type):
     methods: dict[str, FuncInfo] = field(default_factory=dict)
     base: StructType | None = None
     builtin: bool = False
+    cpp_name: str | None = None  # for built-ins defined in the runtime, e.g. "sd::zlib::error"
 
     def __str__(self) -> str:
         return self.name
@@ -219,7 +221,7 @@ def is_numeric(t: Type) -> bool:
 
 
 def is_hashable(t: Type) -> bool:
-    if t in (INT, FLOAT, BOOL, STR):
+    if t in (INT, FLOAT, BOOL, STR, BYTES):
         return True
     if isinstance(t, TupleType):
         return all(is_hashable(e) for e in t.elts)
@@ -283,6 +285,8 @@ def element_type(t: Type) -> Type | None:
             return key
         case Prim("str"):
             return STR
+        case Prim("bytes"):
+            return INT
     return None
 
 

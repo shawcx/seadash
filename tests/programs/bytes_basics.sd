@@ -1,0 +1,21 @@
+data = b"hello\x00\xff world"
+print(data, len(data), data[0], data[-1], data[1:5], data[::-1][:3])
+print(b"ab" + b"cd", b"-" * 3, b"ll" in data, 255 in data, b"zz" in data)
+print(data.hex(), data.startswith(b"hell"), data.endswith(b"x"), data.find(b"world"), data.count(b"l"))
+print(list(b"abc"), [b for b in b"\x01\x02"], bytes([104, 105]), bytes(3), bytes())
+text = "héllo ✓"
+raw = text.encode()
+print(raw, len(text), len(raw), raw.decode() == text, raw.decode("utf-8"))
+print(b"it's", b'say "hi"', b"tab\there\n", repr(b"q"), str(b"s"))
+print(b"abc" < b"abd", b"abc" == bytes([97, 98, 99]), bool(b""), bool(b"x"))
+counts: dict[bytes, int] = {b"k": 1}
+counts[b"k"] += 1
+print(counts)
+try:
+    b"\xff\xfe".decode()
+except UnicodeDecodeError as e:
+    print("decode failed:", e)
+try:
+    print(bytes([300]))
+except ValueError as e:
+    print("bad byte:", e)

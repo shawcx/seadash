@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import base64").message == "no module named 'base64' (available: math, sys)"
+    assert err("import requests").message == "no module named 'requests' (available: base64, math, sys, zlib)"
 
 
 def test_unknown_module_member():
@@ -835,3 +835,52 @@ def test_nested_def_is_a_function_value():
             return double
     """)
     assert variables(info, "make") == ["double: (int) -> int"]
+
+
+# ---- bytes and runtime modules ------------------------------------------------
+
+
+@pytest.mark.parametrize("expr,ty", [
+    ('b"ab" + b"c"', "bytes"),
+    ('b"ab"[0]', "int"),
+    ('b"ab"[1:]', "bytes"),
+    ('"x".encode()', "bytes"),
+    ('b"x".decode("utf-8")', "str"),
+    ('[b for b in b"ab"]', "list[int]"),
+    ('bytes([1, 2])', "bytes"),
+    ('b"x".hex()', "str"),
+])
+def test_bytes_types(expr, ty):
+    [v] = ok(f"x = {expr}\n").globals
+    assert str(v.type) == ty
+
+
+@pytest.mark.parametrize("src,msg", [
+    ('x = b"a" + "b"', "unsupported operand types for +: bytes and str (convert with s.encode() or b.decode())"),
+    ('x = bytes("abc")', "bytes(str) needs an encoding; use s.encode() instead"),
+    ('b = b"x"\nb[0] = 1', "bytes can't be changed in place (it's immutable)"),
+    ('x = "a" b"b"', "can't combine bytes and str literals"),
+    ("import zlib\nx = zlib.compress(5)", "zlib.compress() argument must be bytes or str, not int"),
+    ("import zlib\nx = zlib.error", "'zlib.error' is a class; it can be called, raised or caught"),
+])
+def test_bytes_errors(src, msg):
+    with pytest.raises(Exception) as info:
+        ok(src)
+    assert info.value.message == msg
+
+
+def test_module_exception_classes():
+    ok("""
+        import zlib
+        from zlib import error
+        def f(data: bytes) -> bytes:
+            try:
+                return zlib.decompress(data)
+            except zlib.error as e:
+                print(e.message)
+            except error:
+                pass
+            raise zlib.error("custom")
+        def g(e: zlib.error) -> str:
+            return str(e)
+    """)

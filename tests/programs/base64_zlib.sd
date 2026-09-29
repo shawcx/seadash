@@ -1,0 +1,32 @@
+import base64
+import zlib
+
+message = b"claude was here"
+encoded = base64.b64encode(message)
+print(encoded, base64.b64decode(encoded), base64.b64decode(encoded) == message)
+for n in range(5):
+    chunk = b"xyz!"[:n]
+    print(n, base64.b64encode(chunk), base64.b16encode(chunk))
+print(base64.urlsafe_b64encode(b"\xfb\xff\xfe"), base64.b64encode(b"\xfb\xff\xfe"))
+print(base64.urlsafe_b64decode(b"-__-"), base64.b16decode(b"48492E"))
+print(base64.b64decode(b"Y2xh\ndWRl\n"), base64.b64decode("aGk="))
+for bad in [b"YQ", b"Y", b"YQ=x"]:
+    try:
+        print(base64.b64decode(bad))
+    except ValueError as e:
+        print("error:", e)
+
+text = ("the quick brown fox jumps over the lazy dog. " * 50).encode()
+packed = zlib.compress(text)
+print(len(text), len(packed), zlib.decompress(packed) == text)
+print(len(zlib.compress(text, 1)), len(zlib.compress(text, 9)), len(zlib.compress(b"")))
+print(zlib.crc32(b"hello"), zlib.crc32(b" world", zlib.crc32(b"hello")), zlib.crc32(b"hello world"))
+print(zlib.adler32(b"hello"), zlib.decompress(zlib.compress(b"\x00" * 100000)) == bytes(100000))
+try:
+    zlib.decompress(b"not zlib data")
+except zlib.error as e:
+    print("zlib error:", e)
+try:
+    zlib.decompress(packed[:20])
+except zlib.error as e:
+    print("zlib error:", e)

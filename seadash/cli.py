@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .astdump import dump
 from .checker import check
-from .driver import BuildError, BuildOptions, compile_cpp, to_cpp
+from .driver import BuildError, BuildOptions, Translation, compile_cpp, translate
 from .errors import CompileError
 from .lexer import TokenKind, tokenize
 from .parser import parse
@@ -80,33 +80,33 @@ def cmd_check(path: str) -> int:
     return 0
 
 
-def translate(path: str) -> str | None:
+def translate_file(path: str) -> Translation | None:
     """seadash source -> C++, printing any compile error. None on failure."""
     source = read_source(path)
     try:
-        return to_cpp(source)
+        return translate(source)
     except CompileError as e:
         print(e.render(source, path), file=sys.stderr)
         return None
 
 
 def cmd_emit(path: str) -> int:
-    cpp = translate(path)
-    if cpp is None:
+    result = translate_file(path)
+    if result is None:
         return 1
-    print(cpp, end="")
+    print(result.cpp, end="")
     return 0
 
 
 def build(path: str, output: Path, options: BuildOptions) -> bool:
-    cpp = translate(path)
-    if cpp is None:
+    result = translate_file(path)
+    if result is None:
         return False
     with tempfile.TemporaryDirectory(prefix="seadash-") as tmp:
         cpp_path = Path(tmp) / (Path(path).stem + ".cpp")
-        cpp_path.write_text(cpp)
+        cpp_path.write_text(result.cpp)
         try:
-            compile_cpp(cpp_path, output, options)
+            compile_cpp(cpp_path, output, options, result.libs)
         except BuildError as e:
             print(f"sd: {e}", file=sys.stderr)
             return False

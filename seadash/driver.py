@@ -20,11 +20,22 @@ class BuildError(Exception):
     pass
 
 
-def to_cpp(source: str) -> str:
+@dataclass
+class Translation:
+    cpp: str
+    libs: list[str]  # libraries the program must link with, e.g. ["z"]
+
+
+def translate(source: str) -> Translation:
     """Compile seadash source to C++ source. Raises CompileError on bad input."""
     module = parse(source)
     info = check(module)
-    return codegen.generate(module, info)
+    libs = list(dict.fromkeys(lib for m in info.imports for lib in m.libs))
+    return Translation(codegen.generate(module, info), libs)
+
+
+def to_cpp(source: str) -> str:
+    return translate(source).cpp
 
 
 def find_cxx() -> str:
@@ -42,7 +53,7 @@ class BuildOptions:
     cxx: str | None = None
 
 
-def compile_cpp(cpp_path: Path, output: Path, options: BuildOptions) -> None:
+def compile_cpp(cpp_path: Path, output: Path, options: BuildOptions, libs: list[str] = ()) -> None:
     cxx = options.cxx or find_cxx()
     cmd = [
         cxx,
@@ -53,6 +64,7 @@ def compile_cpp(cpp_path: Path, output: Path, options: BuildOptions) -> None:
         str(cpp_path),
         "-o",
         str(output),
+        *(f"-l{lib}" for lib in libs),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

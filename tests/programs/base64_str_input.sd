@@ -1,0 +1,7 @@
+# seadash convenience: base64/zlib functions also take str (as its UTF-8 bytes)
+import base64
+import zlib
+
+print(base64.b64encode("claude was here"))
+print(base64.b64decode(base64.b64encode("héllo")).decode())
+print(zlib.decompress(zlib.compress("round trip")).decode(), zlib.crc32("hello"))

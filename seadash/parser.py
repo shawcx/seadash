@@ -655,6 +655,8 @@ class Parser:
                 return A.FloatLit(tok.value, loc=loc)
             case K.STRING | K.FSTRING:
                 return self.parse_strings()
+            case K.BYTES:
+                return self.parse_bytes()
             case K.NAME:
                 self.next()
                 return A.Name(tok.value, loc=loc)
@@ -737,12 +739,24 @@ class Parser:
         self.expect(closer, f" to close {'list' if closer == ']' else 'set'}")
         return items
 
+    def parse_bytes(self) -> A.BytesLit:
+        """Adjacent bytes literals concatenate: b"a" b"b" is b"ab"."""
+        loc = self.peek().loc
+        value = b""
+        while self.at_kind(K.BYTES):
+            value += self.next().value
+        if self.at_kind(K.STRING) or self.at_kind(K.FSTRING):
+            raise self.error("can't combine bytes and str literals")
+        return A.BytesLit(value, loc=loc)
+
     def parse_strings(self) -> A.Expr:
         """Adjacent literals concatenate: "a" f"{b}" "c" is one string."""
         loc = self.peek().loc
         parts: list[str | A.FormattedValue] = []
         while self.at_kind(K.STRING) or self.at_kind(K.FSTRING):
             tok = self.next()
+            if self.at_kind(K.BYTES):
+                raise self.error("can't combine bytes and str literals")
             if tok.kind == K.STRING:
                 add_text(parts, tok.value)
                 continue
@@ -774,7 +788,7 @@ def add_text(parts: list, text: str) -> None:
 
 def starts_expression(tok: Token) -> bool:
     match tok.kind:
-        case K.NAME | K.INT | K.FLOAT | K.STRING | K.FSTRING:
+        case K.NAME | K.INT | K.FLOAT | K.STRING | K.FSTRING | K.BYTES:
             return True
         case K.KEYWORD:
             return tok.value in ("True", "False", "None", "not", "lambda")
@@ -799,12 +813,14 @@ def describe(tok: Token) -> str:
             return f"number {tok.value}"
         case K.STRING | K.FSTRING:
             return "string"
+        case K.BYTES:
+            return "bytes"
     return f"'{tok.value}'"
 
 
 def describe_expr(e: A.Expr) -> str:
     match e:
-        case A.IntLit() | A.FloatLit() | A.StrLit() | A.BoolLit() | A.NoneLit() | A.FString():
+        case A.IntLit() | A.FloatLit() | A.StrLit() | A.BytesLit() | A.BoolLit() | A.NoneLit() | A.FString():
             return "a literal"
         case A.Call():
             return "a function call"

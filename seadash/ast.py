@@ -104,6 +104,11 @@ class StrLit(Expr):
 
 
 @dataclass
+class BytesLit(Expr):
+    value: bytes
+
+
+@dataclass
 class BoolLit(Expr):
     value: bool
 

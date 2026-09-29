@@ -78,6 +78,8 @@ SD_EXCEPTION(AssertionError, Exception)
 SD_EXCEPTION(RuntimeError, Exception)
 SD_EXCEPTION(NotImplementedError, RuntimeError)
 SD_EXCEPTION(EOFError, Exception)
+SD_EXCEPTION(UnicodeError, ValueError)
+SD_EXCEPTION(UnicodeDecodeError, UnicodeError)
 SD_EXCEPTION(OSError, Exception)
 #undef SD_EXCEPTION
 
@@ -108,6 +110,9 @@ template <class E>
     if (kind == "ZeroDivisionError") raise<ZeroDivisionError>(msg);
     if (kind == "AssertionError") raise<AssertionError>(msg);
     if (kind == "EOFError") raise<EOFError>(msg);
+    if (kind == "LookupError") raise<LookupError>(msg);
+    if (kind == "UnicodeDecodeError") raise<UnicodeDecodeError>(msg);
+    if (kind == "UnicodeError") raise<UnicodeError>(msg);
     raise<RuntimeError>(msg);
 }
 
@@ -301,6 +306,67 @@ public:
 };
 
 // ============================================================================
+// bytes: raw binary data (a std::string underneath, but a distinct type)
+// ============================================================================
+
+struct bytes {
+    std::string data;
+    bytes() = default;
+    explicit bytes(std::string d) : data(std::move(d)) {}
+    std::size_t size() const { return data.size(); }
+    bool empty() const { return data.empty(); }
+    char operator[](std::size_t i) const { return data[i]; }
+    void push_back(char c) { data.push_back(c); }
+    auto begin() const { return data.begin(); }
+    auto end() const { return data.end(); }
+    template <class It>
+    void insert(std::string::const_iterator pos, It first, It last) {
+        data.insert(pos, first, last);
+    }
+    friend bytes operator+(const bytes& a, const bytes& b) { return bytes(a.data + b.data); }
+    bool operator==(const bytes&) const = default;
+    auto operator<=>(const bytes&) const = default;
+};
+
+}  // namespace sd
+
+template <>
+struct std::hash<sd::bytes> {
+    std::size_t operator()(const sd::bytes& b) const { return std::hash<std::string>{}(b.data); }
+};
+
+namespace sd {
+
+inline std::string repr_bytes(const bytes& b) {
+    bool has_single = b.data.find('\'') != std::string::npos;
+    bool has_double = b.data.find('"') != std::string::npos;
+    char quote = (has_single && !has_double) ? '"' : '\'';
+    std::string out = "b";
+    out += quote;
+    for (unsigned char c : b.data) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c == quote) {
+                    out += '\\';
+                    out += static_cast<char>(c);
+                } else if (c < 0x20 || c >= 0x7f) {
+                    char buf[5];
+                    std::snprintf(buf, sizeof buf, "\\x%02x", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+        }
+    }
+    out += quote;
+    return out;
+}
+
+// ============================================================================
 // repr / str / print
 // ============================================================================
 
@@ -371,6 +437,8 @@ std::string repr(const T& x) {
         return x ? "True" : "False";
     } else if constexpr (std::is_same_v<T, std::string>) {
         return repr_str(x);
+    } else if constexpr (std::is_same_v<T, bytes>) {
+        return repr_bytes(x);
     } else if constexpr (std::is_integral_v<T>) {
         return std::to_string(x);
     } else if constexpr (std::is_floating_point_v<T>) {
@@ -590,6 +658,9 @@ const T& index(const std::vector<T>& v, std::int64_t i) {
 inline std::string index(const std::string& s, std::int64_t i) {
     return std::string(1, s[norm_index(i, s.size(), "string")]);
 }
+inline std::int64_t index(const bytes& b, std::int64_t i) {
+    return static_cast<unsigned char>(b.data[norm_index(i, b.size(), "index")]);
+}
 template <class K, class V>
 V& index(dict<K, V>& d, const std::type_identity_t<K>& k) {
     return d.at(k);
@@ -670,6 +741,10 @@ decltype(auto) iter(T&& x) {
     using U = std::remove_cvref_t<T>;
     if constexpr (std::is_same_v<U, std::string>) {
         return chars(x);
+    } else if constexpr (std::is_same_v<U, bytes>) {
+        std::vector<std::int64_t> out;  // looping over bytes gives ints, like Python
+        for (unsigned char c : x.data) out.push_back(c);
+        return out;
     } else if constexpr (is_dict<U>::value) {
         return x.keys();
     } else if constexpr (std::is_lvalue_reference_v<T>) {
@@ -869,6 +944,11 @@ bool contains(const dict<K, V>& d, const std::type_identity_t<K>& k) {
     return d.contains(k);
 }
 inline bool contains(const std::string& s, const std::string& sub) { return s.find(sub) != std::string::npos; }
+inline bool contains(const bytes& b, const bytes& sub) { return b.data.find(sub.data) != std::string::npos; }
+inline bool contains(const bytes& b, std::int64_t byte) {
+    if (byte < 0 || byte > 255) raise("ValueError", "byte must be in range(0, 256)");
+    return b.data.find(static_cast<char>(byte)) != std::string::npos;
+}
 inline bool contains(const range& r, std::int64_t x) { return r.contains(x); }
 template <class... Ts, class X>
 bool contains(const std::tuple<Ts...>& t, const X& x) {
@@ -1062,6 +1142,80 @@ inline std::string chr(std::int64_t cp) {
     }
     return out;
 }
+
+// ---- bytes <-> str ----------------------------------------------------------
+
+inline void check_encoding(const std::string& encoding) {
+    std::string e = str_lower(encoding);
+    if (e != "utf-8" && e != "utf8" && e != "ascii")
+        raise("LookupError", "unknown encoding: " + encoding + " (seadash supports utf-8 and ascii)");
+}
+
+inline bytes str_encode(const std::string& s, const std::string& encoding = "utf-8") {
+    check_encoding(encoding);
+    if (str_lower(encoding) == "ascii")
+        for (std::size_t i = 0; i < s.size(); ++i)
+            if (static_cast<unsigned char>(s[i]) >= 0x80)
+                raise("UnicodeError", "'ascii' codec can't encode character in position " + std::to_string(i));
+    return bytes(s);  // str is already UTF-8
+}
+
+// Validates UTF-8 (strings in seadash are always valid UTF-8 text).
+inline std::string bytes_decode(const bytes& b, const std::string& encoding = "utf-8") {
+    check_encoding(encoding);
+    bool ascii = str_lower(encoding) == "ascii";
+    const std::string& s = b.data;
+    auto fail = [&](std::size_t i, const char* why) {
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "'%s' codec can't decode byte 0x%02x in position %zu: %s",
+                      ascii ? "ascii" : "utf-8", static_cast<unsigned char>(s[i]), i, why);
+        raise("UnicodeDecodeError", buf);
+    };
+    for (std::size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        std::size_t width = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+        if (width == 0 || (ascii && width > 1)) fail(i, ascii ? "ordinal not in range(128)" : "invalid start byte");
+        if (i + width > s.size()) fail(i, "unexpected end of data");
+        for (std::size_t k = 1; k < width; ++k)
+            if ((static_cast<unsigned char>(s[i + k]) >> 6) != 0x2) fail(i, "invalid continuation byte");
+        i += width;
+    }
+    return s;
+}
+
+inline std::string bytes_hex(const bytes& b) {
+    static const char* digits = "0123456789abcdef";
+    std::string out;
+    for (unsigned char c : b.data) {
+        out += digits[c >> 4];
+        out += digits[c & 15];
+    }
+    return out;
+}
+inline bool bytes_startswith(const bytes& b, const bytes& p) { return b.data.starts_with(p.data); }
+inline bool bytes_endswith(const bytes& b, const bytes& p) { return b.data.ends_with(p.data); }
+inline std::int64_t bytes_find(const bytes& b, const bytes& sub) { return str_find(b.data, sub.data); }
+inline std::int64_t bytes_count(const bytes& b, const bytes& sub) { return str_count(b.data, sub.data); }
+
+inline bytes to_bytes() { return bytes(); }
+inline bytes to_bytes(std::int64_t n) {
+    if (n < 0) raise("ValueError", "negative count");
+    return bytes(std::string(static_cast<std::size_t>(n), '\0'));
+}
+template <class It>
+bytes to_bytes(It&& it) {
+    bytes out;
+    for (auto&& v : iter(std::forward<It>(it))) {
+        std::int64_t x = v;
+        if (x < 0 || x > 255) raise("ValueError", "bytes must be in range(0, 256)");
+        out.push_back(static_cast<char>(x));
+    }
+    return out;
+}
+
+// Module functions that take bytes also accept str (as its UTF-8 bytes).
+inline const std::string& raw(const bytes& b) { return b.data; }
+inline const std::string& raw(const std::string& s) { return s; }
 
 inline std::string input(const std::string& prompt = "") {
     std::fwrite(prompt.data(), 1, prompt.size(), stdout);

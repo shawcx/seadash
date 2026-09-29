@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from seadash.driver import BuildError, BuildOptions, compile_cpp, to_cpp
+from seadash.driver import BuildError, BuildOptions, compile_cpp, translate
 
 PROGRAMS = Path(__file__).parent / "programs"
 CASES = sorted(p.stem for p in PROGRAMS.glob("*.sd"))
@@ -28,14 +28,14 @@ def binaries(tmp_path_factory) -> dict[str, Path | str]:
 
     def build(name: str) -> Path | str:
         try:
-            cpp = to_cpp((PROGRAMS / f"{name}.sd").read_text())
+            result = translate((PROGRAMS / f"{name}.sd").read_text())
         except Exception as e:  # compile errors are test failures, with the message shown
             return f"seadash failed: {e}"
         cpp_path = out_dir / f"{name}.cpp"
-        cpp_path.write_text(cpp)
+        cpp_path.write_text(result.cpp)
         binary = out_dir / name
         try:
-            compile_cpp(cpp_path, binary, BuildOptions(optimize=False))
+            compile_cpp(cpp_path, binary, BuildOptions(optimize=False), result.libs)
         except BuildError as e:
             return str(e)
         return binary

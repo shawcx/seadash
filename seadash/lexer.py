@@ -31,6 +31,7 @@ class TokenKind(Enum):
     FLOAT = "FLOAT"
     STRING = "STRING"
     FSTRING = "FSTRING"
+    BYTES = "BYTES"
     OP = "OP"
     NEWLINE = "NEWLINE"
     INDENT = "INDENT"
@@ -50,7 +51,7 @@ class FStringExpr:
 @dataclass(frozen=True)
 class Token:
     kind: TokenKind
-    # NAME/KEYWORD/OP: the text. INT: int. FLOAT: float. STRING: the decoded str.
+    # NAME/KEYWORD/OP: the text. INT: int. FLOAT: float. STRING: the decoded str. BYTES: bytes.
     # FSTRING: tuple of str (literal text) and FStringExpr parts.
     value: object
     loc: Loc
@@ -95,7 +96,11 @@ SIMPLE_ESCAPES = {
     "a": "\a", "b": "\b", "f": "\f", "v": "\v",
 }
 
-STRING_PREFIXES = {"f": (True, False), "r": (False, True), "fr": (True, True), "rf": (True, True)}
+# prefix -> (f-string, raw, bytes)
+STRING_PREFIXES = {
+    "f": (True, False, False), "r": (False, True, False), "fr": (True, True, False), "rf": (True, True, False),
+    "b": (False, False, True), "rb": (False, True, True), "br": (False, True, True),
+}
 
 
 def tokenize(source: str, start: Loc = Loc(1, 1)) -> list[Token]:
@@ -230,8 +235,8 @@ class Lexer:
         text = self.src[start : self.pos]
         prefix = text.lower()
         if prefix in STRING_PREFIXES and self.peek() in "\"'" and self.peek():
-            fmt, raw = STRING_PREFIXES[prefix]
-            self.read_string(fmt=fmt, raw=raw, start=loc)
+            fmt, raw, is_bytes = STRING_PREFIXES[prefix]
+            self.read_string(fmt=fmt, raw=raw, start=loc, is_bytes=is_bytes)
         elif text in KEYWORDS:
             self.emit(TokenKind.KEYWORD, text, loc)
         else:
@@ -304,7 +309,7 @@ class Lexer:
 
     # ---- strings -----------------------------------------------------------
 
-    def read_string(self, fmt: bool, raw: bool, start: Loc) -> None:
+    def read_string(self, fmt: bool, raw: bool, start: Loc, is_bytes: bool = False) -> None:
         quote = self.advance()
         triple = self.peek() == quote and self.peek(1) == quote
         if triple:
@@ -324,7 +329,11 @@ class Lexer:
                     self.advance()
                 break
             if c == "\\":
+                if is_bytes and not raw and self.peek(1) in ("u", "U", "N"):
+                    raise LexError(f"'\\{self.peek(1)}' escapes aren't allowed in bytes literals", self.loc())
                 text.append(self.read_escape(raw))
+            elif is_bytes and ord(c) > 0x7F:
+                raise LexError("bytes literals can only contain ASCII characters (use \\x escapes)", self.loc())
             elif fmt and c == "{":
                 self.advance()
                 if self.peek() == "{":
@@ -349,6 +358,8 @@ class Lexer:
             if text:
                 parts.append("".join(text))
             self.emit(TokenKind.FSTRING, tuple(parts), start)
+        elif is_bytes:
+            self.emit(TokenKind.BYTES, "".join(text).encode("latin-1"), start)
         else:
             self.emit(TokenKind.STRING, "".join(text), start)
 

@@ -282,3 +282,20 @@ def test_error_rendering():
         '    y = "oops\n'
         '        ^'
     )
+
+
+# ---- bytes ------------------------------------------------------------------
+
+
+def test_bytes_literals():
+    assert toks(r'b"hi\x00\xff\n" rb"\d" B"x"')[:3] == [
+        ("BYTES", b"hi\x00\xff\n"), ("BYTES", b"\\d"), ("BYTES", b"x"),
+    ]
+
+
+@pytest.mark.parametrize("src,msg", [
+    ('b"é"', "bytes literals can only contain ASCII characters (use \\x escapes)"),
+    (r'b"\u00e9"', "'\\u' escapes aren't allowed in bytes literals"),
+])
+def test_bad_bytes_literals(src, msg):
+    assert lex_error(src).message == msg

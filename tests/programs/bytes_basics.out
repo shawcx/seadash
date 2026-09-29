@@ -1,0 +1,10 @@
+b'hello\x00\xff world' 13 104 100 b'ello' b'dlr'
+b'abcd' b'---' True True False
+68656c6c6f00ff20776f726c64 True False 8 3
+[97, 98, 99] [1, 2] b'hi' b'\x00\x00\x00' b''
+b'h\xc3\xa9llo \xe2\x9c\x93' 10 10 True héllo ✓
+b"it's" b'say "hi"' b'tab\there\n' b'q' b's'
+True True False True
+{b'k': 2}
+decode failed: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+bad byte: bytes must be in range(0, 256)

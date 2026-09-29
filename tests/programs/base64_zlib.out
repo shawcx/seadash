@@ -1,0 +1,18 @@
+b'Y2xhdWRlIHdhcyBoZXJl' b'claude was here' True
+0 b'' b''
+1 b'eA==' b'78'
+2 b'eHk=' b'7879'
+3 b'eHl6' b'78797A'
+4 b'eHl6IQ==' b'78797A21'
+b'-__-' b'+//+'
+b'\xfb\xff\xfe' b'HI.'
+b'claude' b'hi'
+error: Incorrect padding
+error: Invalid base64-encoded string: number of data characters (1) cannot be 1 more than a multiple of 4
+error: Incorrect padding
+2250 72 True
+77 72 8
+907060870 222957957 222957957
+103547413 True
+zlib error: Error -3 while decompressing data: incorrect header check
+zlib error: Error -5 while decompressing data: incomplete or truncated stream
