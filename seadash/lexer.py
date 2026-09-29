@@ -98,16 +98,17 @@ SIMPLE_ESCAPES = {
 STRING_PREFIXES = {"f": (True, False), "r": (False, True), "fr": (True, True), "rf": (True, True)}
 
 
-def tokenize(source: str) -> list[Token]:
-    return Lexer(source).tokenize()
+def tokenize(source: str, start: Loc = Loc(1, 1)) -> list[Token]:
+    """`start` is where `source` begins in its file (used for f-string expressions)."""
+    return Lexer(source, start).tokenize()
 
 
 class Lexer:
-    def __init__(self, source: str):
+    def __init__(self, source: str, start: Loc = Loc(1, 1)):
         self.src = source.replace("\r\n", "\n").replace("\r", "\n")
         self.pos = 0
-        self.line = 1
-        self.col = 1
+        self.line = start.line
+        self.col = start.col
         self.tokens: list[Token] = []
         self.indents = [""]  # stack of indentation strings; bottom is column 0
         self.brackets: list[tuple[str, Loc]] = []

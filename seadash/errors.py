@@ -39,3 +39,7 @@ class CompileError(Exception):
 
 class LexError(CompileError):
     pass
+
+
+class ParseError(CompileError):
+    pass
