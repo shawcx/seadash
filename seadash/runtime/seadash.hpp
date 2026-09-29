@@ -35,18 +35,108 @@ using namespace std::string_literals;
 namespace sd {
 
 // ============================================================================
-// Errors
+// Exceptions
 // ============================================================================
+//
+// Exceptions are classes (shared references) in seadash, so we throw a small
+// wrapper holding a shared_ptr and match `except` clauses with dynamic_cast.
+// The class tree mirrors Python's; keep it in sync with builtins.EXCEPTION_TREE.
 
-struct Error : std::runtime_error {
-    const char* kind;  // "IndexError", "KeyError", ...
-    Error(const char* kind, const std::string& msg) : std::runtime_error(msg), kind(kind) {}
+struct BaseException : std::enable_shared_from_this<BaseException> {
+    std::string message;
+    BaseException() = default;
+    explicit BaseException(std::string msg) : message(std::move(msg)) {}
+    virtual ~BaseException() = default;
+    virtual std::string sd_type() const { return "BaseException"; }
+    virtual std::string sd_repr() const;  // e.g. ValueError('bad input')
 };
 
-[[noreturn]] inline void raise(const char* kind, const std::string& msg) { throw Error(kind, msg); }
+#define SD_EXCEPTION(Name, Base)                                  \
+    struct Name : Base {                                          \
+        using Base::Base;                                         \
+        std::string sd_type() const override { return #Name; }    \
+    };
 
+SD_EXCEPTION(Exception, BaseException)
+SD_EXCEPTION(ArithmeticError, Exception)
+SD_EXCEPTION(ZeroDivisionError, ArithmeticError)
+SD_EXCEPTION(OverflowError, ArithmeticError)
+SD_EXCEPTION(LookupError, Exception)
+SD_EXCEPTION(IndexError, LookupError)
+
+// A KeyError from a failed lookup holds repr(key) as its message, so its
+// repr is KeyError('b') rather than KeyError("'b'"), matching Python.
+struct KeyError : LookupError {
+    using LookupError::LookupError;
+    bool from_lookup = false;
+    std::string sd_type() const override { return "KeyError"; }
+    std::string sd_repr() const override;
+};
+SD_EXCEPTION(ValueError, Exception)
+SD_EXCEPTION(TypeError, Exception)
+SD_EXCEPTION(AssertionError, Exception)
+SD_EXCEPTION(RuntimeError, Exception)
+SD_EXCEPTION(NotImplementedError, RuntimeError)
+SD_EXCEPTION(EOFError, Exception)
+SD_EXCEPTION(OSError, Exception)
+#undef SD_EXCEPTION
+
+struct Thrown {
+    std::shared_ptr<BaseException> exc;
+};
+
+template <class E>
+bool isinstance(const Thrown& t) {
+    return dynamic_cast<const E*>(t.exc.get()) != nullptr;
+}
+
+template <class E>
+[[noreturn]] void raise(const std::string& msg) {
+    throw Thrown{std::make_shared<E>(msg)};
+}
+
+// Used by the runtime itself, e.g. raise("IndexError", "list index out of range").
+[[noreturn]] inline void raise(std::string_view kind, const std::string& msg) {
+    if (kind == "IndexError") raise<IndexError>(msg);
+    if (kind == "KeyError") {
+        auto e = std::make_shared<KeyError>(msg);
+        e->from_lookup = true;
+        throw Thrown{e};
+    }
+    if (kind == "ValueError") raise<ValueError>(msg);
+    if (kind == "TypeError") raise<TypeError>(msg);
+    if (kind == "ZeroDivisionError") raise<ZeroDivisionError>(msg);
+    if (kind == "AssertionError") raise<AssertionError>(msg);
+    if (kind == "EOFError") raise<EOFError>(msg);
+    raise<RuntimeError>(msg);
+}
+
+// sys.exit(): not an exception seadash code can catch, but `finally` still runs.
 struct Exit {
     int code;
+};
+
+// Runs a `finally` block when the scope is left normally (including return,
+// break, continue). The exception path calls run_now() from a catch block,
+// so an exception thrown by the finally block itself replaces the original,
+// as in Python, instead of terminating the program.
+template <class F>
+struct Finally {
+    F body;
+    bool armed = true;
+    explicit Finally(F f) : body(std::move(f)) {}
+    Finally(const Finally&) = delete;
+    Finally& operator=(const Finally&) = delete;
+    void run_now() {
+        armed = false;
+        body();
+    }
+    ~Finally() noexcept(false) {
+        if (armed) {
+            armed = false;
+            body();
+        }
+    }
 };
 
 // Tag for constructors generated from a user-written __init__.
@@ -112,6 +202,12 @@ template <class T>
 std::string str(const T& x) {
     if constexpr (std::is_same_v<T, std::string>) {
         return x;
+    } else if constexpr (is_shared<T>::value) {
+        if constexpr (std::is_base_of_v<BaseException, typename T::element_type>) {
+            return x ? x->message : "None";  // str(e) is the message, like Python
+        } else {
+            return repr(x);
+        }
     } else {
         return repr(x);
     }
@@ -314,6 +410,13 @@ std::string repr(const T& x) {
     } else {
         static_assert(always_false<T>, "no repr for this type");
     }
+}
+
+inline std::string BaseException::sd_repr() const {
+    return sd_type() + "(" + (message.empty() ? "" : repr_str(message)) + ")";
+}
+inline std::string KeyError::sd_repr() const {
+    return from_lookup ? "KeyError(" + message + ")" : LookupError::sd_repr();
 }
 
 template <class... Ts>
@@ -1004,10 +1107,11 @@ inline int run_main(int argc, char** argv_, void (*module_main)()) {
     } catch (const Exit& e) {
         std::fflush(stdout);
         return e.code;
-    } catch (const Error& e) {
+    } catch (const Thrown& t) {
         std::fflush(stdout);
-        std::string msg = e.what();
-        std::fprintf(stderr, "%s%s%s\n", e.kind, msg.empty() ? "" : ": ", msg.c_str());
+        std::string type = t.exc->sd_type();
+        const std::string& msg = t.exc->message;
+        std::fprintf(stderr, "%s%s%s\n", type.c_str(), msg.empty() ? "" : ": ", msg.c_str());
         return 1;
     }
     std::fflush(stdout);

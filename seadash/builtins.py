@@ -12,9 +12,10 @@ from dataclasses import dataclass
 
 from . import ast as A
 from .errors import CheckError
+from .errors import Loc
 from .types import (
     BOOL, FLOAT, INT, NONE, STR,
-    DictType, IterType, ListType, ModuleType, OptionalType, SetType, TupleType, Type,
+    DictType, Field, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
 
@@ -523,3 +524,40 @@ MODULES: dict[str, Module] = {
         exit=sys_exit,
     ),
 }
+
+
+# ---- exceptions -------------------------------------------------------------
+
+# Built-in exception classes: (name, base). Kept in sync with seadash.hpp.
+EXCEPTION_TREE = [
+    ("BaseException", None),
+    ("Exception", "BaseException"),
+    ("ArithmeticError", "Exception"),
+    ("ZeroDivisionError", "ArithmeticError"),
+    ("OverflowError", "ArithmeticError"),
+    ("LookupError", "Exception"),
+    ("IndexError", "LookupError"),
+    ("KeyError", "LookupError"),
+    ("ValueError", "Exception"),
+    ("TypeError", "Exception"),
+    ("AssertionError", "Exception"),
+    ("RuntimeError", "Exception"),
+    ("NotImplementedError", "RuntimeError"),
+    ("EOFError", "Exception"),
+    ("OSError", "Exception"),
+]
+
+
+def make_exceptions() -> dict[str, StructType]:
+    out: dict[str, StructType] = {}
+    for name, base in EXCEPTION_TREE:
+        out[name] = StructType(name, "class", None, base=out.get(base), builtin=True)
+    # Every exception carries a message: `ValueError("bad")`, `str(e)`, `e.message`.
+    empty = A.StrLit("")
+    empty.ty = STR
+    out["BaseException"].fields["message"] = Field("message", STR, empty, Loc(0, 0))
+    return out
+
+
+EXCEPTIONS: dict[str, StructType] = make_exceptions()
+BASE_EXCEPTION = EXCEPTIONS["BaseException"]

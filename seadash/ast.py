@@ -342,6 +342,31 @@ class For(Stmt):
 
 
 @dataclass
+class Raise(Stmt):
+    """`raise exc from cause`; a bare `raise` (exc None) re-raises inside an except block."""
+
+    exc: Expr | None = None
+    cause: Expr | None = None
+
+
+@dataclass
+class ExceptHandler(Node):
+    """`except type as name:`. type None is a bare `except:`."""
+
+    type: Expr | None
+    name: Name | None
+    body: list[Stmt]
+
+
+@dataclass
+class Try(Stmt):
+    body: list[Stmt]
+    handlers: list[ExceptHandler]
+    orelse: list[Stmt] = field(default_factory=list)
+    finalbody: list[Stmt] = field(default_factory=list)
+
+
+@dataclass
 class Param(Node):
     name: str
     annotation: TypeExpr | None = None

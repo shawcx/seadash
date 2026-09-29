@@ -127,20 +127,58 @@ class FuncInfo:
 
 @dataclass(eq=False)
 class StructType(Type):
-    """A user `struct` (value semantics) or `class` (shared reference semantics)."""
+    """A user `struct` (value semantics) or `class` (shared reference semantics).
+
+    Built-in exception classes are StructTypes too (builtin=True). Only
+    exception classes may have a base class (for now).
+    """
 
     name: str
     kind: str  # 'struct' or 'class'
-    node: object  # ast.ClassDef
-    fields: dict[str, Field] = field(default_factory=dict)
+    node: object  # ast.ClassDef (None for built-ins)
+    fields: dict[str, Field] = field(default_factory=dict)  # declared here, not inherited
     methods: dict[str, FuncInfo] = field(default_factory=dict)
+    base: StructType | None = None
+    builtin: bool = False
 
     def __str__(self) -> str:
         return self.name
 
     @property
     def init(self) -> FuncInfo | None:
-        return self.methods.get("__init__")
+        return self.find_method("__init__")
+
+    def ancestors(self) -> list[StructType]:
+        """This class, then its base, then its base's base..."""
+        chain = []
+        t: StructType | None = self
+        while t is not None:
+            chain.append(t)
+            t = t.base
+        return chain
+
+    def is_subclass_of(self, other: StructType) -> bool:
+        return other in self.ancestors()
+
+    @property
+    def is_exception(self) -> bool:
+        return any(t.builtin and t.name == "BaseException" for t in self.ancestors())
+
+    def all_fields(self) -> dict[str, Field]:
+        """Inherited fields first, like a dataclass."""
+        out: dict[str, Field] = {}
+        for t in reversed(self.ancestors()):
+            out.update(t.fields)
+        return out
+
+    def find_field(self, name: str) -> Field | None:
+        return self.all_fields().get(name)
+
+    def find_method(self, name: str) -> FuncInfo | None:
+        for t in self.ancestors():
+            if name in t.methods:
+                return t.methods[name]
+        return None
 
 
 @dataclass(eq=False)
@@ -182,6 +220,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return True
     if src == INT and dst == FLOAT:
         return True
+    if isinstance(src, StructType) and isinstance(dst, StructType):
+        return src.is_subclass_of(dst)
     if isinstance(dst, OptionalType):
         if src == NONE:
             return True
@@ -199,6 +239,8 @@ def join(a: Type, b: Type) -> Type | None:
         return a
     if {a, b} == {INT, FLOAT}:
         return FLOAT
+    if isinstance(a, StructType) and isinstance(b, StructType):
+        return common_base(a, b)
     if a == NONE:
         return b if isinstance(b, OptionalType) else OptionalType(b)
     if b == NONE:
@@ -222,4 +264,12 @@ def element_type(t: Type) -> Type | None:
             return key
         case Prim("str"):
             return STR
+    return None
+
+
+def common_base(a: StructType, b: StructType) -> StructType | None:
+    """The nearest class both inherit from (e.g. LookupError for KeyError and IndexError)."""
+    for t in a.ancestors():
+        if b.is_subclass_of(t):
+            return t
     return None

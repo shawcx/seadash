@@ -1,0 +1,30 @@
+bad: invalid literal for int() with base 10: 'x1'
+12 -1
+1
+missing 'b' KeyError('b')
+2
+lookup failed: list index out of range
+ok: 0
+done 0
+ok: 10
+done 1
+ok: 20
+done 2
+error: 3 is too big
+done 3
+found 1
+lookup: bob NotFound('bob')
+other: empty name Invalid('empty name')
+finally runs first
+from try
+logging and re-raising
+caught again: integer division or modulo by zero
+loop finally 1
+loop finally 2
+loop finally 3
+count 3
+bare class raised: RuntimeError()
+inner finally
+outer caught: inner
+bare except caught it
+0.25 None

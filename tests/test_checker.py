@@ -617,8 +617,71 @@ def test_unknown_module_member():
 @pytest.mark.parametrize("src,msg", [
     ("def f[T](x: T) -> T:\n    return x", "generic functions are not supported yet"),
     ("x: int | str = 1", "union types are not supported yet (T? for 'T or None' is)"),
-    ("class A: pass\nclass B(A): pass", "inheritance is not supported yet"),
+    ("class A: pass\nclass B(A): pass", "inheritance is only supported for exception classes (for now), e.g. `class B(Exception):`"),
     ("def f():\n    def g(): pass", "functions can only be defined at the top level of a module (for now)"),
 ])
 def test_not_yet_supported(src, msg):
     assert err(src).message == msg
+
+
+# ---- exceptions -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("raise", "a bare 'raise' can only re-raise inside an 'except' block"),
+    ("raise 5", "can only raise exceptions, not int"),
+    ("struct P:\n    x: int\nraise P", "can only raise exceptions, not P"),
+    ("class E(Exception):\n    code: int\nraise E", "E needs arguments: `raise E(...)`"),
+    ("try:\n    pass\nexcept int:\n    pass", "'except' needs an exception class, like `except ValueError:`"),
+    ("struct S(Exception):\n    pass", "exceptions must be classes, not structs: `class S(Exception):`"),
+    ("class ValueError(Exception):\n    pass", "can't define a class named 'ValueError'; that's a built-in type"),
+    ("def f() -> int:\n    try:\n        return 1\n    finally:\n        return 2", "'return' can't be used inside a 'finally' block"),
+    ("for i in range(3):\n    try:\n        pass\n    finally:\n        break", "'break' can't leave a 'finally' block"),
+    ("try:\n    x = int('1')\nexcept ValueError:\n    print(x)", "'x' might not be assigned yet"),
+    ("try:\n    pass\nexcept ValueError as e:\n    pass\nprint(e)", "'e' might not be assigned yet"),
+])
+def test_exception_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_exception_types_and_hierarchy():
+    info = ok("""
+        class AppError(Exception):
+            code: int = 1
+        class DbError(AppError):
+            table: str = ""
+
+        def f() -> int:
+            try:
+                raise DbError("down", 2, "users")
+            except (KeyError, IndexError) as e:
+                print(e.message)
+                return 1
+            except AppError as e:
+                return e.code
+            return 0
+    """)
+    [f] = info.functions
+    assert variables(info, "f") == ["e: LookupError", "e_1: AppError"]
+
+
+def test_break_inside_loop_inside_finally_is_fine():
+    ok(fn("""
+        try:
+            pass
+        finally:
+            for i in range(3):
+                break
+    """))
+
+
+def test_try_else_sees_body_assignments():
+    ok(fn("""
+        try:
+            n = int("5")
+        except ValueError:
+            return 0
+        else:
+            n += 1
+        return n
+    """, ret="int"))

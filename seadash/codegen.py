@@ -80,6 +80,11 @@ def ident(name: str) -> str:
     return name
 
 
+def class_name(st: StructType) -> str:
+    """The C++ name of a struct/class; built-in exceptions live in the runtime."""
+    return f"sd::{st.name}" if st.builtin else ident(st.name)
+
+
 def cpp_string(s: str) -> str:
     """A C++ std::string literal ("..."s) holding the UTF-8 bytes of `s`."""
     out = []
@@ -119,6 +124,8 @@ class CodeGen:
         self.func: FuncInfo | None = None
         # For `break` in loops with an else: [goto label, whether a break used it]
         self.loop_labels: list[list] = []
+        # Expressions already evaluated into temporaries (see `in_order`).
+        self.precomputed: dict[int, str] = {}
         self.module_values = {
             id(v): (mod.name, name)
             for mod in builtins.MODULES.values()
@@ -132,7 +139,7 @@ class CodeGen:
         self.lines.append(("    " * self.depth + text) if text else "")
 
     def open(self, header: str) -> None:
-        self.line(header + " {")
+        self.line(f"{header} {{" if header else "{")
         self.depth += 1
 
     def close(self, trailer: str = "") -> None:
@@ -168,9 +175,9 @@ class CodeGen:
             case OptionalType(inner):
                 return f"std::optional<{self.cpp_type(inner)}>"
             case StructType(kind="class"):
-                return f"std::shared_ptr<{ident(t.name)}>"
+                return f"std::shared_ptr<{class_name(t)}>"
             case StructType():
-                return ident(t.name)
+                return class_name(t)
             case IterType(elem):
                 return f"sd::list<{self.cpp_type(elem)}>"
         raise NotImplementedError(f"no C++ type for {t}")
@@ -250,6 +257,8 @@ class CodeGen:
         def visit(st: StructType) -> None:
             if st in done:
                 return
+            if st.base is not None and not st.base.builtin:
+                visit(st.base)  # a C++ base class must be defined first
             for f in st.fields.values():
                 for dep in value_deps(f.type):
                     if dep is not st:
@@ -261,6 +270,9 @@ class CodeGen:
         return done
 
     def struct_definition(self, st: StructType) -> None:
+        if st.is_exception:
+            self.exception_definition(st)
+            return
         name = ident(st.name)
         base = f" : std::enable_shared_from_this<{name}>" if st.kind == "class" else ""
         self.open(f"struct {name}{base}")
@@ -286,8 +298,37 @@ class CodeGen:
         self.close(";")
         self.line()
 
+    def exception_definition(self, st: StructType) -> None:
+        """`class NotFound(ValueError)` derives from the runtime's sd::ValueError."""
+        name = ident(st.name)
+        self.open(f"struct {name} : {class_name(st.base)}")
+        for f in st.fields.values():
+            init = f" = {self.expr_as(f.default, f.type)}" if f.default is not None else "{}"
+            self.line(f"{self.cpp_type(f.type)} {ident(f.name)}{init};")
+        self.line(f"{name}() = default;")
+        if st.init is not None:
+            self.line(f"{name}({', '.join(['sd::init_t', *self.params(st.init)])});")
+        else:
+            fields = list(st.all_fields().values())
+            params = ", ".join(f"{self.cpp_type(f.type)} sd_{f.name}" for f in fields)
+            sets = " ".join(f"this->{ident(f.name)} = std::move(sd_{f.name});" for f in fields)
+            self.line(f"{name}({params}) {{ {sets} }}")
+        for m in st.methods.values():
+            if m.name != "__init__":
+                self.line(f"{self.cpp_type(m.ret)} {ident(m.name)}({', '.join(self.params(m))});")
+        self.line(f'std::string sd_type() const override {{ return "{st.name}"; }}')
+        self.close(";")
+        self.line()
+
     def struct_members(self, st: StructType) -> None:
         name = ident(st.name)
+        if st.is_exception:
+            for m in st.methods.values():
+                if m.name == "__init__":
+                    self.function_body(m, f"{name}::{name}({', '.join(['sd::init_t', *self.params(m)])})")
+                else:
+                    self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{ident(m.name)}({', '.join(self.params(m))})")
+            return
         fields = list(st.fields.values())
         parts = [cpp_string(f"{st.name}(")]
         for i, f in enumerate(fields):
@@ -380,6 +421,15 @@ class CodeGen:
             case A.Assert(test, msg):
                 message = f"sd::str({self.expr(msg)})" if msg is not None else '""s'
                 self.line(f'if (!{self.cond(test)}) sd::raise("AssertionError", {message});')
+            case A.Raise(exc):
+                if exc is None:
+                    self.line("throw;")
+                elif isinstance(s.sym, StructType):  # `raise ValueError`
+                    self.line(f"throw sd::Thrown{{std::make_shared<{class_name(s.sym)}>()}};")
+                else:
+                    self.line(f"throw sd::Thrown{{{self.expr(exc)}}};")
+            case A.Try():
+                self.try_stmt(s)
             case A.If():
                 self.if_stmt(s)
             case A.While(test, body, orelse):
@@ -402,6 +452,68 @@ class CodeGen:
             self.line("return std::nullopt;" if isinstance(ret, OptionalType) else "return;")
         else:
             self.line(f"return {self.expr_as(value, ret)};")
+
+    def try_stmt(self, s: A.Try) -> None:
+        if not s.finalbody:
+            self.try_except(s)
+            return
+        # The Finally guard runs the block on normal exits (and return/break/
+        # continue); the catch-all runs it on the exception path and rethrows.
+        fin = self.fresh("finally")
+        self.open("")
+        self.line(f"sd::Finally {fin}([&] {{")
+        self.depth += 1
+        self.block(s.finalbody)
+        self.depth -= 1
+        self.line("});")
+        self.open("try")
+        self.try_except(s)
+        self.depth -= 1
+        self.line("} catch (...) {")
+        self.depth += 1
+        self.line(f"{fin}.run_now();")
+        self.line("throw;")
+        self.close()
+        self.close()
+
+    def try_except(self, s: A.Try) -> None:
+        if not s.handlers:
+            self.block(s.body)
+            return
+        ok = self.fresh("ok") if s.orelse else None
+        if ok:
+            self.line(f"bool {ok} = false;")
+        caught = self.fresh("exc")
+        self.open("try")
+        self.block(s.body)
+        if ok:
+            self.line(f"{ok} = true;")
+        self.depth -= 1
+        self.line(f"}} catch (const sd::Thrown& {caught}) {{")
+        self.depth += 1
+        for i, h in enumerate(s.handlers):
+            classes: list[StructType] = h.sym
+            test = " || ".join(f"sd::isinstance<{class_name(c)}>({caught})" for c in classes) or "true"
+            if i == 0:
+                self.open(f"if ({test})")
+            else:
+                self.depth -= 1
+                self.line(f"}} else if ({test}) {{")
+                self.depth += 1
+            if h.name is not None:
+                var: Var = h.name.sym
+                self.line(f"{ident(var.cpp_name)} = std::dynamic_pointer_cast<{class_name(var.type)}>({caught}.exc);")
+            self.block(h.body)
+        self.depth -= 1
+        self.line("} else {")
+        self.depth += 1
+        self.line("throw;")
+        self.close()
+        self.close()
+        if ok:
+            self.open(f"if ({ok})")
+            self.block(s.orelse)
+            self.close()
 
     def if_stmt(self, s: A.If) -> None:
         self.open(f"if ({self.cond(s.test)})")
@@ -491,7 +603,33 @@ class CodeGen:
         code = self.expr(e)
         return code if e.ty == BOOL else f"sd::truthy({code})"
 
+    def in_order(self, operands: list[A.Expr], build) -> str:
+        """Evaluate operands left to right, as Python does.
+
+        C++ leaves the order of function arguments and of most binary
+        operands unspecified, so `print(f(), g())` might call g first. When at
+        least two operands could have side effects, evaluate them into
+        temporaries in source order inside a lambda, then build the expression
+        from those. `build` is called with no arguments and uses self.expr as
+        usual; the temporaries are substituted transparently.
+        """
+        if sum(has_call(x) for x in operands) < 2:
+            return build()
+        decls = []
+        for x in operands:
+            tmp = self.fresh("a")
+            decls.append(f"auto&& {tmp} = {self.expr(x)};")
+            self.precomputed[id(x)] = tmp
+        try:
+            inner = build()
+        finally:
+            for x in operands:
+                del self.precomputed[id(x)]
+        return f"[&]() {{ {' '.join(decls)} return {inner}; }}()"
+
     def expr(self, e: A.Expr) -> str:
+        if id(e) in self.precomputed:
+            return self.precomputed[id(e)]
         match e:
             case A.IntLit(v):
                 return f"{v}_i"
@@ -504,7 +642,8 @@ class CodeGen:
             case A.NoneLit():
                 return "std::nullopt"
             case A.FString(parts):
-                return self.fstring(parts)
+                values = [p.value for p in parts if isinstance(p, A.FormattedValue)]
+                return self.in_order(values, lambda: self.fstring(parts))
             case A.Name():
                 return self.name(e)
             case A.ListLit(elts) | A.SetLit(elts):
@@ -518,7 +657,7 @@ class CodeGen:
                 return f"{self.cpp_type(e.ty)}{{{pairs}}}"
             case A.TupleLit(elts):
                 args = ", ".join(self.expr_as(x, t) for x, t in zip(elts, e.ty.elts))
-                return f"{self.cpp_type(e.ty)}({args})"
+                return f"{self.cpp_type(e.ty)}{{{args}}}"  # braces: evaluated left to right
             case A.ListComp() | A.SetComp() | A.DictComp() | A.GeneratorExp():
                 return self.comprehension(e)
             case A.UnaryOp("not", operand):
@@ -526,7 +665,10 @@ class CodeGen:
             case A.UnaryOp(op, operand):
                 return f"({op}{self.expr(operand)})"
             case A.BinOp(op, left, right):
-                return self.binop_code(op, self.expr(left), left.ty, self.expr(right), right.ty, e.ty)
+                return self.in_order(
+                    [left, right],
+                    lambda: self.binop_code(op, self.expr(left), left.ty, self.expr(right), right.ty, e.ty),
+                )
             case A.BoolOp():
                 return self.boolop(e)
             case A.Compare():
@@ -553,7 +695,11 @@ class CodeGen:
 
     def var_code(self, var: Var, seen: Type) -> str:
         if var.name == "self" and var.kind == "param":
-            return "(*this)" if var.type.kind == "struct" else "this->shared_from_this()"
+            if var.type.kind == "struct":
+                return "(*this)"
+            if var.type.is_exception:  # shared_from_this() gives the BaseException pointer
+                return f"std::static_pointer_cast<{class_name(var.type)}>(this->shared_from_this())"
+            return "this->shared_from_this()"
         return self.view(ident(var.cpp_name), var.type, seen)
 
     def name(self, e: A.Name) -> str:
@@ -655,7 +801,9 @@ class CodeGen:
 
     def compare(self, e: A.Compare) -> str:
         operands = [e.left, *e.comparators]
-        if len(e.ops) == 1 or all(is_simple(x) for x in operands[1:-1]):
+        if len(e.ops) == 1:
+            return self.in_order(operands, lambda: self.comparison(e.ops[0], self.expr(e.left), e.left, self.expr(e.comparators[0]), e.comparators[0]))
+        if all(is_simple(x) for x in operands[1:-1]):
             parts = [
                 self.comparison(op, self.expr(l), l, self.expr(r), r)
                 for op, l, r in zip(e.ops, operands, operands[1:])
@@ -724,6 +872,9 @@ class CodeGen:
     # =========================================================================
 
     def call(self, e: A.Call) -> str:
+        return self.in_order([*e.args, *(k.value for k in e.keywords)], lambda: self.call_inner(e))
+
+    def call_inner(self, e: A.Call) -> str:
         target: CallTarget = e.sym
         match target.kind:
             case "func":
@@ -739,14 +890,12 @@ class CodeGen:
                 return f"{self.expr(recv)}{arrow}{ident(fn.name)}({args})"
             case "ctor":
                 st: StructType = target.target
+                args = self.slot_codes(target.args, target.params)
                 if st.init is not None:
-                    args = ", ".join(["sd::init", *self.slot_codes(target.args, st.init.params)])
-                else:
-                    params = [f for f in st.fields.values()]
-                    args = ", ".join(self.slot_codes(target.args, params))
+                    args = ["sd::init", *args]
                 if st.kind == "class":
-                    return f"std::make_shared<{ident(st.name)}>({args})"
-                return f"{ident(st.name)}({args})"
+                    return f"std::make_shared<{class_name(st)}>({', '.join(args)})"
+                return f"{class_name(st)}({', '.join(args)})"
             case "builtin":
                 return self.builtin_call(target.target, e)
             case "builtin_method":
@@ -908,6 +1057,13 @@ def constant_int(e: A.Expr) -> int | None:
         case A.UnaryOp("-", A.IntLit(v)):
             return -v
     return None
+
+
+def has_call(e: A.Expr) -> bool:
+    """Could evaluating `e` have side effects (or observe them)?"""
+    from .checker import walk
+
+    return any(isinstance(n, (A.Call, A.NamedExpr)) for n in walk(e))
 
 
 def is_simple(e: A.Expr) -> bool:

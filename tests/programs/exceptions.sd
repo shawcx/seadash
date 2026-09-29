@@ -1,0 +1,115 @@
+def parse(s: str) -> int:
+    try:
+        return int(s)
+    except ValueError as e:
+        print("bad:", e)
+        return -1
+
+print(parse("12"), parse("x1"))
+
+d = {"a": 1}
+for key in ["a", "b"]:
+    try:
+        print(d[key])
+    except KeyError as e:
+        print("missing", e, repr(e))
+
+xs = [1, 2, 3]
+for i in [1, 5]:
+    try:
+        print(xs[i])
+    except (KeyError, IndexError) as e:
+        print("lookup failed:", e)
+
+def risky(n: int) -> int:
+    if n > 2:
+        raise ValueError(f"{n} is too big")
+    return n * 10
+
+for n in range(4):
+    try:
+        v = risky(n)
+    except ValueError as e:
+        print("error:", e)
+    else:
+        print("ok:", v)
+    finally:
+        print("done", n)
+
+class NotFound(LookupError):
+    pass
+
+class Invalid(ValueError):
+    pass
+
+def find(name: str) -> int:
+    if name == "":
+        raise Invalid("empty name")
+    if name != "ann":
+        raise NotFound(name)
+    return 1
+
+for name in ["ann", "bob", ""]:
+    try:
+        print("found", find(name))
+    except LookupError as e:
+        print("lookup:", e, repr(e))
+    except Exception as e:
+        print("other:", e, repr(e))
+
+def cleanup_order() -> str:
+    try:
+        return "from try"
+    finally:
+        print("finally runs first")
+
+print(cleanup_order())
+
+def reraise():
+    try:
+        print(1 // 0)
+    except ZeroDivisionError:
+        print("logging and re-raising")
+        raise
+
+try:
+    reraise()
+except ArithmeticError as e:
+    print("caught again:", e)
+
+count = 0
+while True:
+    try:
+        count += 1
+        if count == 3:
+            break
+        continue
+    finally:
+        print("loop finally", count)
+print("count", count)
+
+try:
+    raise RuntimeError
+except RuntimeError as e:
+    print("bare class raised:", repr(e))
+
+try:
+    try:
+        raise IndexError("inner")
+    finally:
+        print("inner finally")
+except IndexError as e:
+    print("outer caught:", e)
+
+try:
+    int("zz")
+except:
+    print("bare except caught it")
+
+def safe_div(a: float, b: float) -> float?:
+    try:
+        return a / b
+    except ZeroDivisionError:
+        return None
+
+print(safe_div(1, 4), safe_div(1, 0))

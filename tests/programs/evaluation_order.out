@@ -1,0 +1,20 @@
+eval a
+eval b
+eval c
+1 2 3
+eval x
+eval y
+3
+eval l
+eval r
+eval s
+7
+eval p
+eval q
+True
+eval f1
+eval f2
+1 then 2
+eval t1
+eval t2
+['a', 'b', 'c', 'x', 'y', 'l', 'r', 's', 'p', 'q', 'f1', 'f2', 't1', 't2']

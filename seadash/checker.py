@@ -140,6 +140,7 @@ class CallTarget:
     kind: str
     target: object
     args: list[A.Expr | None] | None = None
+    params: list[Param] | None = None  # for 'ctor': the parameters `args` line up with
 
 
 @dataclass
@@ -168,6 +169,8 @@ class Checker:
         self.scope: FunctionScope | None = None
         self.state = State()
         self.loops: list[LoopContext] = []
+        self.handler_depth = 0  # inside an `except` block (bare `raise` allowed)
+        self.finally_loops: list[int] = []  # loop depth on entering each enclosing `finally`
 
     def error(self, message: str, node: A.Node | Loc) -> CheckError:
         return CheckError(message, node if isinstance(node, Loc) else node.loc)
@@ -196,6 +199,8 @@ class Checker:
                 case _:
                     top_level.append(stmt)
 
+        for node in struct_nodes:
+            self.resolve_base(node.sym)
         for node in struct_nodes:
             self.resolve_struct_members(node.sym)
         for node in func_nodes:
@@ -235,12 +240,12 @@ class Checker:
     def declare_struct(self, node: A.ClassDef) -> None:
         if node.name in self.structs or node.name in self.functions:
             raise self.error(f"'{node.name}' is already defined", node)
-        if node.name in PRIMITIVES or node.name in builtins.CONTAINER_TYPES:
+        if node.name in PRIMITIVES or node.name in builtins.CONTAINER_TYPES or node.name in builtins.EXCEPTIONS:
             raise self.error(f"can't define a {node.kind} named '{node.name}'; that's a built-in type", node)
         if node.type_params:
             raise self.error(f"generic {node.kind}s are not supported yet", node)
-        if node.bases:
-            raise self.error("inheritance is not supported yet", node.bases[0])
+        if len(node.bases) > 1:
+            raise self.error("multiple inheritance is not supported", node.bases[1])
         st = StructType(node.name, node.kind, node)
         node.sym = st
         self.structs[node.name] = st
@@ -263,11 +268,31 @@ class Checker:
             raise self.error(f"no module named '{name}' (available: {', '.join(sorted(builtins.MODULES))})", node)
         return mod
 
+    def lookup_struct(self, name: str) -> StructType | None:
+        return self.structs.get(name) or builtins.EXCEPTIONS.get(name)
+
+    def resolve_base(self, st: StructType) -> None:
+        """Only exception classes can inherit (for now): `class NotFound(ValueError): ...`"""
+        if not st.node.bases:
+            return
+        base_expr = st.node.bases[0]
+        base = self.resolve_type(base_expr)
+        if not (isinstance(base, StructType) and base.is_exception):
+            raise self.error(
+                f"inheritance is only supported for exception classes (for now), e.g. `class {st.name}(Exception):`",
+                base_expr,
+            )
+        if st.kind != "class":
+            raise self.error(f"exceptions must be classes, not structs: `class {st.name}({base.name}):`", st.node)
+        if base.is_subclass_of(st):
+            raise self.error(f"'{st.name}' can't inherit from itself", base_expr)
+        st.base = base
+
     def resolve_struct_members(self, st: StructType) -> None:
         for stmt in st.node.body:
             match stmt:
                 case A.AnnAssign(A.Name(name), annotation, default):
-                    if name in st.fields:
+                    if name in st.fields or (st.base and st.base.find_field(name)):
                         raise self.error(f"field '{name}' is already defined", stmt)
                     st.fields[name] = Field(name, self.resolve_type(annotation), default, stmt.loc)
                 case A.FunctionDef(name):
@@ -372,6 +397,8 @@ class Checker:
         self.scope = scope
         self.state = state
         self.loops = []
+        self.handler_depth = 0
+        self.finally_loops = []
 
     # =========================================================================
     # Type annotations
@@ -391,10 +418,10 @@ class Checker:
         raise self.error("invalid type", t)
 
     def resolve_type_name(self, node: A.TypeName, name: str, args: list[A.TypeExpr]) -> Type:
-        if name in PRIMITIVES or name in self.structs:
+        if name in PRIMITIVES or self.lookup_struct(name):
             if args:
                 raise self.error(f"'{name}' doesn't take type arguments", node)
-            return PRIMITIVES.get(name) or self.structs[name]
+            return PRIMITIVES.get(name) or self.lookup_struct(name)
         if name in builtins.CONTAINER_TYPES:
             arity = builtins.CONTAINER_TYPES[name]
             example = {"list": "list[int]", "set": "set[int]", "dict": "dict[str, int]", "tuple": "tuple[int, str]"}[name]
@@ -444,9 +471,11 @@ class Checker:
             case A.Pass():
                 pass
             case A.Break() | A.Continue():
+                word = "break" if isinstance(stmt, A.Break) else "continue"
                 if not self.loops:
-                    word = "break" if isinstance(stmt, A.Break) else "continue"
                     raise self.error(f"'{word}' outside a loop", stmt)
+                if self.finally_loops and self.finally_loops[-1] == len(self.loops):
+                    raise self.error(f"'{word}' can't leave a 'finally' block", stmt)
                 loop = self.loops[-1]
                 (loop.breaks if isinstance(stmt, A.Break) else loop.continues).append(self.state.copy())
                 self.state.dead = True
@@ -456,6 +485,10 @@ class Checker:
                 self.state, _ = self.check_condition(test)  # after `assert x`, x is known not None
                 if msg is not None:
                     self.check_expr(msg)
+            case A.Raise(exc, cause):
+                self.check_raise(stmt, exc, cause)
+            case A.Try():
+                self.check_try(stmt)
             case A.If():
                 self.check_if(stmt)
             case A.While():
@@ -479,8 +512,8 @@ class Checker:
                 return entry.var.type if isinstance(entry, Bound) else None
             case A.Attribute(value, attr):
                 owner = self.peek_type(value)
-                if isinstance(owner, StructType) and attr in owner.fields:
-                    return owner.fields[attr].type
+                if isinstance(owner, StructType) and (f := owner.find_field(attr)):
+                    return f.type
             case A.Index(value):
                 match self.peek_type(value):
                     case DictType(_, val):
@@ -532,7 +565,7 @@ class Checker:
                 owner = self.check_expr(obj)
                 if not isinstance(owner, StructType):
                     raise self.error(f"can't set attribute '{attr}' on {owner}", target)
-                f = owner.fields.get(attr)
+                f = owner.find_field(attr)
                 if f is None:
                     raise self.error(f"{owner.name} has no field '{attr}'", target)
                 if not assignable(t, f.type):
@@ -622,6 +655,8 @@ class Checker:
         scope = self.scope
         if scope.is_module:
             raise self.error("'return' outside a function", stmt)
+        if self.finally_loops:
+            raise self.error("'return' can't be used inside a 'finally' block", stmt)
         name = scope.info.name
         if value is None:
             if scope.ret != NONE and not isinstance(scope.ret, OptionalType):
@@ -635,6 +670,85 @@ class Checker:
             if not assignable(t, scope.ret):
                 raise self.error(f"'{name}' should return {scope.ret}, not {t}", value)
         self.state.dead = True
+
+    def check_raise(self, stmt: A.Raise, exc: A.Expr | None, cause: A.Expr | None) -> None:
+        if exc is None:
+            if not self.handler_depth:
+                raise self.error("a bare 'raise' can only re-raise inside an 'except' block", stmt)
+        elif isinstance(exc, A.Name) and exc.id not in self.state.names and (st := self.lookup_struct(exc.id)):
+            # `raise ValueError` is short for `raise ValueError()`
+            if not st.is_exception:
+                raise self.error(f"can only raise exceptions, not {st.name}", exc)
+            if any(p.default is None for p in self.constructor_params(st, exc)):
+                raise self.error(f"{st.name} needs arguments: `raise {st.name}(...)`", exc)
+            stmt.sym = st
+        else:
+            t = self.check_expr(exc)
+            if not (isinstance(t, StructType) and t.is_exception):
+                raise self.error(f"can only raise exceptions, not {t}", exc)
+        if cause is not None:
+            t = self.check_expr(cause)
+            if not (isinstance(t, StructType) and t.is_exception):
+                raise self.error(f"'raise ... from' needs an exception, not {t}", cause)
+        self.state.dead = True
+
+    def check_try(self, stmt: A.Try) -> None:
+        """Handlers can start from any point in the try body (it may raise anywhere),
+        so they see the merge of the states before and after each body statement."""
+        snapshots = [self.state.copy()]
+        for s in stmt.body:
+            self.check_stmt(s)
+            snapshots.append(self.state.copy())
+        raised = merge(snapshots)
+        raised.dead = False
+        self.check_block(stmt.orelse)
+        exits = [self.state]
+
+        for handler in stmt.handlers:
+            self.state = raised.copy()
+            caught = self.check_handler_types(handler)
+            if handler.name is not None:
+                self.bind(handler.name, caught, handler)
+            self.handler_depth += 1
+            self.check_block(handler.body)
+            self.handler_depth -= 1
+            if handler.name is not None and not self.state.dead:
+                self.state.names[handler.name.id] = MaybeUnbound()  # Python unbinds `e` after the block
+            exits.append(self.state)
+
+        if not stmt.finalbody:
+            self.state = merge(exits)
+            return
+        # `finally` runs on every path. Check it once for the exception path
+        # (errors only), then for the normal exits, which is what continues.
+        self.finally_loops.append(len(self.loops))
+        self.state = merge([raised, *exits])
+        self.state.dead = False
+        self.check_block(stmt.finalbody)
+        self.state = merge(exits)
+        dead = self.state.dead
+        self.state.dead = False
+        self.check_block(stmt.finalbody)
+        self.state.dead = self.state.dead or dead
+        self.finally_loops.pop()
+
+    def check_handler_types(self, handler: A.ExceptHandler) -> StructType:
+        """The classes an `except` clause catches; returns the type bound by `as e`."""
+        if handler.type is None:
+            handler.sym = []
+            return builtins.EXCEPTIONS["Exception"]
+        exprs = handler.type.elts if isinstance(handler.type, A.TupleLit) else [handler.type]
+        classes: list[StructType] = []
+        for e in exprs:
+            st = self.lookup_struct(e.id) if isinstance(e, A.Name) else None
+            if st is None or not st.is_exception:
+                raise self.error("'except' needs an exception class, like `except ValueError:`", e)
+            classes.append(st)
+        handler.sym = classes
+        caught = classes[0]
+        for st in classes[1:]:
+            caught = join(caught, st)
+        return caught
 
     def check_if(self, stmt: A.If) -> None:
         on_true, on_false = self.check_condition(stmt.test)
@@ -874,7 +988,7 @@ class Checker:
         if name in self.imported:
             mod, member = self.imported[name]
             return self.module_member(e, mod, member)
-        if name in self.functions or name in self.structs or name in builtins.FUNCTIONS:
+        if name in self.functions or self.lookup_struct(name) or name in builtins.FUNCTIONS:
             raise self.error(f"'{name}' can only be called here (functions aren't values yet)", e)
         if name in builtins.VALUES:
             e.sym = builtins.VALUES[name]
@@ -1080,10 +1194,10 @@ class Checker:
         if isinstance(vt, ModuleType):
             return self.module_member(e, value.sym, attr)
         if isinstance(vt, StructType):
-            if attr in vt.fields:
-                e.sym = vt.fields[attr]
-                return vt.fields[attr].type
-            if attr in vt.methods:
+            if f := vt.find_field(attr):
+                e.sym = f
+                return f.type
+            if vt.find_method(attr):
                 raise self.error(f"method '{attr}' can only be called here (add parentheses)", e)
             raise self.error(f"{vt.name} has no field '{attr}'", e)
         if isinstance(vt, OptionalType):
@@ -1153,8 +1267,8 @@ class Checker:
                 info = self.functions[name]
                 e.sym = CallTarget("func", info, self.match_args(e, info.params, f"{name}()"))
                 return info.ret
-            if name in self.structs:
-                return self.check_constructor(e, self.structs[name])
+            if st := self.lookup_struct(name):
+                return self.check_constructor(e, st)
             if name in self.imported and name not in self.module_assign_counts:
                 mod, member = self.imported[name]
                 return self.check_module_call(e, mod, member)
@@ -1167,9 +1281,9 @@ class Checker:
             if isinstance(owner, ModuleType):
                 return self.check_module_call(e, func.value.sym, func.attr)
             if isinstance(owner, StructType):
-                method = owner.methods.get(func.attr)
-                if method is None:
-                    if func.attr in owner.fields:
+                method = owner.find_method(func.attr)
+                if method is None or method.name == "__init__":
+                    if owner.find_field(func.attr):
                         raise self.error(f"'{func.attr}' is a field, not a method", func)
                     raise self.error(f"{owner.name} has no method '{func.attr}'", func)
                 e.sym = CallTarget("method", method, self.match_args(e, method.params, f"{func.attr}()"))
@@ -1198,22 +1312,26 @@ class Checker:
         return f.check(builtins.CallContext(self, e, f"{mod.name}.{member}()", None))
 
     def check_constructor(self, e: A.Call, st: StructType) -> Type:
-        if st.init is not None:
-            params = st.init.params
-        else:
-            params = [Param(f.name, f.type, f.default, f.loc) for f in st.fields.values()]
-            # Like a dataclass: fields without defaults are required, but a
-            # field with a default can't come before one without.
-            seen_default = False
-            for p in params:
-                if p.default is not None:
-                    seen_default = True
-                elif seen_default:
-                    raise self.error(
-                        f"{st.name}(): field '{p.name}' has no default but comes after a field that does", e
-                    )
-        e.sym = CallTarget("ctor", st, self.match_args(e, params, f"{st.name}()"))
+        params = self.constructor_params(st, e)
+        e.sym = CallTarget("ctor", st, self.match_args(e, params, f"{st.name}()"), params)
         return st
+
+    def constructor_params(self, st: StructType, node: A.Node) -> list[Param]:
+        if st.init is not None:
+            return st.init.params
+        params = [Param(f.name, f.type, f.default, f.loc) for f in st.all_fields().values()]
+        if st.is_exception and len(params) > 1 and any(p.default is None for p in params[1:]):
+            # HttpError("not found", 404): the message becomes required when later fields are.
+            params[0] = Param(params[0].name, params[0].type, None, params[0].loc)
+        # Like a dataclass: fields without defaults are required, but a
+        # field with a default can't come before one without.
+        seen_default = False
+        for p in params:
+            if p.default is not None:
+                seen_default = True
+            elif seen_default:
+                raise self.error(f"{st.name}(): field '{p.name}' has no default but comes after a field that does", node)
+        return params
 
     def match_args(self, e: A.Call, params: list[Param], what: str) -> list[A.Expr | None]:
         """Match positional and keyword arguments to parameters; returns one slot per parameter."""
@@ -1287,6 +1405,8 @@ def assigned_targets(stmts: list[A.Stmt]) -> list[str]:
                     names.extend(target_names(t))
             case A.AnnAssign(target) | A.AugAssign(target) | A.For(target) | A.NamedExpr(target):
                 names.extend(target_names(target))
+            case A.ExceptHandler(_, A.Name(name)):
+                names.append(name)
         for f in dataclasses.fields(node):
             if f.name not in ("loc", "sym", "ty"):
                 visit(getattr(node, f.name))
@@ -1306,7 +1426,7 @@ def count_assignments(stmts: list[A.Stmt]) -> dict[str, int]:
     # Anything assigned inside a nested block (if/for/while) or by a loop can
     # run zero or many times, so it can't be a simple global.
     for stmt in stmts:
-        if isinstance(stmt, (A.If, A.While, A.For)):
+        if isinstance(stmt, (A.If, A.While, A.For, A.Try)):
             for name in assigned_targets([stmt]):
                 counts[name] = counts.get(name, 0) + 1
     return counts

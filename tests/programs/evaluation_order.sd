@@ -1,0 +1,18 @@
+# Python evaluates left to right; so must seadash, even though C++ doesn't promise it.
+log: list[str] = []
+
+def note(name: str, value: int) -> int:
+    log.append(name)
+    print("eval", name)
+    return value
+
+def add(a: int, b: int) -> int:
+    return a + b
+
+print(note("a", 1), note("b", 2), note("c", 3))
+print(add(note("x", 1), note("y", 2)))
+print(note("l", 1) + note("r", 2) * note("s", 3))
+print(note("p", 1) < note("q", 2))
+print(f"{note('f1', 1)} then {note('f2', 2)}")
+t = (note("t1", 1), note("t2", 2))
+print(log)

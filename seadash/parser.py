@@ -36,7 +36,7 @@ COMPARISON_OPS = {"<", ">", "==", "!=", "<=", ">="}
 AUGMENTED_OPS = {"+=", "-=", "*=", "/=", "//=", "%=", "**=", "@=", "&=", "|=", "^=", "<<=", ">>="}
 
 # Python keywords we recognise but don't implement yet, so users get an honest error.
-NOT_YET_SUPPORTED = {"try", "except", "finally", "with", "raise", "global", "nonlocal", "del", "yield", "lambda"}
+NOT_YET_SUPPORTED = {"with", "global", "nonlocal", "del", "yield", "lambda"}
 
 
 def parse(source: str) -> A.Module:
@@ -110,8 +110,12 @@ class Parser:
                     return [self.parse_def()]
                 case "class" | "struct":
                     return [self.parse_class()]
+                case "try":
+                    return [self.parse_try()]
                 case "elif" | "else":
                     raise self.error(f"'{tok.value}' without a matching 'if'")
+                case "except" | "finally":
+                    raise self.error(f"'{tok.value}' without a matching 'try'")
                 case kw if kw in NOT_YET_SUPPORTED:
                     raise self.error(f"'{kw}' is not supported yet")
         if self.at("@"):
@@ -146,6 +150,13 @@ class Parser:
                     self.next()
                     value = None if self.at_statement_end() else self.parse_expr_list()
                     return A.Return(value, loc=loc)
+                case "raise":
+                    self.next()
+                    if self.at_statement_end():
+                        return A.Raise(loc=loc)
+                    exc = self.parse_expr()
+                    cause = self.parse_expr() if self.accept("from") else None
+                    return A.Raise(exc, cause, loc=loc)
                 case "assert":
                     self.next()
                     test = self.parse_expr()
@@ -242,6 +253,31 @@ class Parser:
         body = self.parse_block("'for' statement")
         orelse = self.parse_block("'else'") if self.accept("else") else []
         return A.For(target, it, body, orelse, loc=loc)
+
+    def parse_try(self) -> A.Try:
+        loc = self.next().loc
+        body = self.parse_block("'try'")
+        handlers: list[A.ExceptHandler] = []
+        while tok := self.accept("except"):
+            if handlers and handlers[-1].type is None:
+                raise self.error("a bare 'except:' must be the last except clause", handlers[-1].loc)
+            exc_type = None
+            name = None
+            if not self.at(":"):
+                exc_type = self.parse_expr()
+                if self.accept("as"):
+                    name_tok = self.expect_name("a name after 'as'")
+                    name = A.Name(name_tok.value, loc=name_tok.loc)
+            handlers.append(A.ExceptHandler(exc_type, name, self.parse_block("'except'"), loc=tok.loc))
+        orelse: list[A.Stmt] = []
+        if tok := self.accept("else"):
+            if not handlers:
+                raise self.error("'else' after 'try' needs at least one 'except' clause", tok.loc)
+            orelse = self.parse_block("'else'")
+        finalbody = self.parse_block("'finally'") if self.accept("finally") else []
+        if not handlers and not finalbody:
+            raise self.error(f"expected 'except' or 'finally' after the 'try' block, found {describe(self.peek())}")
+        return A.Try(body, handlers, orelse, finalbody, loc=loc)
 
     def parse_def(self) -> A.FunctionDef:
         loc = self.next().loc

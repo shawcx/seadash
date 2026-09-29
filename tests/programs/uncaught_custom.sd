@@ -1,0 +1,12 @@
+class ConfigError(Exception):
+    pass
+
+def load(name: str):
+    try:
+        raise ConfigError(f"missing setting '{name}'")
+    finally:
+        print("cleanup ran")
+
+print("loading")
+load("port")
+print("unreachable")

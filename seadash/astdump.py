@@ -125,6 +125,20 @@ def stmt(s: A.Stmt, depth: int) -> list[str]:
             return [pad + sexp("import", *map(alias, names))]
         case A.ImportFrom(module, names):
             return [pad + sexp("from", module, "import", *map(alias, names))]
+        case A.Raise(exc, cause):
+            parts = ([expr(exc)] if exc else []) + (["from", expr(cause)] if cause else [])
+            return [pad + sexp("raise", *parts)]
+        case A.Try(body, handlers, orelse, finalbody):
+            out = [pad + "try:"] + stmt_lines(body, depth + 1)
+            for h in handlers:
+                what = (" " + expr(h.type)) if h.type else ""
+                what += f" as {h.name.id}" if h.name else ""
+                out += [pad + f"except{what}:"] + stmt_lines(h.body, depth + 1)
+            if orelse:
+                out += [pad + "else:"] + stmt_lines(orelse, depth + 1)
+            if finalbody:
+                out += [pad + "finally:"] + stmt_lines(finalbody, depth + 1)
+            return out
         case A.If(test, body, orelse):
             return header(f"if {expr(test)}:", body, orelse)
         case A.While(test, body, orelse):

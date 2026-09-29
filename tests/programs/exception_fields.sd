@@ -1,0 +1,39 @@
+# seadash exceptions carry a `message` plus any fields you declare
+class HttpError(Exception):
+    status: int
+
+    def is_client_error(self) -> bool:
+        return 400 <= self.status < 500
+
+class NotFoundError(HttpError):
+    path: str = "/"
+
+def fetch(path: str) -> str:
+    if path == "/missing":
+        raise NotFoundError("no such page", 404, path)
+    if path == "/boom":
+        raise HttpError("server exploded", status=500)
+    return "<html>"
+
+for path in ["/", "/missing", "/boom"]:
+    try:
+        print(fetch(path))
+    except NotFoundError as e:
+        print("not found:", e.path, e.status, e.message, e.is_client_error())
+    except HttpError as e:
+        print(f"http error {e.status}: {e}", e.is_client_error())
+
+errors: list[Exception] = []
+for s in ["1", "x", "2"]:
+    try:
+        n = int(s)
+    except ValueError as e:
+        errors.append(e)
+print(len(errors), errors)
+
+last: Exception? = None
+try:
+    raise ValueError("kept")
+except ValueError as e:
+    last = e
+print("kept for later:", last)  # the checker knows the handler assigned it
