@@ -19,6 +19,9 @@ NOLOC = Loc(0, 0)
 @dataclass
 class Node:
     loc: Loc = field(default=NOLOC, compare=False, repr=False, kw_only=True)
+    # Filled in by the checker: what a name/call/attribute/definition resolved
+    # to (a types.Var, types.FuncInfo, types.StructType, builtin tag, ...).
+    sym: object = field(default=None, compare=False, repr=False, kw_only=True)
 
 
 # ---- types ------------------------------------------------------------------
@@ -67,7 +70,8 @@ class UnionType(TypeExpr):
 
 @dataclass
 class Expr(Node):
-    pass
+    # Filled in by the checker: this expression's types.Type.
+    ty: object = field(default=None, compare=False, repr=False, kw_only=True)
 
 
 @dataclass

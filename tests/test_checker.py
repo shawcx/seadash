@@ -1,0 +1,624 @@
+import textwrap
+
+import pytest
+
+from seadash.checker import ModuleInfo, check
+from seadash.errors import CheckError, Loc
+from seadash.parser import parse
+
+
+def ok(source: str) -> ModuleInfo:
+    return check(parse(textwrap.dedent(source)))
+
+
+def err(source: str) -> CheckError:
+    with pytest.raises(CheckError) as info:
+        ok(source)
+    return info.value
+
+
+def variables(info: ModuleInfo, function: str | None = None) -> list[str]:
+    """`cpp_name: type` for each variable of a function (None = module code)."""
+    if function is None:
+        vs = info.globals + info.main_locals
+    else:
+        [fn] = [f for f in info.functions if f.name == function]
+        vs = fn.locals
+    return [f"{v.cpp_name}: {v.type}" for v in vs]
+
+
+def fn(body: str, params: str = "", ret: str = "") -> str:
+    """Wrap statements in a function so they're checked as locals."""
+    arrow = f" -> {ret}" if ret else ""
+    return f"def f({params}){arrow}:\n" + textwrap.indent(textwrap.dedent(body), "    ")
+
+
+# ---- rebinding --------------------------------------------------------------
+
+
+def test_rebinding_to_a_new_type_makes_a_new_variable():
+    info = ok(fn("""
+        a = 2
+        a = str(a)
+        a = a + "!"
+    """))
+    assert variables(info, "f") == ["a: int", "a_1: str"]
+
+
+def test_same_type_reuses_the_variable():
+    info = ok(fn("""
+        a = 2
+        a = 3
+        a += 1
+    """))
+    assert variables(info, "f") == ["a: int"]
+
+
+def test_int_into_float_variable_is_widened_not_rebound():
+    info = ok(fn("""
+        x: float = 0
+        x = 1
+        x = x / 2
+    """))
+    assert variables(info, "f") == ["x: float"]
+
+
+def test_aug_assign_can_rebind_like_python():
+    info = ok(fn("""
+        n = 1
+        n += 0.5
+    """))
+    assert variables(info, "f") == ["n: int", "n_1: float"]
+
+
+def test_switching_back_reuses_the_first_variable():
+    info = ok(fn("""
+        a = 1
+        a = "x"
+        a = 2
+    """))
+    assert variables(info, "f") == ["a: int", "a_1: str"]
+
+
+def test_rebinding_at_module_level():
+    info = ok("""
+        a = 2
+        a = str(a)
+        print(a)
+    """)
+    assert variables(info) == ["a: int", "a_1: str"]
+
+
+# ---- control flow merges ----------------------------------------------------
+
+
+def test_branches_that_agree_are_fine():
+    ok(fn("""
+        if True:
+            a = 1
+        else:
+            a = 2
+        print(a)
+    """))
+
+
+def test_branches_that_disagree_are_an_error_when_read():
+    e = err(fn("""
+        if True:
+            a = 1
+        else:
+            a = "one"
+        print(a)
+    """))
+    assert "'a' has different types depending on the path" in e.message
+    assert "int (line 4), str (line 6)" in e.message
+    assert e.loc == Loc(7, 11)
+
+
+def test_branches_that_disagree_are_fine_if_reassigned_before_use():
+    ok(fn("""
+        if True:
+            a = 1
+        else:
+            a = "one"
+        a = 2.5
+        print(a)
+    """))
+
+
+def test_maybe_unassigned():
+    e = err(fn("""
+        if True:
+            a = 1
+        print(a)
+    """))
+    assert e.message == "'a' might not be assigned yet"
+
+
+def test_used_before_assignment():
+    e = err(fn("""
+        print(a)
+        a = 1
+    """))
+    assert e.message == "'a' is used before it's assigned"
+
+
+def test_return_in_one_branch_means_the_other_decides():
+    ok(fn("""
+        if True:
+            return 0
+        else:
+            a = 5
+        return a
+    """, ret="int"))
+
+
+def test_loop_that_changes_a_type_is_caught_on_the_second_iteration():
+    e = err(fn("""
+        a = 0
+        for x in range(3):
+            print(a + 1)
+            a = str(a)
+    """))
+    assert "'a' has different types" in e.message
+    assert e.loc.line == 5
+
+
+def test_loop_with_consistent_types_is_fine():
+    info = ok(fn("""
+        total = 0
+        for x in [1, 2, 3]:
+            total += x
+        print(total)
+    """))
+    assert variables(info, "f") == ["total: int", "x: int"]
+
+
+def test_variable_first_assigned_in_loop_may_be_unassigned_after():
+    e = err(fn("""
+        for x in range(3):
+            last = x
+        print(last)
+    """))
+    assert e.message == "'last' might not be assigned yet"
+
+
+def test_while_true_only_exits_through_break():
+    ok(fn("""
+        while True:
+            line = input()
+            if line == "q":
+                break
+        print(line)
+    """))
+
+
+def test_break_continue_outside_loop():
+    assert err(fn("break")).message == "'break' outside a loop"
+
+
+# ---- optionals and narrowing ------------------------------------------------
+
+
+def test_optional_needs_a_check_before_use():
+    e = err("""
+        struct P:
+            x: int
+        def f(p: P?) -> int:
+            return p.x
+    """)
+    assert e.message == "P? might be None; check it first, e.g. `if p is not None:`"
+
+
+@pytest.mark.parametrize("condition", ["p is not None", "p", "p != None"])
+def test_narrowing_in_if(condition):
+    ok(f"""
+        struct P:
+            x: int
+        def f(p: P?) -> int:
+            if {condition}:
+                return p.x
+            return 0
+    """)
+
+
+def test_narrowing_after_early_return():
+    ok("""
+        struct P:
+            x: int
+        def f(p: P?) -> int:
+            if p is None:
+                return 0
+            return p.x
+    """)
+
+
+def test_narrowing_with_and_and_not():
+    ok("""
+        def f(n: int?, m: int?) -> bool:
+            if not n:
+                return False
+            return n > 3 and m is not None and m + 1 > 4
+    """)
+
+
+def test_redundant_none_check_after_narrowing_is_reported():
+    e = err("""
+        def f(n: int?) -> bool:
+            if not n:
+                return False
+            return n is not None
+    """)
+    assert e.message == "int can never be None (only T? types can)"
+
+
+def test_narrowing_with_walrus():
+    ok("""
+        def find(xs: list[int], x: int) -> int?:
+            for i, y in enumerate(xs):
+                if y == x:
+                    return i
+            return None
+
+        def f() -> int:
+            if (i := find([1, 2], 2)) is not None:
+                return i + 1
+            if j := find([3], 3):
+                return j
+            return -1
+    """)
+
+
+def test_narrowing_with_assert():
+    ok(fn("""
+        assert n is not None
+        return n + 1
+    """, params="n: int?", ret="int"))
+
+
+def test_or_default_unwraps_optional():
+    info = ok(fn("""
+        d: dict[str, int] = {}
+        count = d.get("a") or 0
+    """))
+    assert "count: int" in variables(info, "f")
+
+
+def test_narrowing_is_undone_by_merge():
+    e = err(fn("""
+        if n is not None:
+            print(n + 1)
+        print(n + 1)
+    """, params="n: int?"))
+    assert e.message == "unsupported operand types for +: int? and int"
+
+
+def test_assigning_none_needs_annotation():
+    e = err(fn("x = None"))
+    assert e.message == "can't tell what type 'x' should be from None alone; annotate it, e.g. `x: int? = None`"
+    info = ok(fn("""
+        x: int? = None
+        x = 5
+        print(x + 1)
+    """))
+    assert variables(info, "f") == ["x: int?"]
+
+
+def test_is_none_on_non_optional():
+    assert err(fn("print(n is None)", params="n: int")).message == "int can never be None (only T? types can)"
+
+
+# ---- functions --------------------------------------------------------------
+
+
+def test_params_need_annotations():
+    e = err("def f(x): pass")
+    assert e.message == "parameter 'x' needs a type annotation, e.g. `x: int`"
+
+
+def test_return_type_required_to_return_a_value():
+    e = err(fn("return 5"))
+    assert e.message == "'f' returns a value but has no return type; add `-> int` to its definition"
+
+
+def test_missing_return():
+    e = err(fn("""
+        if n > 0:
+            return 1
+    """, params="n: int", ret="int"))
+    assert e.message == "function 'f' can reach its end without returning a value (it's declared to return int)"
+
+
+def test_optional_return_may_fall_off_the_end():
+    ok(fn("pass", ret="int?"))
+
+
+def test_wrong_return_type():
+    assert err(fn("return 'x'", ret="int")).message == "'f' should return int, not str"
+
+
+@pytest.mark.parametrize("call,msg", [
+    ("add(1)", "add() is missing argument 'b'"),
+    ("add(1, 2, 3)", "add() takes 2 arguments but 3 were given"),
+    ("add(1, c=2)", "add() got an unexpected keyword argument 'c'"),
+    ("add(1, a=2)", "add() got multiple values for argument 'a'"),
+    ("add(1, 'x')", "argument 'b' of add() must be int, not str"),
+    ("nope(1)", "name 'nope' is not defined"),
+])
+def test_call_errors(call, msg):
+    e = err(f"""
+        def add(a: int, b: int) -> int:
+            return a + b
+        {call}
+    """)
+    assert e.message == msg
+
+
+def test_calls_with_defaults_and_keywords():
+    info = ok("""
+        def greet(name: str, punct: str = "!", times: int = 1) -> str:
+            return (name + punct) * times
+        x = greet("hi", times=3)
+    """)
+    [g] = [f for f in info.functions if f.name == "greet"]
+    assert g.ret.name == "str"
+
+
+def test_functions_can_call_each_other_in_any_order():
+    ok("""
+        def a() -> int:
+            return b() + 1
+        def b() -> int:
+            return 1
+    """)
+
+
+# ---- globals ----------------------------------------------------------------
+
+
+def test_functions_can_read_single_assignment_globals():
+    info = ok("""
+        LIMIT = 10
+        names: list[str] = []
+        def f() -> int:
+            names.append("x")
+            return LIMIT
+    """)
+    assert variables(info) == ["LIMIT: int", "names: list[str]"]
+
+
+def test_functions_cannot_read_rebound_globals():
+    e = err("""
+        a = 1
+        a = "x"
+        def f() -> str:
+            return a
+    """)
+    assert e.message.startswith("functions can only use module-level variables that are assigned exactly once")
+
+
+def test_local_assignment_shadows_global_for_whole_function():
+    e = err("""
+        x = 1
+        def f():
+            print(x)
+            x = 2
+    """)
+    assert e.message == "'x' is used before it's assigned"
+
+
+# ---- structs and classes ----------------------------------------------------
+
+
+def test_struct_constructor_and_methods():
+    info = ok("""
+        struct Point:
+            x: float
+            y: float = 0.0
+
+            def scaled(self, k: float) -> Point:
+                return Point(self.x * k, self.y * k)
+
+        p = Point(3)
+        q = p.scaled(2).scaled(k=0.5)
+        p.x = 5
+    """)
+    assert variables(info) == ["p: Point", "q: Point"]
+
+
+@pytest.mark.parametrize("line,msg", [
+    ("p = Point()", "Point() is missing argument 'x'"),
+    ("p = Point(1, 2, 3)", "Point() takes 2 arguments but 3 were given"),
+    ("print(Point(1).z)", "Point has no field 'z'"),
+    ("Point(1).nope()", "Point has no method 'nope'"),
+    ("Point(1).x = 'a'", "field 'x' is float, can't assign str"),
+    ("print(Point(1).norm)", "method 'norm' can only be called here (add parentheses)"),
+])
+def test_struct_errors(line, msg):
+    e = err(f"""
+        struct Point:
+            x: float
+            y: float = 0.0
+            def norm(self) -> float:
+                return self.x
+        {line}
+    """)
+    assert e.message == msg
+
+
+def test_class_with_init():
+    ok("""
+        class Counter:
+            count: int
+            step: int
+
+            def __init__(self, step: int = 1):
+                self.count = 0
+                self.step = step
+
+            def tick(self):
+                self.count += self.step
+
+        c = Counter(step=2)
+        c.tick()
+    """)
+
+
+def test_struct_cannot_contain_itself_but_class_can():
+    e = err("""
+        struct Node:
+            value: int
+            next: Node?
+    """)
+    assert e.message == "struct 'Node' can't contain itself (field 'next'); make it a class, or use a list"
+    ok("""
+        class Node:
+            value: int
+            next: Node?
+    """)
+
+
+def test_struct_body_restrictions():
+    e = err("""
+        struct P:
+            x = 1
+    """)
+    assert e.message == "a struct body can only contain fields (`x: int`) and methods (`def ...`)"
+
+
+def test_method_needs_self():
+    assert err("struct P:\n    def f(): pass\n").message == "method 'f' needs 'self' as its first parameter"
+
+
+# ---- expressions and operators ----------------------------------------------
+
+
+@pytest.mark.parametrize("expr,ty", [
+    ("1 + 2", "int"),
+    ("1 + 2.0", "float"),
+    ("7 / 2", "float"),
+    ("7 // 2", "int"),
+    ("2 ** 10", "int"),
+    ("'a' + 'b'", "str"),
+    ("'ab' * 3", "str"),
+    ("[1] + [2]", "list[int]"),
+    ("[1, 2.5]", "list[float]"),
+    ("[[1], [2, 3]]", "list[list[int]]"),
+    ("{'a': 1}", "dict[str, int]"),
+    ("{1, 2}", "set[int]"),
+    ("(1, 'a')", "tuple[int, str]"),
+    ("(1, 'a')[1]", "str"),
+    ("'hello'[1:3]", "str"),
+    ("[1, 2, 3][::-1]", "list[int]"),
+    ("1 < 2 < 3", "bool"),
+    ("3 in [1, 2]", "bool"),
+    ("'ell' in 'hello'", "bool"),
+    ("1 if True else 2.5", "float"),
+    ("[x * 2 for x in range(3)]", "list[int]"),
+    ("{w: len(w) for w in ['a', 'bb']}", "dict[str, int]"),
+    ("[(i, c) for i, c in enumerate('abc')]", "list[tuple[int, str]]"),
+    ("sum(x for x in [1.5, 2])", "float"),
+    ("sorted({3, 1, 2})", "list[int]"),
+    ("'a,b'.split(',')", "list[str]"),
+    ("', '.join(['a', 'b'])", "str"),
+    ("{'a': 1}.get('a')", "int?"),
+    ("{'a': 1}.get('a', 0)", "int"),
+    ("max(1, 2.5)", "float"),
+    ("min([3, 1])", "int"),
+    ("abs(-3)", "int"),
+    ("round(2.5)", "int"),
+    ("f'{1 + 1} is two'", "str"),
+])
+def test_expression_types(expr, ty):
+    info = ok(f"x = {expr}\n")
+    [v] = info.globals
+    assert str(v.type) == ty
+
+
+@pytest.mark.parametrize("expr,msg", [
+    ("'n = ' + 5", "unsupported operand types for +: str and int (convert with str(...), or use an f-string)"),
+    ("[1, 'a']", "list items have different types: int and str"),
+    ("[]", "can't tell what type of list this is; annotate the variable, e.g. `xs: list[int] = []`"),
+    ("{}", "can't tell what type of dict this is; annotate the variable, e.g. `d: dict[str, int] = {}`"),
+    ("1 == 'a'", "comparing int with str using '==' is always False"),
+    ("1 < 'a'", "'<' isn't supported between int and str"),
+    ("'a' in [1]", "a str can never be in a list[int]"),
+    ("len(5)", "len() argument must be a str, list, dict, set or tuple, not int"),
+    ("len()", "len() takes exactly 1 argument (0 given)"),
+    ("[1].append('x')", "list.append() argument must be int, not str"),
+    ("'abc'.nope()", "str has no method 'nope'"),
+    ("(1, 'a')[5]", "tuple index 5 is out of range for tuple[int, str]"),
+    ("5[0]", "int can't be indexed"),
+    ("'%d' % 5", "'%' formatting isn't supported; use an f-string: f\"{x}\""),
+    ("1 if True else 'a'", "the two branches have different types: int and str"),
+    ("print('x')", "this call doesn't return a value"),
+    ("range(3)", "can't store range(...) in a variable; loop over it directly, or make a list with list(...)"),
+    ("{[1]: 2}", "dict keys must be int, float, str, bool, or a tuple of those; not list[int]"),
+    ("'s'.join([1, 2])", "str.join() needs strings, not int (convert with str(...) first)"),
+    ("print", "'print' can only be called here (functions aren't values yet)"),
+])
+def test_expression_errors(expr, msg):
+    assert err(f"x = {expr}\n").message == msg
+
+
+def test_empty_containers_take_their_type_from_the_annotation():
+    info = ok("""
+        xs: list[int] = []
+        d: dict[str, list[int]] = {}
+        s: set[str] = {}
+        d["a"] = []
+        xs = []
+    """)
+    # xs is assigned twice, so it's local to the module code rather than a global
+    assert info.main_locals[0].name == "xs"
+    assert variables(info) == ["d: dict[str, list[int]]", "s: set[str]", "xs: list[int]"]
+
+
+def test_tuple_unpacking_and_swap():
+    info = ok(fn("""
+        a, b = 1, "x"
+        b, a = a, b
+    """))
+    assert variables(info, "f") == ["a: int", "b: str", "b_1: int", "a_1: str"]
+
+
+def test_immutable_values():
+    assert err(fn("s = 'abc'\ns[0] = 'x'")).message == "str can't be changed in place (it's immutable)"
+
+
+def test_cannot_loop_over_int():
+    assert err(fn("for i in 10:\n    pass")).message == "can't loop over int"
+
+
+# ---- modules ----------------------------------------------------------------
+
+
+def test_math_module():
+    info = ok("""
+        import math
+        from math import sqrt as root, pi
+        x = math.sqrt(2) + root(3) * pi
+        n = math.floor(2.5)
+    """)
+    assert variables(info) == ["x: float", "n: int"]
+
+
+def test_unknown_module():
+    assert err("import base64").message == "no module named 'base64' (available: math, sys)"
+
+
+def test_unknown_module_member():
+    assert err("import math\nx = math.nope(1)").message == "module 'math' has no member 'nope'"
+
+
+# ---- not yet supported -------------------------------------------------------
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("def f[T](x: T) -> T:\n    return x", "generic functions are not supported yet"),
+    ("x: int | str = 1", "union types are not supported yet (T? for 'T or None' is)"),
+    ("class A: pass\nclass B(A): pass", "inheritance is not supported yet"),
+    ("def f():\n    def g(): pass", "functions can only be defined at the top level of a module (for now)"),
+])
+def test_not_yet_supported(src, msg):
+    assert err(src).message == msg
