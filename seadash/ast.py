@@ -9,6 +9,8 @@ small tree for type annotations, since seadash types (`int?`, `list[int]`)
 are not ordinary expressions.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 from .errors import Loc
@@ -52,7 +54,8 @@ class OptionalType(TypeExpr):
     inner: TypeExpr
 
     def __str__(self) -> str:
-        return f"{self.inner}?"
+        inner = f"({self.inner})" if isinstance(self.inner, (FuncTypeExpr, UnionType)) else str(self.inner)
+        return f"{inner}?"
 
 
 @dataclass
@@ -63,6 +66,17 @@ class UnionType(TypeExpr):
 
     def __str__(self) -> str:
         return " | ".join(map(str, self.options))
+
+
+@dataclass
+class FuncTypeExpr(TypeExpr):
+    """`(int, str) -> bool`, or Python's `Callable[[int, str], bool]`."""
+
+    params: list[TypeExpr]
+    ret: TypeExpr
+
+    def __str__(self) -> str:
+        return f"({', '.join(map(str, self.params))}) -> {self.ret}"
 
 
 # ---- expressions ------------------------------------------------------------
@@ -216,6 +230,14 @@ class NamedExpr(Expr):
 
     target: Name
     value: Expr
+
+
+@dataclass
+class Lambda(Expr):
+    """`lambda x, y: body`. Parameter types come from the expected function type."""
+
+    params: list[Param]
+    body: Expr
 
 
 @dataclass

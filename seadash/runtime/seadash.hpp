@@ -177,6 +177,8 @@ template <class T> struct is_optional : std::false_type {};
 template <class T> struct is_optional<std::optional<T>> : std::true_type {};
 template <class T> struct is_tuple : std::false_type {};
 template <class... T> struct is_tuple<std::tuple<T...>> : std::true_type {};
+template <class T> struct is_function : std::false_type {};
+template <class R, class... A> struct is_function<std::function<R(A...)>> : std::true_type {};
 template <class T> struct is_shared : std::false_type {};
 template <class T> struct is_shared<std::shared_ptr<T>> : std::true_type {};
 
@@ -403,6 +405,8 @@ std::string repr(const T& x) {
         std::size_t i = 0;
         std::apply([&](const auto&... e) { ((out += (i++ ? ", " : "") + repr(e)), ...); }, x);
         return out + (std::tuple_size_v<T> == 1 ? ",)" : ")");
+    } else if constexpr (is_function<T>::value) {
+        return "<function>";
     } else if constexpr (is_shared<T>::value) {
         return x ? x->sd_repr() : "None";
     } else if constexpr (requires { x.sd_repr(); }) {
@@ -448,8 +452,8 @@ bool truthy(const T& x) {
         return x.has_value() && truthy(*x);
     } else if constexpr (is_tuple<T>::value) {
         return std::tuple_size_v<T> != 0;
-    } else if constexpr (is_shared<T>::value) {
-        return x != nullptr;
+    } else if constexpr (is_shared<T>::value || is_function<T>::value) {
+        return static_cast<bool>(x);
     } else if constexpr (requires { x.empty(); }) {
         return !x.empty();
     } else {
@@ -726,6 +730,77 @@ auto sorted(It&& it, bool reverse = false) {
         std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return b < a; });
     else
         std::stable_sort(out.begin(), out.end());
+    return out;
+}
+
+// Sorting by key computes each key once, like Python (decorate-sort-undecorate).
+template <class T, class F>
+void sort_by_key(std::vector<T>& v, F&& key, bool reverse) {
+    using K = std::remove_cvref_t<decltype(key(v[0]))>;
+    std::vector<K> keys;
+    keys.reserve(v.size());
+    for (const auto& x : v) keys.push_back(key(x));
+    std::vector<std::size_t> order(v.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+        return reverse ? keys[b] < keys[a] : keys[a] < keys[b];
+    });
+    std::vector<T> sorted;
+    sorted.reserve(v.size());
+    for (std::size_t i : order) sorted.push_back(std::move(v[i]));
+    v = std::move(sorted);
+}
+
+template <class It, class F>
+auto sorted_by(It&& it, F&& key, bool reverse = false) {
+    auto out = to_list(std::forward<It>(it));
+    sort_by_key(out, key, reverse);
+    return out;
+}
+
+template <class T, class F>
+void list_sort_by(std::vector<T>& v, F&& key, bool reverse = false) {
+    sort_by_key(v, key, reverse);
+}
+
+template <class It, class F>
+auto extreme_by(It&& it, F&& key, bool want_max, const char* name) {
+    auto values = to_list(std::forward<It>(it));
+    if (values.empty()) raise("ValueError", std::string(name) + "() arg is an empty sequence");
+    std::size_t best = 0;
+    auto best_key = key(values[0]);
+    for (std::size_t i = 1; i < values.size(); ++i) {
+        auto k = key(values[i]);
+        if (want_max ? best_key < k : k < best_key) {  // first of equal keys wins, like Python
+            best = i;
+            best_key = std::move(k);
+        }
+    }
+    return values[best];
+}
+template <class It, class F>
+auto min_by(It&& it, F&& key) {
+    return extreme_by(std::forward<It>(it), key, false, "min");
+}
+template <class It, class F>
+auto max_by(It&& it, F&& key) {
+    return extreme_by(std::forward<It>(it), key, true, "max");
+}
+
+template <class F, class It>
+auto map(F&& f, It&& it) {
+    auto&& src = iter(std::forward<It>(it));
+    std::vector<std::remove_cvref_t<decltype(f(std::declval<elem_t<decltype(src)>>()))>> out;
+    for (auto&& v : src) out.push_back(f(v));
+    return out;
+}
+
+template <class F, class It>
+auto filter(F&& f, It&& it) {
+    auto&& src = iter(std::forward<It>(it));
+    std::vector<elem_t<decltype(src)>> out;
+    for (auto&& v : src)
+        if (truthy(f(v))) out.push_back(v);
     return out;
 }
 

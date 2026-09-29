@@ -60,6 +60,8 @@ def expr(e: A.Expr | None) -> str:
             return sexp("chain", *chain)
         case A.IfExp(test, body, orelse):
             return sexp("if-exp", expr(test), expr(body), expr(orelse))
+        case A.Lambda(params, body):
+            return sexp("lambda", "(" + " ".join(p.name for p in params) + ")", expr(body))
         case A.NamedExpr(target, value):
             return sexp(":=", target.id, expr(value))
         case A.Call(func, args, keywords):

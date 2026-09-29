@@ -67,11 +67,24 @@ class TupleType(Type):
 
 
 @dataclass(frozen=True)
+class FuncType(Type):
+    """`(int, str) -> bool`. In *expected-type hints only*, ret may be None,
+    meaning "infer it" (e.g. the key function passed to sorted())."""
+
+    params: tuple[Type, ...]
+    ret: Type | None
+
+    def __str__(self) -> str:
+        return f"({', '.join(map(str, self.params))}) -> {self.ret if self.ret is not None else '?'}"
+
+
+@dataclass(frozen=True)
 class OptionalType(Type):
     inner: Type
 
     def __str__(self) -> str:
-        return f"{self.inner}?"
+        inner = f"({self.inner})" if isinstance(self.inner, FuncType) else str(self.inner)
+        return f"{inner}?"
 
 
 @dataclass(frozen=True)
@@ -222,6 +235,9 @@ def assignable(src: Type, dst: Type) -> bool:
         return True
     if isinstance(src, StructType) and isinstance(dst, StructType):
         return src.is_subclass_of(dst)
+    if isinstance(src, FuncType) and isinstance(dst, FuncType):
+        # Same parameters; any result is fine where the result is ignored (-> None).
+        return src.params == dst.params and (dst.ret == NONE or assignable(src.ret, dst.ret))
     if isinstance(dst, OptionalType):
         if src == NONE:
             return True

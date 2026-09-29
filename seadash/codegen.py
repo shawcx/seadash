@@ -34,7 +34,7 @@ from . import builtins
 from .checker import CallTarget, ModuleInfo
 from .types import (
     BOOL, FLOAT, INT, NONE, STR,
-    DictType, FuncInfo, IterType, ListType, OptionalType, SetType, StructType,
+    DictType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric,
 )
 
@@ -124,6 +124,8 @@ class CodeGen:
         self.func: FuncInfo | None = None
         # For `break` in loops with an else: [goto label, whether a break used it]
         self.loop_labels: list[list] = []
+        # Inside a lambda that uses `self`, self is a captured copy named sd_self.
+        self.lambda_self = 0
         # Expressions already evaluated into temporaries (see `in_order`).
         self.precomputed: dict[int, str] = {}
         self.module_values = {
@@ -180,6 +182,8 @@ class CodeGen:
                 return class_name(t)
             case IterType(elem):
                 return f"sd::list<{self.cpp_type(elem)}>"
+            case FuncType(params, ret):
+                return f"std::function<{self.cpp_type(ret)}({', '.join(self.cpp_type(p) for p in params)})>"
         raise NotImplementedError(f"no C++ type for {t}")
 
     def coerce(self, code: str, src: Type, dst: Type) -> str:
@@ -675,6 +679,8 @@ class CodeGen:
                 return self.compare(e)
             case A.IfExp(test, body, orelse):
                 return f"({self.cond(test)} ? {self.expr_as(body, e.ty)} : {self.expr_as(orelse, e.ty)})"
+            case A.Lambda():
+                return self.lambda_code(e)
             case A.NamedExpr(target, value):
                 var: Var = target.sym
                 code = f"({ident(var.cpp_name)} = {self.expr_as(value, var.type)})"
@@ -695,6 +701,8 @@ class CodeGen:
 
     def var_code(self, var: Var, seen: Type) -> str:
         if var.name == "self" and var.kind == "param":
+            if self.lambda_self:
+                return "sd_self"
             if var.type.kind == "struct":
                 return "(*this)"
             if var.type.is_exception:  # shared_from_this() gives the BaseException pointer
@@ -706,6 +714,10 @@ class CodeGen:
         sym = e.sym
         if isinstance(sym, Var):
             return self.var_code(sym, e.ty)
+        if isinstance(sym, FuncInfo):
+            return ident(sym.name)  # a function used as a value
+        if isinstance(sym, A.Lambda):
+            return self.expr(sym)  # `key=len` was wrapped as `lambda p: len(p)`
         if isinstance(sym, builtins.Value):
             if sym.name == "__name__":
                 return '"__main__"s'
@@ -719,6 +731,41 @@ class CodeGen:
         if mod == "sys" and name == "argv":
             return "sd::argv()"
         raise NotImplementedError(f"codegen for {mod}.{name}")
+
+    def self_prefix(self, st: StructType) -> str:
+        """How to reach a member of `self`: this->x, or sd_self.x inside a lambda."""
+        if self.lambda_self:
+            return "sd_self." if st.kind == "struct" else "sd_self->"
+        return "this->"
+
+    def lambda_code(self, e: A.Lambda) -> str:
+        """Captures by value ([=]), so the lambda is safe to return or store. `self` is
+        captured as a copy (struct) or shared pointer (class) instead of the raw `this`."""
+        t: FuncType = e.ty
+        params = ", ".join(f"{self.cpp_type(pt)} {ident(p.sym.cpp_name)}" for p, pt in zip(e.params, t.params))
+        capture = "[=]"
+        uses_self = any(isinstance(n, A.Name) and is_self(n) for n in walk_expr(e.body))
+        if uses_self:
+            self_var = next(n.sym for n in walk_expr(e.body) if isinstance(n, A.Name) and is_self(n))
+            capture = f"[=, sd_self = {self.var_code(self_var, self_var.type)}]"
+            self.lambda_self += 1
+        try:
+            body = self.expr_as(e.body, t.ret)
+        finally:
+            if uses_self:
+                self.lambda_self -= 1
+        if t.ret == NONE:  # `lambda: print(x)` or `lambda s: None`: evaluate for effect only
+            statement = "" if isinstance(e.body, A.NoneLit) else f" {body};"
+            return f"{capture}({params}) mutable -> void {{{statement} }}"
+        return f"{capture}({params}) mutable -> {self.cpp_type(t.ret)} {{ return {body}; }}"
+
+    def bound_method(self, obj: A.Expr, m: FuncInfo) -> str:
+        """`counter.tick` as a value: a lambda holding (a copy of / reference to) the object."""
+        names = [self.fresh("p") for _ in m.params]
+        params = ", ".join(f"{self.cpp_type(p.type)} {n}" for p, n in zip(m.params, names))
+        arrow = "->" if m.owner.kind == "class" else "."
+        call = f"sd_o{arrow}{ident(m.name)}({', '.join(names)})"
+        return f"[sd_o = {self.expr(obj)}]({params}) mutable -> {self.cpp_type(m.ret)} {{ return {call}; }}"
 
     def fstring(self, parts: list) -> str:
         pieces = []
@@ -735,10 +782,14 @@ class CodeGen:
     def attribute(self, e: A.Attribute) -> str:
         if isinstance(e.sym, builtins.Value):
             return self.module_value(e.sym)
+        if isinstance(e.sym, A.Lambda):
+            return self.expr(e.sym)  # `key=str.lower`
+        if isinstance(e.sym, FuncInfo):
+            return self.bound_method(e.value, e.sym)
         obj = e.value
         field = ident(e.attr)
-        if isinstance(obj, A.Name) and isinstance(obj.sym, Var) and obj.sym.name == "self" and obj.sym.kind == "param":
-            return f"this->{field}"
+        if is_self(obj):
+            return f"{self.self_prefix(obj.sym.type)}{field}"
         arrow = "->" if isinstance(obj.ty, StructType) and obj.ty.kind == "class" else "."
         return f"{self.expr(obj)}{arrow}{field}"
 
@@ -884,8 +935,8 @@ class CodeGen:
                 fn = target.target
                 recv = e.func.value
                 args = self.call_args(target.args, fn)
-                if isinstance(recv, A.Name) and isinstance(recv.sym, Var) and recv.sym.name == "self" and recv.sym.kind == "param":
-                    return f"this->{ident(fn.name)}({args})"
+                if is_self(recv):
+                    return f"{self.self_prefix(recv.sym.type)}{ident(fn.name)}({args})"
                 arrow = "->" if fn.owner.kind == "class" else "."
                 return f"{self.expr(recv)}{arrow}{ident(fn.name)}({args})"
             case "ctor":
@@ -896,6 +947,11 @@ class CodeGen:
                 if st.kind == "class":
                     return f"std::make_shared<{class_name(st)}>({', '.join(args)})"
                 return f"{class_name(st)}({', '.join(args)})"
+            case "value":
+                ft: FuncType = target.target
+                args = ", ".join(self.expr_as(a, pt) for a, pt in zip(e.args, ft.params))
+                f = self.expr(e.func)
+                return f"{f}({args})" if isinstance(e.func, A.Name) else f"({f})({args})"
             case "builtin":
                 return self.builtin_call(target.target, e)
             case "builtin_method":
@@ -949,6 +1005,8 @@ class CodeGen:
             case "abs":
                 return f"sd::abs({a})"
             case "min" | "max":
+                if key := self.keyword(e, "key"):
+                    return f"sd::{name}_by({a}, {self.expr(key)})"
                 if len(args) == 1:
                     return f"sd::{name}_of({a})"
                 values = ", ".join(self.expr_as(x, e.ty) for x in e.args)
@@ -957,7 +1015,12 @@ class CodeGen:
                 return f"sd::{name}({', '.join(args)})"
             case "sorted":
                 rev = self.keyword(e, "reverse")
-                return f"sd::sorted({a}, {self.expr(rev) if rev else 'false'})"
+                rev_code = self.expr(rev) if rev else "false"
+                if key := self.keyword(e, "key"):
+                    return f"sd::sorted_by({a}, {self.expr(key)}, {rev_code})"
+                return f"sd::sorted({a}, {rev_code})"
+            case "map" | "filter":
+                return f"sd::{name}({args[0]}, {args[1]})"
             case "enumerate":
                 return f"sd::enumerate({', '.join(args)})"
             case "list":
@@ -989,7 +1052,10 @@ class CodeGen:
                         return f"{self.cpp_type(recv_type)}({r})"
                     case "sort":
                         rev = self.keyword(e, "reverse")
-                        return f"sd::list_sort({r}, {self.expr(rev) if rev else 'false'})"
+                        rev_code = self.expr(rev) if rev else "false"
+                        if key := self.keyword(e, "key"):
+                            return f"sd::list_sort_by({r}, {self.expr(key)}, {rev_code})"
+                        return f"sd::list_sort({r}, {rev_code})"
                 return f"sd::list_{name}({r}{rest})"
             case DictType(_, value):
                 match name:
@@ -1061,9 +1127,27 @@ def constant_int(e: A.Expr) -> int | None:
 
 def has_call(e: A.Expr) -> bool:
     """Could evaluating `e` have side effects (or observe them)?"""
-    from .checker import walk
+    return any(isinstance(n, (A.Call, A.NamedExpr)) for n in walk_expr(e, into_lambdas=False))
 
-    return any(isinstance(n, (A.Call, A.NamedExpr)) for n in walk(e))
+
+def walk_expr(e: A.Node, into_lambdas: bool = True):
+    """Every node in an expression. Creating a lambda runs none of its body."""
+    import dataclasses
+
+    yield e
+    if isinstance(e, A.Lambda) and not into_lambdas:
+        return
+    for f in dataclasses.fields(e):
+        if f.name in ("loc", "sym", "ty"):
+            continue
+        value = getattr(e, f.name)
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, A.Node):
+                yield from walk_expr(item, into_lambdas)
+
+
+def is_self(e: A.Expr) -> bool:
+    return isinstance(e, A.Name) and isinstance(e.sym, Var) and e.sym.name == "self" and e.sym.kind == "param"
 
 
 def is_simple(e: A.Expr) -> bool:

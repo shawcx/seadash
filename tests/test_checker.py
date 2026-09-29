@@ -432,7 +432,7 @@ def test_struct_constructor_and_methods():
     ("print(Point(1).z)", "Point has no field 'z'"),
     ("Point(1).nope()", "Point has no method 'nope'"),
     ("Point(1).x = 'a'", "field 'x' is float, can't assign str"),
-    ("print(Point(1).norm)", "method 'norm' can only be called here (add parentheses)"),
+    ("Point(1).norm(1)", "norm() takes 0 arguments but 1 were given"),
 ])
 def test_struct_errors(line, msg):
     e = err(f"""
@@ -555,7 +555,7 @@ def test_expression_types(expr, ty):
     ("range(3)", "can't store range(...) in a variable; loop over it directly, or make a list with list(...)"),
     ("{[1]: 2}", "dict keys must be int, float, str, bool, or a tuple of those; not list[int]"),
     ("'s'.join([1, 2])", "str.join() needs strings, not int (convert with str(...) first)"),
-    ("print", "'print' can only be called here (functions aren't values yet)"),
+    ("print", "'print' can only be used as a value where a function type is expected; otherwise wrap it in a lambda"),
 ])
 def test_expression_errors(expr, msg):
     assert err(f"x = {expr}\n").message == msg
@@ -685,3 +685,84 @@ def test_try_else_sees_body_assignments():
             n += 1
         return n
     """, ret="int"))
+
+
+# ---- functions as values ------------------------------------------------------
+
+
+@pytest.mark.parametrize("src,ty", [
+    ("lambda: 42", "() -> int"),
+    ("double", "(int) -> int"),
+    ("P(2).scaled", "(float) -> P"),
+])
+def test_function_value_types(src, ty):
+    info = ok(f"""
+        struct P:
+            x: float
+            def scaled(self, k: float) -> P:
+                return P(self.x * k)
+        def double(n: int) -> int:
+            return n * 2
+        f = {src}
+    """)
+    assert str(info.globals[-1].type) == ty
+
+
+def test_lambda_parameter_types_come_from_context():
+    info = ok("""
+        def apply(f: (int) -> int, x: int) -> int:
+            return f(x)
+        def make_adder(n: int) -> (int) -> int:
+            return lambda x: x + n
+        a = apply(lambda v: v * 3, 2)
+        add5 = make_adder(5)
+        b = add5(1)
+        ops: dict[str, (float, float) -> float] = {"+": lambda x, y: x + y, "max": lambda x, y: max(x, y)}
+        halve: (int) -> float = lambda n: n / 2
+        words = sorted(["bb", "a", "ccc"], key=lambda w: (len(w), w))
+        longest = max(["bb", "a"], key=len)
+        lower = sorted(["B", "a"], key=str.lower)
+        roots = list(map(math.sqrt, [1, 4]))
+        lengths = list(map(len, ["a", "bb"]))
+        evens = list(filter(lambda n: n % 2 == 0, range(10)))
+        callbacks: list[() -> None] = [lambda: print("hi")]
+    """.replace("        a = ", "        import math\n        a = ", 1))
+    types = {v.name: str(v.type) for v in info.globals}
+    assert types["add5"] == "(int) -> int"
+    assert types["b"] == "int"
+    assert types["halve"] == "(int) -> float"
+    assert types["longest"] == "str"
+    assert types["roots"] == "list[float]"
+    assert types["lengths"] == "list[int]"
+    assert types["evens"] == "list[int]"
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("f = lambda x: x", "can't tell the types of this lambda's parameters from here; give it a type, e.g. `f: (int) -> int = lambda ...`"),
+    ("f: (int) -> int = lambda a, b: a", "this lambda takes 2 parameters, but (int) -> int is expected here"),
+    ("f: (int) -> int = lambda a: 'x'", "'f' is declared as (int) -> int, but the value is (int) -> str"),
+    ("f: (int) -> int = lambda a: a\nf('x')", "argument 1 must be int, not str"),
+    ("f: (int) -> int = lambda a: a\nf(1, 2)", "this function takes 1 argument but 2 were given"),
+    ("f: (int) -> int = lambda a: a\nf(a=1)", "keyword arguments can't be used when calling a function value"),
+    ("f: ((int) -> int)? = None\nf(1)", "((int) -> int)? might be None; check it first"),
+    ("x = 5\nx(1)", "int is not callable"),
+    ("xs = sorted([{1}], key=lambda s: s)", "sorted() key must return something comparable, not set[int]"),
+    ("xs = sorted([{1}])", "sorted() can't compare set[int] values"),
+    ("xs = list(map(lambda n: print(n), [1]))", "map() function must return a value"),
+    ("xs = max(1, 2, key=abs)", "max() only supports key= with a single iterable argument"),
+    ("f: (int) -> int = lambda a: (b := a)", "':=' can't be used inside a lambda"),
+    ("f = len", "'len' can only be used as a value where a function type is expected; otherwise wrap it in a lambda"),
+])
+def test_function_value_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_callback_results_can_be_ignored():
+    ok("""
+        def run(action: (int) -> None):
+            action(1)
+        def double(n: int) -> int:
+            return n * 2
+        run(double)
+        run(lambda n: print(n))
+    """)

@@ -15,7 +15,7 @@ from .errors import CheckError
 from .errors import Loc
 from .types import (
     BOOL, FLOAT, INT, NONE, STR,
-    DictType, Field, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
+    DictType, Field, FuncType, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
 
@@ -77,6 +77,28 @@ class CallContext:
                 actual = self.checker.check_expr(kw.value, t)
                 if not assignable(actual, t):
                     raise self.error(f"{self.what} argument '{name}' must be {t}, not {actual}", kw.value)
+
+    def keyword_arg(self, name: str) -> A.Expr | None:
+        return next((kw.value for kw in self.call.keywords if kw.name == name), None)
+
+    def function(self, node: A.Expr, params: tuple[Type, ...], what: str) -> Type:
+        """Check a function-valued argument (often a lambda) taking `params`; returns its result type."""
+        t = self.checker.check_expr(node, FuncType(params, None))
+        if not isinstance(t, FuncType) or t.params != params:
+            want = f"({', '.join(map(str, params))}) -> ..."
+            raise self.error(f"{self.what} {what} must be a function like {want}, not {t}", node)
+        return t.ret
+
+    def sort_key(self, elem: Type) -> None:
+        """Check an optional key= function for sorted/min/max/list.sort."""
+        key = self.keyword_arg("key")
+        if key is None:
+            if not ordered(elem):
+                raise self.error(f"{self.what} can't compare {elem} values")
+            return
+        result = self.function(key, (elem,), "key")
+        if not ordered(result):
+            raise self.error(f"{self.what} key must return something comparable, not {result}", key)
 
     def iterable(self, i: int) -> Type:
         t = self.arg(i)
@@ -183,12 +205,13 @@ def b_abs(ctx: CallContext) -> Type:
 
 
 def b_min_max(ctx: CallContext) -> Type:
-    n = ctx.arity(1, MANY)
+    n = ctx.arity(1, MANY, keywords=("key",))
     if n == 1:
         elem = ctx.iterable(0)
-        if not ordered(elem):
-            raise ctx.error(f"{ctx.what} can't compare {elem} values", ctx.args[0])
+        ctx.sort_key(elem)
         return elem
+    if ctx.keyword_arg("key") is not None:
+        raise ctx.error(f"{ctx.what} only supports key= with a single iterable argument")
     result = ctx.need(0, ordered, "a number, str, tuple or list")
     for i in range(1, n):
         t = ctx.arg(i)
@@ -208,12 +231,28 @@ def b_sum(ctx: CallContext) -> Type:
 
 
 def b_sorted(ctx: CallContext) -> Type:
-    ctx.arity(1, keywords=("reverse",))
+    ctx.arity(1, keywords=("reverse", "key"))
     elem = ctx.iterable(0)
-    if not ordered(elem):
-        raise ctx.error(f"{ctx.what} can't compare {elem} values", ctx.args[0])
+    ctx.sort_key(elem)
     ctx.keyword("reverse", BOOL)
     return ListType(elem)
+
+
+def b_map(ctx: CallContext) -> Type:
+    ctx.arity(2)
+    elem = ctx.iterable(1)  # the iterable first: it decides the function's parameter type
+    result = ctx.function(ctx.args[0], (elem,), "function")
+    if result == NONE:
+        raise ctx.error(f"{ctx.what} function must return a value", ctx.args[0])
+    return IterType(result, "map")
+
+
+def b_filter(ctx: CallContext) -> Type:
+    ctx.arity(2)
+    elem = ctx.iterable(1)
+    result = ctx.function(ctx.args[0], (elem,), "function")
+    ctx.checker.check_truthy(result, ctx.args[0])
+    return IterType(elem, "filter")
 
 
 def b_reversed(ctx: CallContext) -> Type:
@@ -309,6 +348,8 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "max": b_min_max,
     "sum": b_sum,
     "sorted": b_sorted,
+    "map": b_map,
+    "filter": b_filter,
     "reversed": b_reversed,
     "enumerate": b_enumerate,
     "zip": b_zip,
@@ -377,9 +418,8 @@ def list_extend(ctx: CallContext) -> Type:
 
 
 def list_sort(ctx: CallContext) -> Type:
-    ctx.arity(0, keywords=("reverse",))
-    if not ordered(ctx.receiver.elem):
-        raise ctx.error(f"can't sort a {ctx.receiver}: {ctx.receiver.elem} values can't be compared")
+    ctx.arity(0, keywords=("reverse", "key"))
+    ctx.sort_key(ctx.receiver.elem)
     ctx.keyword("reverse", BOOL)
     return NONE
 

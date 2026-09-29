@@ -1,0 +1,44 @@
+import math
+
+def double(n: int) -> int:
+    return n * 2
+
+def apply_twice(f: Callable[[int], int], x: int) -> int:
+    return f(f(x))
+
+def compose(f: Callable[[int], int], g: Callable[[int], int]) -> Callable[[int], int]:
+    return lambda x: g(f(x))
+
+def make_multiplier(k: int) -> Callable[[int], int]:
+    return lambda x: x * k
+
+print(apply_twice(double, 3), apply_twice(lambda n: n + 10, 1))
+times3 = make_multiplier(3)
+inc_then_triple = compose(lambda n: n + 1, times3)
+print(times3(5), inc_then_triple(5), compose(double, double)(1))
+
+ops: dict[str, Callable[[float, float], float]] = {
+    "+": lambda a, b: a + b,
+    "-": lambda a, b: a - b,
+    "max": lambda a, b: max(a, b),
+}
+for name in ops:
+    print(name, ops[name](7, 2))
+
+words = ["banana", "Apple", "fig", "cherry", "date"]
+print(sorted(words))
+print(sorted(words, key=str.lower))
+print(sorted(words, key=len))
+print(sorted(words, key=lambda w: (len(w), w.lower()), reverse=True))
+print(max(words, key=len), min(words, key=lambda w: w[-1]))
+nums = [5, -3, 2, -8]
+nums.sort(key=abs)
+print(nums)
+print(list(map(str, nums)), list(map(lambda n: n * n, nums)), list(map(math.sqrt, [1, 4, 9])))
+print(list(filter(lambda n: n > 0, nums)), [f(10) for f in [double, times3]])
+
+def run_all(actions: list[Callable[[], None]]):
+    for action in actions:
+        action()
+
+run_all([lambda: print("first"), lambda: print("second")])

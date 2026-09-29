@@ -1,0 +1,58 @@
+# seadash lambdas capture *values* when they're created (safe to return and store)
+
+def make_counters() -> list[() -> int]:
+    fns: list[() -> int] = []
+    for i in range(3):
+        fns.append(lambda: i * 10)   # Python would give 20, 20, 20 (late binding)
+    return fns
+
+print([f() for f in make_counters()])
+
+x = 1
+get_x: () -> int = lambda: x
+x = 2
+print(get_x(), x)                     # captured 1; the module variable is now 2
+
+class Button:
+    label: str
+    on_click: (str) -> None
+
+    def click(self):
+        self.on_click(self.label)
+
+    def handler(self) -> () -> None:
+        return lambda: print("clicked", self.label)
+
+log: list[str] = []
+b = Button("ok", lambda label: log.append(label))   # `log` is a global: shared, not copied
+b.click()
+b.click()
+print(log)
+h = b.handler()
+b.label = "renamed"
+h()                                   # classes are shared references, so it sees the rename
+
+struct Temperature:
+    celsius: float
+
+    def formatter(self) -> (str) -> str:
+        return lambda unit: f"{self.celsius}{unit}"
+
+t = Temperature(21.5)
+fmt = t.formatter()
+t.celsius = 30
+print(fmt("C"), t.celsius)            # structs are values: the lambda kept its own copy
+
+tick = Button("x", lambda s: None).click
+tick()
+maybe: ((int) -> int)? = None
+if maybe is None:
+    maybe = lambda n: n + 1
+print(maybe(41))
+
+def pipeline(value: int, steps: list[(int) -> int]) -> int:
+    for step in steps:
+        value = step(value)
+    return value
+
+print(pipeline(3, [lambda v: v + 1, lambda v: v * v, abs]))

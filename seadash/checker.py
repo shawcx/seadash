@@ -34,9 +34,9 @@ from . import builtins
 from .errors import CheckError, Loc
 from .types import (
     BOOL, FLOAT, INT, NONE, PRIMITIVES, STR,
-    DictType, Field, FuncInfo, IterType, ListType, ModuleType, OptionalType, Param,
+    DictType, Field, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param,
     SetType, StructType, TupleType, Type, Var,
-    assignable, element_type, is_hashable, is_numeric, join,
+    assignable, element_type, is_hashable, is_numeric, join, strip_optional,
 )
 
 INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
@@ -171,6 +171,7 @@ class Checker:
         self.loops: list[LoopContext] = []
         self.handler_depth = 0  # inside an `except` block (bare `raise` allowed)
         self.finally_loops: list[int] = []  # loop depth on entering each enclosing `finally`
+        self.lambda_depth = 0
 
     def error(self, message: str, node: A.Node | Loc) -> CheckError:
         return CheckError(message, node if isinstance(node, Loc) else node.loc)
@@ -399,6 +400,7 @@ class Checker:
         self.loops = []
         self.handler_depth = 0
         self.finally_loops = []
+        self.lambda_depth = 0
 
     # =========================================================================
     # Type annotations
@@ -413,6 +415,8 @@ class Checker:
                 return resolved if isinstance(resolved, OptionalType) else OptionalType(resolved)
             case A.UnionType():
                 raise self.error("union types are not supported yet (T? for 'T or None' is)", t)
+            case A.FuncTypeExpr(params, ret):
+                return FuncType(tuple(self.resolve_type(p) for p in params), self.resolve_type(ret))
             case A.TypeName(name, args):
                 return self.resolve_type_name(t, name, args)
         raise self.error("invalid type", t)
@@ -899,7 +903,9 @@ class Checker:
                         self.check_printable(self.check_expr(part.value), part.value)
                 return STR
             case A.Name():
-                return self.check_name(e)
+                return self.check_name(e, expected)
+            case A.Lambda():
+                return self.check_lambda(e, expected)
             case A.ListLit(elts):
                 return self.check_sequence_literal(e, elts, expected, ListType, "list")
             case A.SetLit(elts):
@@ -944,20 +950,22 @@ class Checker:
                     raise self.error(f"the two branches have different types: {bt} and {ot}", e)
                 return joined
             case A.NamedExpr(target, value):
+                if self.lambda_depth:
+                    raise self.error("':=' can't be used inside a lambda", e)
                 t = self.check_expr(value)
                 self.bind(target, t, value)
                 return self.state.names[target.id].ty
             case A.Call():
                 return self.check_call(e, expected)
             case A.Attribute(value, attr):
-                return self.check_attribute(e, value, attr)
+                return self.check_attribute(e, value, attr, expected)
             case A.Index(value, index):
                 return self.check_index(e, value, index)
             case A.Slice():
                 raise self.error("a slice can only be used inside [...]", e)
         raise self.error(f"unsupported expression {type(e).__name__}", e)
 
-    def check_name(self, e: A.Name) -> Type:
+    def check_name(self, e: A.Name, expected: Type | None = None) -> Type:
         name = e.id
         entry = self.state.names.get(name)
         if isinstance(entry, Bound):
@@ -987,13 +995,74 @@ class Checker:
             return ModuleType(self.modules[name].name)
         if name in self.imported:
             mod, member = self.imported[name]
+            if isinstance(mod.members.get(member), builtins.Function):
+                return self.callable_as_value(e, expected, name)
             return self.module_member(e, mod, member)
-        if name in self.functions or self.lookup_struct(name) or name in builtins.FUNCTIONS:
-            raise self.error(f"'{name}' can only be called here (functions aren't values yet)", e)
+        if name in self.functions:
+            info = self.functions[name]
+            e.sym = info
+            return FuncType(tuple(p.type for p in info.params), info.ret)
+        if self.lookup_struct(name) or name in builtins.FUNCTIONS:
+            return self.callable_as_value(e, expected, name)
         if name in builtins.VALUES:
             e.sym = builtins.VALUES[name]
             return builtins.VALUES[name].type
         raise self.error(f"name '{name}' is not defined", e)
+
+    def check_lambda(self, e: A.Lambda, expected: Type | None) -> Type:
+        """Parameter types come from the expected function type; the result type from the body."""
+        expected = strip_optional(expected) if expected is not None else None  # `f: ((int) -> int)? = lambda ...`
+        n = len(e.params)
+        if isinstance(expected, FuncType) and len(expected.params) == n:
+            param_types = expected.params
+        elif n == 0:
+            param_types = ()
+        elif isinstance(expected, FuncType):
+            raise self.error(f"this lambda takes {plural(n, 'parameter')}, but {expected} is expected here", e)
+        else:
+            example = ", ".join("int" for _ in e.params)
+            raise self.error(
+                f"can't tell the types of this lambda's parameters from here; give it a type, "
+                f"e.g. `f: ({example}) -> int = lambda ...`", e,
+            )
+        outer = self.state
+        self.state = outer.copy()
+        self.lambda_depth += 1
+        for p, t in zip(e.params, param_types):
+            var = Var(p.name, p.name, t, "lambda", p.loc)
+            self.state.names[p.name] = Bound(var, t)
+            p.sym = var
+        hint = expected.ret if isinstance(expected, FuncType) else None
+        body = self.check_expr(e.body, hint)
+        self.lambda_depth -= 1
+        self.state = outer
+        if isinstance(body, IterType):
+            raise self.error(f"a lambda can't return {body.kind}(...); make a list with list(...)", e.body)
+        ret = hint if hint is not None and hint != NONE and assignable(body, hint) else body
+        return FuncType(param_types, ret)
+
+    def callable_as_value(self, e: A.Name | A.Attribute, expected: Type | None, name: str) -> Type:
+        """Built-ins, constructors and module functions aren't values themselves (they're
+        overloaded or generic), but where a function type is expected we can wrap them:
+        `key=len` becomes `key=lambda p: len(p)`, `key=str.lower` becomes `lambda p: p.lower()`."""
+        expected = strip_optional(expected) if expected is not None else None
+        if not isinstance(expected, FuncType):
+            raise self.error(f"'{name}' can only be used as a value where a function type is expected; "
+                             f"otherwise wrap it in a lambda", e)
+        params = [A.Param(f"sd_p{i}", loc=e.loc) for i in range(len(expected.params))]
+        args = [A.Name(p.name, loc=e.loc) for p in params]
+        if isinstance(e, A.Attribute) and isinstance(e.value, A.Name) and e.value.id in ("str", "list", "dict", "set"):
+            if not args:
+                raise self.error(f"'{name}' needs an argument to call it on", e)
+            body = A.Call(A.Attribute(args[0], e.attr, loc=e.loc), args[1:], loc=e.loc)
+        elif isinstance(e, A.Attribute):
+            body = A.Call(A.Attribute(e.value, e.attr, loc=e.loc), args, loc=e.loc)
+        else:
+            body = A.Call(A.Name(e.id, loc=e.loc), args, loc=e.loc)
+        wrapper = A.Lambda(params, body, loc=e.loc)
+        t = self.check_expr(wrapper, expected)
+        e.sym = wrapper
+        return t
 
     def check_printable(self, t: Type, e: A.Expr) -> None:
         if isinstance(t, (IterType, ModuleType)):
@@ -1189,16 +1258,26 @@ class Checker:
                     raise self.error(f"{lt} can never be None (only T? types can)", e)
                 raise self.error(f"'{op}' is for None checks and class instances; use '==' to compare values", e)
 
-    def check_attribute(self, e: A.Attribute, value: A.Expr, attr: str) -> Type:
+    def check_attribute(self, e: A.Attribute, value: A.Expr, attr: str, expected: Type | None = None) -> Type:
+        if (
+            isinstance(value, A.Name)
+            and value.id in ("str", "list", "dict", "set")
+            and value.id not in self.state.names
+            and value.id not in self.scope.assigned
+        ):
+            return self.callable_as_value(e, expected, f"{value.id}.{attr}")  # key=str.lower
         vt = self.check_expr(value)
         if isinstance(vt, ModuleType):
+            if isinstance(value.sym.members.get(attr), builtins.Function):
+                return self.callable_as_value(e, expected, f"{value.sym.name}.{attr}")
             return self.module_member(e, value.sym, attr)
         if isinstance(vt, StructType):
             if f := vt.find_field(attr):
                 e.sym = f
                 return f.type
-            if vt.find_method(attr):
-                raise self.error(f"method '{attr}' can only be called here (add parentheses)", e)
+            if (method := vt.find_method(attr)) and method.name != "__init__":
+                e.sym = method  # a bound method: remembers its object
+                return FuncType(tuple(p.type for p in method.params), method.ret)
             raise self.error(f"{vt.name} has no field '{attr}'", e)
         if isinstance(vt, OptionalType):
             raise self.error(
@@ -1283,9 +1362,12 @@ class Checker:
             if isinstance(owner, StructType):
                 method = owner.find_method(func.attr)
                 if method is None or method.name == "__init__":
-                    if owner.find_field(func.attr):
+                    field = owner.find_field(func.attr)
+                    if field is None:
+                        raise self.error(f"{owner.name} has no method '{func.attr}'", func)
+                    if not isinstance(strip_optional(field.type), FuncType):
                         raise self.error(f"'{func.attr}' is a field, not a method", func)
-                    raise self.error(f"{owner.name} has no method '{func.attr}'", func)
+                    return self.call_value(e, self.check_expr(func))  # a field holding a function
                 e.sym = CallTarget("method", method, self.match_args(e, method.params, f"{func.attr}()"))
                 return method.ret
             handler = builtins.method_for(owner, func.attr)
@@ -1299,8 +1381,24 @@ class Checker:
             ctx = builtins.CallContext(self, e, f"{type_family(owner)}.{func.attr}()", expected, receiver=owner)
             e.sym = CallTarget("builtin_method", (owner, func.attr))
             return handler(ctx)
-        t = self.check_expr(func)
-        raise self.error(f"{t} is not callable", func)
+        return self.call_value(e, self.check_expr(func))
+
+    def call_value(self, e: A.Call, t: Type) -> Type:
+        """Calling a function *value*: a variable, parameter, field or expression of function type."""
+        if isinstance(t, OptionalType) and isinstance(t.inner, FuncType):
+            raise self.error(f"{t} might be None; check it first", e.func)
+        if not isinstance(t, FuncType):
+            raise self.error(f"{t} is not callable", e.func)
+        if e.keywords:
+            raise self.error("keyword arguments can't be used when calling a function value", e.keywords[0])
+        if len(e.args) != len(t.params):
+            raise self.error(f"this function takes {plural(len(t.params), 'argument')} but {len(e.args)} were given", e)
+        for i, (arg, pt) in enumerate(zip(e.args, t.params)):
+            at = self.check_expr(arg, pt)
+            if not assignable(at, pt):
+                raise self.error(f"argument {i + 1} must be {pt}, not {at}", arg)
+        e.sym = CallTarget("value", t)
+        return t.ret
 
     def check_module_call(self, e: A.Call, mod: builtins.Module, member: str) -> Type:
         f = mod.members.get(member)

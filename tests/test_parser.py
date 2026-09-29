@@ -298,8 +298,26 @@ def test_struct_and_class():
           (: item T)""")
 
 
+def test_lambdas():
+    assert e("lambda: 0") == "(lambda () 0)"
+    assert e("lambda x, y: x + y") == "(lambda (x y) (+ x y))"
+    assert e("lambda x: lambda y: x * y") == "(lambda (x) (lambda (y) (* x y)))"
+    assert e("f(key=lambda s: s.lower(), reverse=True)") == "(call f key=(lambda (s) (call (. s lower))) reverse=True)"
+    assert e("lambda x: a if x else b") == "(lambda (x) (if-exp x a b))"
+
+
+def test_function_types():
+    assert s("f: (int, str) -> bool = g") == "(: f (int, str) -> bool g)"
+    assert s("f: () -> None = g") == "(: f () -> None g)"
+    assert s("f: ((int) -> int)? = None") == "(: f ((int) -> int)? None)"
+    assert s("f: (int) -> (int) -> int = g") == "(: f (int) -> (int) -> int g)"
+    assert s("f: Callable[[int, int], int] = g") == "(: f (int, int) -> int g)"
+    assert s("f: Callable[[], None] = g") == "(: f () -> None g)"
+    assert s("def f(g: (int) -> int) -> (str) -> str:\n    pass") == "def f(g: (int) -> int) -> (str) -> str:\n  (pass)"
+
+
 def test_types():
-    assert s("x: (int | str)? = None") == "(: x int | str? None)"
+    assert s("x: (int | str)? = None") == "(: x (int | str)? None)"
     assert s("x: mod.Thing") == "(: x mod.Thing)"
 
 
@@ -354,7 +372,8 @@ def test_locations_are_recorded():
     ("try:\n    pass\nexcept:\n    pass\nexcept E:\n    pass\n", "a bare 'except:' must be the last except clause", Loc(3, 1)),
     ("try:\n    pass\nfinally:\n    pass\nelse:\n    pass\n", "'else' without a matching 'if'", Loc(5, 1)),
     ("except E:\n    pass\n", "'except' without a matching 'try'", Loc(1, 1)),
-    ("f = lambda x: x\n", "'lambda' is not supported yet", Loc(1, 5)),
+    ("f = lambda x=1: x\n", "lambda parameters can't have default values", Loc(1, 13)),
+    ("x: (int, str) = 1\n", "expected '->' after a parameter list in a function type", Loc(1, 15)),
     ("x: 5 = 1\n", "expected a type, found number 5", Loc(1, 4)),
     ("f(x for x in xs, 1)\n", "generator expression must be parenthesized", Loc(1, 3)),
 ])

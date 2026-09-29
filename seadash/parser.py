@@ -36,7 +36,7 @@ COMPARISON_OPS = {"<", ">", "==", "!=", "<=", ">="}
 AUGMENTED_OPS = {"+=", "-=", "*=", "/=", "//=", "%=", "**=", "@=", "&=", "|=", "^=", "<<=", ">>="}
 
 # Python keywords we recognise but don't implement yet, so users get an honest error.
-NOT_YET_SUPPORTED = {"with", "global", "nonlocal", "del", "yield", "lambda"}
+NOT_YET_SUPPORTED = {"with", "global", "nonlocal", "del", "yield"}
 
 
 def parse(source: str) -> A.Module:
@@ -385,15 +385,36 @@ class Parser:
     def parse_type_atom(self) -> A.TypeExpr:
         tok = self.peek()
         if self.accept("("):
-            t = self.parse_type()
+            # `(T)` groups; `(A, B) -> R` and `() -> R` are function types.
+            items: list[A.TypeExpr] = []
+            while not self.at(")"):
+                items.append(self.parse_type())
+                if not self.accept(","):
+                    break
             self.expect(")", " after type")
-            return t
+            if self.accept("->"):
+                return A.FuncTypeExpr(items, self.parse_type(), loc=tok.loc)
+            if len(items) != 1:
+                raise self.error("expected '->' after a parameter list in a function type", self.peek().loc)
+            return items[0]
         if self.accept("None"):
             return A.TypeName("None", loc=tok.loc)
         if tok.kind != K.NAME:
             raise self.error(f"expected a type, found {describe(tok)}")
         name = self.parse_dotted_name()
         args: list[A.TypeExpr] = []
+        if name == "Callable" and self.accept("["):
+            self.expect("[", " in Callable[[params], result]")
+            params: list[A.TypeExpr] = []
+            while not self.at("]"):
+                params.append(self.parse_type())
+                if not self.accept(","):
+                    break
+            self.expect("]", " after Callable parameter types")
+            self.expect(",", " in Callable[[params], result]")
+            ret = self.parse_type()
+            self.expect("]", " after Callable result type")
+            return A.FuncTypeExpr(params, ret, loc=tok.loc)
         if self.accept("["):
             args.append(self.parse_type())
             while self.accept(",") and not self.at("]"):
@@ -439,6 +460,8 @@ class Parser:
         return self.parse_expr()
 
     def parse_expr(self) -> A.Expr:
+        if self.at("lambda"):
+            return self.parse_lambda()
         body = self.parse_or()
         if tok := self.accept("if"):
             test = self.parse_or()
@@ -446,6 +469,21 @@ class Parser:
             orelse = self.parse_expr()
             return A.IfExp(test, body, orelse, loc=tok.loc)
         return body
+
+    def parse_lambda(self) -> A.Lambda:
+        loc = self.next().loc
+        params: list[A.Param] = []
+        while not self.at(":"):
+            tok = self.expect_name("a lambda parameter name")
+            if any(p.name == tok.value for p in params):
+                raise self.error(f"duplicate parameter '{tok.value}'", tok.loc)
+            if self.at("="):
+                raise self.error("lambda parameters can't have default values", self.peek().loc)
+            params.append(A.Param(tok.value, loc=tok.loc))
+            if not self.accept(","):
+                break
+        self.expect(":", " after lambda parameters")
+        return A.Lambda(params, self.parse_expr(), loc=loc)
 
     def parse_or(self) -> A.Expr:
         left = self.parse_and()
