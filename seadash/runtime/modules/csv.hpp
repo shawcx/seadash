@@ -215,12 +215,15 @@ class DictReader {
     };
     std::shared_ptr<State> s_;
 
-    static Generator<dict<std::string, std::string>> rows_of(std::shared_ptr<State> s, list<std::string> names) {
-        while (s->rows.advance()) {
-            list<std::string> row = s->rows.take();
+    // (It shares the rows and not the State, which owns it: holding the State would be a
+    // cycle, and neither would ever be freed.)
+    static Generator<dict<std::string, std::string>> rows_of(Generator<list<std::string>> rows, list<std::string> names,
+                                                             std::string restval) {
+        while (rows.advance()) {
+            list<std::string> row = rows.take();
             if (row.empty()) continue;  // blank lines are skipped, like Python
             dict<std::string, std::string> out;
-            for (std::size_t i = 0; i < names.size(); ++i) out[names[i]] = i < row.size() ? row[i] : s->restval;
+            for (std::size_t i = 0; i < names.size(); ++i) out[names[i]] = i < row.size() ? row[i] : restval;
             co_yield out;
         }
     }
@@ -240,7 +243,7 @@ public:
     }
     // The rows, as one shared stream (so `next(r)` and `for row in r` continue each other).
     const Generator<dict<std::string, std::string>>& stream() const {
-        if (!s_->stream) s_->stream = rows_of(s_, fieldnames());
+        if (!s_->stream) s_->stream = rows_of(s_->rows, fieldnames(), s_->restval);
         return *s_->stream;
     }
     auto begin() const { return stream().begin(); }
