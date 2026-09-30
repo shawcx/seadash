@@ -146,6 +146,16 @@ class RegexInfo:
 
 
 @dataclass(frozen=True)
+class StructFormatType(Type):
+    """struct.Struct(fmt): the format is a literal, so pack/unpack know their types."""
+
+    fmt: str
+
+    def __str__(self) -> str:
+        return "struct.Struct"
+
+
+@dataclass(frozen=True)
 class PatternType(Type):
     """re.Pattern. `info` is known when the pattern was a literal; it only refines types
     (all patterns are the same C++ type)."""

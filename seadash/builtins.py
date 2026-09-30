@@ -21,7 +21,7 @@ from .types import (
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
     GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T,
     CODEC_TYPES, ZLIB_COMPRESS, ZLIB_DECOMPRESS, BZ2_COMPRESSOR, BZ2_DECOMPRESSOR, LZMA_COMPRESSOR, LZMA_DECOMPRESSOR,
-    SQLITE_CONNECTION, SQLITE_CURSOR,
+    SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
@@ -1015,6 +1015,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             return CODEC_METHODS[t].get(name)
         case _ if t == SQLITE_CONNECTION:
             return SQLITE_CONNECTION_METHODS.get(name)
+        case StructFormatType():
+            return STRUCT_METHODS.get(name)
         case _ if t == SQLITE_CURSOR:
             return SQLITE_CURSOR_METHODS.get(name)
         case _ if t == TEMPDIR:
@@ -1887,6 +1889,8 @@ def type_attributes(t: Type) -> dict | None:
         return {"template": lambda t: STR}
     if t in CODEC_TYPES:
         return CODEC_ATTRIBUTES[t]
+    if isinstance(t, StructFormatType):
+        return {"size": lambda t: INT, "format": lambda t: STR}
     if t == SQLITE_CONNECTION:
         return {"in_transaction": lambda t: BOOL, "total_changes": lambda t: INT, "isolation_level": lambda t: OptionalType(STR)}
     if t == SQLITE_CURSOR:
@@ -2946,6 +2950,123 @@ MODULES["sqlite3"] = module_with_params(runtime_module(
     InternalError=sqlite_exception("InternalError", "DatabaseError"),
     ProgrammingError=sqlite_exception("ProgrammingError", "DatabaseError"),
     NotSupportedError=sqlite_exception("NotSupportedError", "DatabaseError"),
+))
+
+
+# ---- struct --------------------------------------------------------------------------
+
+STRUCT_CODES = {**{c: INT for c in "bBhHiIlLqQnNP"}, "?": BOOL, "e": FLOAT, "f": FLOAT, "d": FLOAT, "c": BYTES, "s": BYTES, "p": BYTES}
+
+
+def struct_types(fmt: str) -> list[Type]:
+    """The value types a format packs/unpacks, in order (the runtime checks the same rules)."""
+    i = 0
+    native = True
+    if fmt and fmt[0] in "@=<>!":
+        native = fmt[0] == "@"
+        i = 1
+    out: list[Type] = []
+    while i < len(fmt):
+        if fmt[i].isspace():
+            i += 1
+            continue
+        count = 1
+        if fmt[i].isdigit():
+            start = i
+            while i < len(fmt) and fmt[i].isdigit():
+                i += 1
+            count = int(fmt[start:i])
+            if i >= len(fmt):
+                raise ValueError("repeat count given without format specifier")
+        c = fmt[i]
+        i += 1
+        if c == "x":
+            continue
+        if c not in STRUCT_CODES or (not native and c in "nNP"):
+            raise ValueError("bad char in struct format")
+        out.extend([BYTES] if c in "sp" else [STRUCT_CODES[c]] * count)
+    return out
+
+
+def struct_format(ctx: CallContext) -> list[Type]:
+    """The format literal of a struct call (its first argument), as value types."""
+    if isinstance(ctx.receiver, StructFormatType):
+        fmt = ctx.receiver.fmt
+    else:
+        node = ctx.args[0] if ctx.args else ctx.keyword_arg("format")
+        if not isinstance(node, A.StrLit):
+            raise ctx.error(f"{ctx.what} needs its format as a string literal (it decides the types)", node)
+        ctx.checker.check_expr(node)
+        fmt = node.value
+    try:
+        return struct_types(fmt)
+    except ValueError as e:
+        raise ctx.error(str(e), ctx.args[0] if ctx.args else None)
+
+
+def struct_pack(ctx: CallContext) -> Type:
+    ctx.arity(0 if isinstance(ctx.receiver, StructFormatType) else 1, MANY)
+    wanted = struct_format(ctx)
+    values = ctx.args[0 if isinstance(ctx.receiver, StructFormatType) else 1:]
+    if len(values) != len(wanted):
+        raise ctx.error(f"pack expected {len(wanted)} items for packing (got {len(values)})")
+    for node, t in zip(values, wanted):
+        actual = ctx.checker.check_expr(node, t)
+        ok = assignable(actual, t) or (t == FLOAT and actual == INT) or (t == BOOL and actual == INT) or (t == INT and actual == BOOL)
+        if not ok:
+            raise ctx.error(f"{ctx.what}: this value must be {t}, not {actual}", node)
+    ctx.call.struct_args = wanted
+    return BYTES
+
+
+def struct_unpack(kind: str) -> Callable[[CallContext], Type]:
+    def handler(ctx: CallContext) -> Type:
+        on_object = isinstance(ctx.receiver, StructFormatType)
+        lo = 1 if on_object else 2
+        n = ctx.arity(lo, lo + 1 if kind == "unpack_from" else lo, keywords=("offset",) if kind == "unpack_from" else ())
+        wanted = struct_format(ctx)
+        ctx.expect(lo - 1, BYTES)
+        if kind == "unpack_from":
+            if n == lo + 1:
+                ctx.expect(lo, INT)
+            else:
+                ctx.keyword("offset", INT)
+        row = TupleType(tuple(wanted))
+        ctx.call.struct_row = row
+        return GeneratorType(row) if kind == "iter_unpack" else row
+
+    return handler
+
+
+def struct_new(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    node = ctx.args[0]
+    if not isinstance(node, A.StrLit):
+        raise ctx.error("Struct() needs its format as a string literal (it decides the types)", node)
+    ctx.checker.check_expr(node)
+    try:
+        struct_types(node.value)
+    except ValueError as e:
+        raise ctx.error(str(e), node)
+    return StructFormatType(node.value)
+
+
+STRUCT_METHODS = {
+    "pack": struct_pack,
+    "unpack": struct_unpack("unpack"),
+    "unpack_from": struct_unpack("unpack_from"),
+    "iter_unpack": struct_unpack("iter_unpack"),
+}
+
+MODULES["struct"] = module_with_params(runtime_module(
+    "struct", "modules/struct.hpp",
+    pack=(struct_pack, None),
+    unpack=(struct_unpack("unpack"), None),
+    unpack_from=(struct_unpack("unpack_from"), None),
+    iter_unpack=(struct_unpack("iter_unpack"), None),
+    calcsize=(signature(INT, ("format", STR)), "sd::structmod::calcsize"),
+    Struct=(struct_new, None),
+    error=exception_class("error", "sd::structmod::error"),
 ))
 
 

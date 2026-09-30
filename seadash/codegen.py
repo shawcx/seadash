@@ -38,7 +38,7 @@ from .checker import CallTarget, Dunder, ModuleInfo
 from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T, CODEC_TYPES, SQLITE_CONNECTION, SQLITE_CURSOR,
+    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T, CODEC_TYPES, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
@@ -269,6 +269,8 @@ class CodeGen:
                 return "sd::sqlite3::Connection"
             case _ if t == SQLITE_CURSOR:
                 return "sd::sqlite3::Cursor"
+            case StructFormatType():
+                return "sd::structmod::Struct"
             case _ if t == HASH:
                 return "sd::hashlib::Hash"
             case _ if t == EXECUTOR:
@@ -2528,6 +2530,23 @@ class CodeGen:
             args.append(self.expr(closefd))
         return f"sd::open_text({', '.join(args)})"
 
+    def struct_op(self, name: str, e: A.Call, receiver: str | None) -> str:
+        """struct.pack(fmt, ...) / unpack(fmt, buffer) / unpack_from / iter_unpack, or the same
+        on a Struct object (then the format isn't an argument)."""
+        args = list(e.args)
+        head = [] if receiver is not None else [self.expr(args.pop(0))]
+        target = f"{receiver}." if receiver is not None else "sd::structmod::"
+        if name == "pack":
+            values = [self.expr_as(a, t) for a, t in zip(args, e.struct_args)]
+            return f"{target}pack({', '.join(head + values)})"
+        row = self.cpp_type(e.struct_row)
+        rest = [self.expr(args[0])]
+        if name == "unpack_from":
+            offset = args[1] if len(args) > 1 else self.keyword(e, "offset")
+            if offset is not None:
+                rest.append(self.expr_as(offset, INT))
+        return f"{target}{name}<{row}>({', '.join(head + rest)})"
+
     def argument_spec(self, e: A.Call) -> str:
         """An argparse Spec built from the literal add_argument(...) call."""
         a = e.argparse
@@ -2651,6 +2670,8 @@ class CodeGen:
             return f"{r}.add_done_callback({self.expr_as(e.args[0], FuncType((recv_type,), NONE))})"
         if recv_type in (HASH, HMAC_T) and name == "update":
             return f"{r}.update({self.expr(e.args[0])})"
+        if isinstance(recv_type, StructFormatType):
+            return self.struct_op(name, e, r)
         if recv_type in (SQLITE_CONNECTION, SQLITE_CURSOR):
             if name in ("fetchone", "fetchmany", "fetchall"):  # the row type comes from the context
                 return f"{r}.{name}<{self.cpp_type(e.sqlite_row)}>({', '.join(self.expr(a) for a in e.args)})"
@@ -2814,6 +2835,10 @@ class CodeGen:
             if newline is not None and not isinstance(newline, A.NoneLit):
                 args.append(f"std::optional<std::string>({self.expr(newline)})")
             return f"sd::{mod}::open_text({', '.join(args)})"
+        if mod == "struct" and name in ("pack", "unpack", "unpack_from", "iter_unpack", "Struct"):
+            if name == "Struct":
+                return f"sd::structmod::Struct({self.expr(e.args[0])})"
+            return self.struct_op(name, e, None)
         if mod == "csv" and name in ("reader", "writer", "DictReader", "DictWriter"):
             return self.csv_call(name, e)
         if mod == "logging" and hasattr(e, "log_call"):

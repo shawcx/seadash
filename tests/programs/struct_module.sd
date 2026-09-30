@@ -1,0 +1,90 @@
+import struct
+
+for fmt in ["@ihb", "=ihb", "<ihb", "ihb", "@bi", "@bq", "@bd", "@bl", "=l", "@n", "@2h3s", "10s", "@bxxi", "4x", "e", "@c?", "p", "3p", "@hxx", "", "<i h"]:
+    print(repr(fmt), struct.calcsize(fmt))
+
+packed = struct.pack("<hHiIqQbB?", -2, 65535, -3, 4000000000, -5, 2**63 - 1, -128, 255, True)
+print(packed, struct.unpack("<hHiIqQbB?", packed))
+print(struct.pack(">efd", 1.5, 2.5, 3.5), struct.unpack(">efd", struct.pack(">efd", 1.5, 2.5, 3.5)))
+print(struct.pack("<e", 65504.0), struct.pack("<e", 0.0001), struct.pack("<e", -0.0), struct.pack("<e", float("inf")), struct.pack("<e", float("nan")), struct.pack("<e", 1e-8), struct.pack("<e", 2049.0), struct.pack("<e", 2051.0))
+halves: list[float] = []
+for h in [b"\x00\x3c", b"\x00\x7c", b"\x01\x00", b"\xff\x03", b"\x00\x80", b"\xff\x7b"]:
+    halves.append(struct.unpack("<e", h)[0])
+print(halves)
+print(struct.pack("5s", b"ab"), struct.pack("2s", b"abcd"), struct.pack("3p", b"abcdef"), struct.pack("5p", b"ab"), struct.pack("c", b"z"))
+print(struct.pack("@bi", 1, 2), struct.pack("@ib", 2, 1), struct.pack("<2i", 1, 2), struct.pack("<3h", 1, -1, 3), struct.pack("@bxxi", 7, 9), struct.pack("d", 1), struct.pack("?", 0), struct.pack("<Q", 2**63 - 1))
+print(struct.unpack("5s3p", b"ab\x00\x00\x00\x02xy"), struct.unpack("?", b"\x07"), struct.unpack("@bxxi", bytes(8)), struct.unpack("<3h", b"\x01\x00\xff\xff\x03\x00"), struct.unpack("@ib", struct.pack("@ib", 2, 1)))
+print(struct.unpack(">l", b"\xff\xff\xff\xfe"), struct.unpack("<L", b"\xfe\xff\xff\xff"), struct.unpack("@n", struct.pack("@n", -9)), struct.unpack("!H", b"\x01\x02"), struct.unpack("2c", b"xy"))
+
+pairs: list[tuple[int]] = list(struct.iter_unpack("<h", b"\x01\x00\x02\x00\xff\xff"))
+print(pairs, struct.unpack_from("<h", b"zz\x03\x00", 2), struct.unpack_from("<h", b"zz\x03\x00", offset=2), struct.unpack_from("<h", b"\x01\x00\x02\x00"), struct.unpack_from("<h", b"zz\x03\x00", -2))
+for x, y in struct.iter_unpack("<hb", struct.pack("<hbhb", 1, 2, 3, 4)):
+    print(x, y)
+
+def try_pack_b(n: int) -> None:
+    print(struct.pack("b", n))
+def try_pack_B(n: int) -> None:
+    print(struct.pack("B", n))
+def try_pack_h(n: int) -> None:
+    print(struct.pack("h", n))
+def try_pack_H(n: int) -> None:
+    print(struct.pack("H", n))
+def try_pack_i(n: int) -> None:
+    print(struct.pack("i", n))
+def try_pack_I(n: int) -> None:
+    print(struct.pack("I", n))
+def try_pack_l(n: int) -> None:
+    print(struct.pack("=l", n))
+def try_pack_Q(n: int) -> None:
+    print(struct.pack("Q", n))
+def try_pack_e(x: float) -> None:
+    print(struct.pack("e", x))
+def try_pack_f(x: float) -> None:
+    print(struct.pack("f", x))
+def try_pack_c(b: bytes) -> None:
+    print(struct.pack("c", b))
+
+for n, f in [(200, try_pack_b), (-1, try_pack_B), (70000, try_pack_h), (-1, try_pack_H), (2**40, try_pack_i), (-1, try_pack_I), (2**40, try_pack_l), (-1, try_pack_Q), (127, try_pack_b), (2**31 - 1, try_pack_l)]:
+    try:
+        f(n)
+    except struct.error as e:
+        print("error:", e)
+for x, g in [(70000.0, try_pack_e), (1e40, try_pack_f), (3.25, try_pack_e)]:
+    try:
+        g(x)
+    except OverflowError as e:
+        print("OverflowError:", e)
+try:
+    try_pack_c(b"ab")
+except struct.error as e:
+    print("error:", e)
+for data in [b"\x01", b"\x01\x00\x00"]:
+    try:
+        print(struct.unpack("<h", data))
+    except struct.error as e:
+        print("error:", e)
+try:
+    struct.unpack_from("<h", b"\x01", 0)
+except struct.error as e:
+    print("error:", e)
+try:
+    print(list(struct.iter_unpack("<h", b"\x01\x00\x02")))
+except struct.error as e:
+    print("error:", e)
+try:
+    print(struct.calcsize("=n"))
+except struct.error as e:
+    print("error:", e)
+try:
+    print(struct.calcsize("3"))
+except struct.error as e:
+    print("error:", e)
+
+s = struct.Struct("<2hf")
+print(s.size, s.format, s.pack(1, 2, 3.0), s.unpack(s.pack(1, 2, 3.0)), s.unpack_from(b"x" + s.pack(1, 2, 3.0), 1), s)
+records = struct.Struct(">I4s")
+blob = records.pack(1, b"abcd") + records.pack(2, b"efgh")
+for n, tag in records.iter_unpack(blob):
+    print(n, tag)
+header = struct.Struct("!HHI")
+print(header.pack(80, 443, 12345), header.unpack(header.pack(80, 443, 12345)), header.size)

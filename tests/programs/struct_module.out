@@ -1,0 +1,56 @@
+'@ihb' 7
+'=ihb' 7
+'<ihb' 7
+'ihb' 7
+'@bi' 8
+'@bq' 16
+'@bd' 16
+'@bl' 16
+'=l' 4
+'@n' 8
+'@2h3s' 7
+'10s' 10
+'@bxxi' 8
+'4x' 4
+'e' 2
+'@c?' 2
+'p' 1
+'3p' 3
+'@hxx' 4
+'' 0
+'<i h' 6
+b'\xfe\xff\xff\xff\xfd\xff\xff\xff\x00(k\xee\xfb\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x7f\x80\xff\x01' (-2, 65535, -3, 4000000000, -5, 9223372036854775807, -128, 255, True)
+b'>\x00@ \x00\x00@\x0c\x00\x00\x00\x00\x00\x00' (1.5, 2.5, 3.5)
+b'\xff{' b'\x8e\x06' b'\x00\x80' b'\x00|' b'\x00~' b'\x00\x00' b'\x00h' b'\x02h'
+[1.0, inf, 5.960464477539063e-08, 6.097555160522461e-05, -0.0, 65504.0]
+b'ab\x00\x00\x00' b'ab' b'\x02ab' b'\x02ab\x00\x00' b'z'
+b'\x01\x00\x00\x00\x02\x00\x00\x00' b'\x02\x00\x00\x00\x01' b'\x01\x00\x00\x00\x02\x00\x00\x00' b'\x01\x00\xff\xff\x03\x00' b'\x07\x00\x00\x00\t\x00\x00\x00' b'\x00\x00\x00\x00\x00\x00\xf0?' b'\x00' b'\xff\xff\xff\xff\xff\xff\xff\x7f'
+(b'ab\x00\x00\x00', b'xy') (True,) (0, 0) (1, -1, 3) (2, 1)
+(-2,) (4294967294,) (-9,) (258,) (b'x', b'y')
+[(1,), (2,), (-1,)] (3,) (3,) (1,) (3,)
+1 2
+3 4
+error: 'b' format requires -128 <= number <= 127
+error: 'B' format requires 0 <= number <= 255
+error: 'h' format requires -32768 <= number <= 32767
+error: 'H' format requires 0 <= number <= 65535
+error: 'i' format requires -2147483648 <= number <= 2147483647
+error: 'I' format requires 0 <= number <= 4294967295
+error: 'l' format requires -2147483648 <= number <= 2147483647
+error: 'Q' format requires 0 <= number <= 18446744073709551615
+b'\x7f'
+b'\xff\xff\xff\x7f'
+OverflowError: float too large to pack with e format
+OverflowError: float too large to pack with f format
+b'\x80B'
+error: char format requires a bytes object of length 1
+error: unpack requires a buffer of 2 bytes
+error: unpack requires a buffer of 2 bytes
+error: unpack_from requires a buffer of at least 2 bytes for unpacking 2 bytes at offset 0 (actual buffer size is 1)
+error: iterative unpacking requires a buffer of a multiple of 2 bytes
+error: bad char in struct format
+error: repeat count given without format specifier
+8 <2hf b'\x01\x00\x02\x00\x00\x00@@' (1, 2, 3.0) (1, 2, 3.0) Struct('<2hf')
+1 b'abcd'
+2 b'efgh'
+b'\x00P\x01\xbb\x00\x0009' (80, 443, 12345) 8
