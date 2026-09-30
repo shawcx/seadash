@@ -36,7 +36,7 @@ COMPARISON_OPS = {"<", ">", "==", "!=", "<=", ">="}
 AUGMENTED_OPS = {"+=", "-=", "*=", "/=", "//=", "%=", "**=", "@=", "&=", "|=", "^=", "<<=", ">>="}
 
 # Python keywords we recognise but don't implement yet, so users get an honest error.
-NOT_YET_SUPPORTED = {"del", "yield"}
+NOT_YET_SUPPORTED = {"del"}
 
 
 def parse(source: str) -> A.Module:
@@ -152,6 +152,12 @@ class Parser:
                     self.next()
                     value = None if self.at_statement_end() else self.parse_expr_list()
                     return A.Return(value, loc=loc)
+                case "yield":
+                    self.next()
+                    if self.accept("from"):
+                        return A.Yield(self.parse_expr(), True, loc=loc)
+                    value = None if self.at_statement_end() else self.parse_expr_list()
+                    return A.Yield(value, loc=loc)
                 case "raise":
                     self.next()
                     if self.at_statement_end():

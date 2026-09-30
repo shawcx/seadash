@@ -18,6 +18,7 @@ from .types import (
     BINARY_FILE, TEXT_FILE,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
+    GeneratorType,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -398,7 +399,24 @@ def b_zip(ctx: CallContext) -> Type:
 def b_iter(ctx: CallContext) -> Type:
     """iter(xs): what __iter__ returns in Python code. seadash iterators are simple (eager)."""
     ctx.arity(1)
-    return IterType(ctx.iterable(0), "iter")
+    t = ctx.arg(0)
+    if isinstance(t, GeneratorType):
+        return t  # iter(it) is it
+    return GeneratorType(ctx.iterable(0))
+
+
+def b_next(ctx: CallContext) -> Type:
+    n = ctx.arity(1, 2)
+    t = ctx.arg(0)
+    if not isinstance(t, GeneratorType):
+        raise ctx.error(f"next() needs an iterator (a generator, or iter(...)), not {t}", ctx.args[0])
+    if n == 1:
+        return t.elem
+    d = ctx.arg(1, t.elem)
+    result = join(t.elem, d)
+    if result is None:
+        raise ctx.error(f"next()'s default must be a {t.elem} (or None), not {d}", ctx.args[1])
+    return result
 
 
 def b_list(ctx: CallContext) -> Type:
@@ -515,6 +533,7 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "zip": b_zip,
     "list": b_list,
     "iter": b_iter,
+    "next": b_next,
     "set": b_set,
     "dict": b_dict,
     "tuple": b_tuple,
@@ -923,6 +942,7 @@ EXCEPTION_TREE = [
     ("ConnectionRefusedError", "ConnectionError"),
     ("ConnectionResetError", "ConnectionError"),
     ("UnicodeError", "ValueError"),
+    ("StopIteration", "Exception"),
     ("UnicodeDecodeError", "UnicodeError"),
 ]
 

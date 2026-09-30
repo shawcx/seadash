@@ -1,0 +1,120 @@
+# Generators: functions with `yield` produce values on demand.
+from __future__ import annotations
+from typing import Iterator
+
+
+def count_up(n: int) -> Iterator[int]:
+    i = 0
+    while i < n:
+        yield i
+        i += 1
+
+
+def naturals() -> Iterator[int]:  # infinite: fine, values are made only when wanted
+    n = 0
+    while True:
+        yield n
+        n += 1
+
+
+def evens(nums: Iterator[int]) -> Iterator[int]:
+    for x in nums:
+        if x % 2 == 0:
+            yield x
+
+
+def chained() -> Iterator[int]:
+    yield from [1, 2]
+    yield from count_up(3)
+    yield from (7, 8)
+    yield 99
+
+
+def first_negative(xs: list[int]) -> Iterator[int]:
+    for x in xs:
+        if x < 0:
+            yield x
+            return  # finish early
+    print("(no negatives)")
+
+
+def pairs(words: list[str]) -> Iterator[tuple[int, str]]:
+    for i, w in enumerate(words):
+        yield i, w.upper()
+
+
+def trace(label: str) -> Iterator[str]:
+    print("start", label)  # runs at the first next(), not at the call
+    yield label + "1"
+    print("middle", label)
+    yield label + "2"
+    print("end", label)
+
+
+class Tree:
+    value: int
+    children: list[Tree]
+
+    def __init__(self, value: int, children: list[Tree]):
+        self.value = value
+        self.children = children
+
+    def walk(self) -> Iterator[int]:  # depth-first, recursively
+        yield self.value
+        for child in self.children:
+            yield from child.walk()
+
+    def __iter__(self) -> Iterator[int]:
+        yield from self.walk()
+
+
+def failing() -> Iterator[int]:
+    yield 1
+    raise ValueError("broke after one")
+
+
+for x in count_up(3):
+    print("count", x)
+print(list(evens(count_up(10))), sum(count_up(5)), max(count_up(4)), sorted(count_up(3), reverse=True))
+print(list(chained()), list(first_negative([3, -1, -2])), list(first_negative([1])))
+for i, w in pairs(["a", "b"]):
+    print(i, w)
+
+for n in naturals():
+    if n * n > 50:
+        print("first square over 50:", n)
+        break
+
+g = count_up(5)
+print(next(g), next(g))
+for rest in g:  # continues where next() left off
+    print("rest", rest)
+print(next(g, -1), next(count_up(0), None))
+try:
+    next(g)
+except StopIteration:
+    print("StopIteration")
+
+t = trace("x")
+print("created")
+print(next(t))
+print(next(t))
+print(list(t))
+
+tree = Tree(1, [Tree(2, [Tree(4, [])]), Tree(3, [])])
+print(list(tree.walk()), [v * 10 for v in tree], 4 in list(tree))
+
+it = iter([10, 20, 30])
+print(next(it), list(it), list(it))
+words = iter("hey")
+print(next(words), "".join(words))
+
+try:
+    for v in failing():
+        print("got", v)
+except ValueError as e:
+    print("error:", e)
+
+print(any(x > 3 for x in count_up(10)), list(zip(count_up(3), "abc")), dict(pairs(["q"])))
+gens = [count_up(2), count_up(3)]
+print([list(x) for x in gens], [sum(x) for x in gens])

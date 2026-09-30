@@ -1,0 +1,29 @@
+count 0
+count 1
+count 2
+[0, 2, 4, 6, 8] 10 3 [2, 1, 0]
+(no negatives)
+[1, 2, 0, 1, 2, 7, 8, 99] [-1] []
+0 A
+1 B
+first square over 50: 8
+0 1
+rest 2
+rest 3
+rest 4
+-1 None
+StopIteration
+created
+start x
+x1
+middle x
+x2
+end x
+[]
+[1, 2, 4, 3] [10, 20, 40, 30] True
+10 [20, 30] []
+h ey
+got 1
+error: broke after one
+True [(0, 'a'), (1, 'b'), (2, 'c')] {0: 'Q'}
+[[0, 1], [0, 1, 2]] [0, 0]

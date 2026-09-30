@@ -148,6 +148,17 @@ class ProcessType(Type):
 
 
 @dataclass(frozen=True)
+class GeneratorType(Type):
+    """What a generator function returns (and iter(xs)): values produced on demand.
+    Copies share their position, like Python's iterator objects."""
+
+    elem: Type
+
+    def __str__(self) -> str:
+        return f"Iterator[{self.elem}]"
+
+
+@dataclass(frozen=True)
 class VarTupleType(Type):
     """tuple[T, ...]: a tuple of any length (tuple(xs), Path.parts)."""
 
@@ -308,6 +319,7 @@ class FuncInfo:
     # 'method', 'static' (@staticmethod), 'classmethod', 'getter' (@property), 'setter' (@x.setter)
     kind: str = "method"
     cached: bool = False  # @functools.cache
+    generator: bool = False  # has `yield`: returns an Iterator[T] that runs the body on demand
 
     def __str__(self) -> str:
         params = ", ".join(f"{p.name}: {p.type}" for p in self.params)
@@ -457,6 +469,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return assignable(src, dst.inner)
     if isinstance(dst, TupleType) and isinstance(src, TupleType) and len(src.elts) == len(dst.elts):
         return all(assignable(s, d) for s, d in zip(src.elts, dst.elts))
+    if isinstance(dst, GeneratorType) and isinstance(src, (IterType, ListType)) and src.elem == dst.elem:
+        return True  # `return iter(items)` / a list where an Iterator[T] is expected
     if isinstance(dst, VarTupleType) and isinstance(src, TupleType):  # (1, 2) is a tuple[int, ...]
         return all(assignable(s, dst.elem) for s in src.elts)
     return False
@@ -498,7 +512,7 @@ def strip_optional(t: Type) -> Type:
 def element_type(t: Type) -> Type | None:
     """What `for x in t` gives you, or None if `t` isn't iterable."""
     match t:
-        case ListType(elem) | SetType(elem) | IterType(elem) | DequeType(elem) | VarTupleType(elem):
+        case ListType(elem) | SetType(elem) | IterType(elem) | DequeType(elem) | VarTupleType(elem) | GeneratorType(elem):
             return elem
         case DictType(key):
             return key

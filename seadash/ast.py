@@ -343,6 +343,14 @@ class Return(Stmt):
 
 
 @dataclass
+class Yield(Stmt):
+    """`yield value`, or `yield from iterable` (a generator function's output)."""
+
+    value: Expr | None = None
+    from_: bool = False
+
+
+@dataclass
 class Nonlocal(Stmt):
     """`nonlocal a, b`: assignments in this nested function go to the enclosing function's variables."""
 

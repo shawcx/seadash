@@ -38,7 +38,8 @@ from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
     PARSER, ParserType, SubParsersType,
-    CounterType, DefaultDictType, DequeType, DictType, MatchType, NamespaceType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
+    CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
+    VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
 
@@ -264,6 +265,8 @@ class CodeGen:
                 return f"sd::deque<{self.cpp_type(elem)}>"
             case VarTupleType(elem):
                 return f"sd::vtuple<{self.cpp_type(elem)}>"
+            case GeneratorType(elem):
+                return f"sd::Generator<{self.cpp_type(elem)}>"
             case ProcessType(kind):
                 return f"sd::subprocess::{kind}"
             case PatternType():
@@ -299,6 +302,8 @@ class CodeGen:
         """Convert `code` (of type src) to dst: int -> float, T/None -> T?, tuples elementwise."""
         if src == dst or dst is None or isinstance(src, IterType):
             return code
+        if isinstance(dst, GeneratorType) and not isinstance(src, GeneratorType):  # a list where an iterator is wanted
+            return f"sd::iterate<{self.cpp_type(dst.elem)}>(sd::to_list({code}))"
         if isinstance(dst, VarTupleType) and isinstance(src, TupleType):  # (1, 2) as a tuple[int, ...]
             items = ", ".join(self.coerce(f"std::get<{i}>(sd_t)", t, dst.elem) for i, t in enumerate(src.elts))
             param = "sd_t" if src.elts else ""
@@ -423,6 +428,7 @@ class CodeGen:
             if m.name != "__init__":
                 static = "static " if is_static(m) else ""
                 self.line(f"{static}{self.cpp_type(m.ret)} {fn_name(m)}({', '.join(self.params(m))});")
+                self.generator_declaration(st, m)
         self.line("std::string sd_repr() const;")
         self.protocol_members(st, name)
         if st.kind == "struct":
@@ -437,6 +443,11 @@ class CodeGen:
             self.line(f"static {self.cpp_type(st)} sd_from_json(const sd::json::Value& v, const std::string& path);")
         self.close(";")
         self.line()
+
+    def generator_declaration(self, st: StructType, m: FuncInfo) -> None:
+        if m.generator and not is_static(m):
+            params = ", ".join([f"{self.self_type(st)} sd_self", *self.params(m)])
+            self.line(f"static {self.cpp_type(m.ret)} sd_gen_{fn_name(m)}({params});")
 
     def ctor_params(self, st: StructType) -> list[Type]:
         if st.init is not None:
@@ -477,6 +488,7 @@ class CodeGen:
             if m.name == "__init__":
                 continue
             decl = f"{self.cpp_type(m.ret)} {fn_name(m)}({', '.join(self.params(m))})"
+            self.generator_declaration(st, m)
             if is_static(m):
                 self.line(f"static {decl};")
                 continue
@@ -580,6 +592,8 @@ class CodeGen:
             elif m.name == "__init__":
                 params = ", ".join(["sd::init_t", *self.params(m)])
                 self.function_body(m, f"{name}::{name}({params})")
+            elif m.generator and not is_static(m):
+                self.generator_method(m, name)
             else:
                 self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{fn_name(m)}({', '.join(self.params(m))})")
 
@@ -632,7 +646,7 @@ class CodeGen:
         out = []
         for p, var in zip(fn.params, self.param_vars(fn)):
             t = self.cpp_type(p.type)
-            if by_value(p.type):
+            if by_value(p.type) or fn.generator:  # (a generator keeps running after the call: it needs its own copy)
                 name = f"sd_arg_{var.cpp_name}" if var.captured else ident(p.name)
                 out.append(f"{t} {name}")
             else:
@@ -666,14 +680,37 @@ class CodeGen:
         self.close()
         self.line()
 
-    def function_body(self, fn: FuncInfo, header: str) -> None:
+    def generator_method(self, fn: FuncInfo, owner: str) -> None:
+        """A generator method is a coroutine, and its body only runs when the first value
+        is wanted -- the object may be gone by then. So the method just calls a static
+        coroutine, passing (at the call) a reference to the object (a class) or a copy
+        of it (a struct value)."""
+        params = self.params(fn)
+        names = [p.rsplit(" ", 1)[1] for p in params]
+        ret = self.cpp_type(fn.ret)
+        self_var = fn.node.params[0].sym
+        self.open(f"{ret} {owner}::{fn_name(fn)}({', '.join(params)})")
+        self.line(f"return sd_gen_{fn_name(fn)}({', '.join([self.var_code(self_var, self_var.type), *names])});")
+        self.close()
+        self.line()
+        header = f"{ret} {owner}::sd_gen_{fn_name(fn)}({', '.join([f'{self.self_type(fn.owner)} sd_self', *params])})"
+        self.function_body(fn, header, coroutine_self=True)
+
+    def self_type(self, st: StructType) -> str:
+        return self.cpp_type(st) if st.kind == "class" else local_name(st)
+
+    def function_body(self, fn: FuncInfo, header: str, coroutine_self: bool = False) -> None:
         self.func = fn
         self.open(header)
         if fn.owner is not None and fn.name != "__init__" and not is_static(fn) and is_synchronized(fn.owner):
             self.line("std::lock_guard<std::recursive_mutex> sd_lock(this->sd_mutex);  // Synchronized")
+        if coroutine_self:  # a generator method's body reaches its object through sd_self
+            self.lambda_self += 1
         self.hoist(fn.locals)
         self.cell_params(fn)
         self.block(fn.node.body)
+        if coroutine_self:
+            self.lambda_self -= 1
         if isinstance(fn.ret, OptionalType) and not ends_with_return(fn.node.body):
             self.line("return std::nullopt;")
         self.close()
@@ -747,6 +784,8 @@ class CodeGen:
                 self.line("continue;")
             case A.Return(value):
                 self.return_stmt(value)
+            case A.Yield(value, from_):
+                self.yield_stmt(value, from_)
             case A.Assert(test, msg):
                 message = f"sd::str({self.expr(msg)})" if msg is not None else '""s'
                 self.line(f'if (!{self.cond(test)}) sd::raise("AssertionError", {message});')
@@ -823,7 +862,21 @@ class CodeGen:
             call = f"{fn}({', '.join([fn, *names])})"
             self.line(f"{self.var_ref(info.var)} = [{fn}]({typed}) mutable -> {ret} {{ return {call}; }};")
 
+    def yield_stmt(self, value: A.Expr | None, from_: bool) -> None:
+        elem = self.func.ret.elem
+        if from_:
+            v = self.fresh("y")
+            source = element_type(value.ty) if not hasattr(value, "tuple_elem") else value.tuple_elem
+            self.line(f"for (auto&& {v} : sd::iter({self.expr(value)})) co_yield {self.coerce(v, source, elem)};")
+        elif value is None:
+            self.line(f"co_yield {self.cpp_type(elem)}{{}};")
+        else:
+            self.line(f"co_yield {self.expr_as(value, elem)};")
+
     def return_stmt(self, value: A.Expr | None) -> None:
+        if self.func is not None and self.func.generator:
+            self.line("co_return;")
+            return
         ret = self.func.ret if self.func else NONE
         if self.func is not None and self.func.name == "__init__":
             self.line("return;")
@@ -1867,8 +1920,14 @@ class CodeGen:
                 return f"sd::enumerate({', '.join(args)})"
             case "list":
                 return f"sd::to_list({a})" if a else f"{self.cpp_type(e.ty)}{{}}"
+            case "iter" if isinstance(e.args[0].ty, GeneratorType):
+                return a
             case "iter":
-                return f"sd::to_list({a})"
+                return f"sd::iterate<{self.cpp_type(e.ty.elem)}>(sd::to_list({a}))"
+            case "next" if len(e.args) == 2:
+                return f"sd::next_or<{self.cpp_type(e.ty)}>({a}, {self.expr_as(e.args[1], e.ty)})"
+            case "next":
+                return f"sd::next({a})"
             case "set":
                 return f"sd::to_set({a})" if a else f"{self.cpp_type(e.ty)}{{}}"
             case "tuple" if isinstance(e.ty, VarTupleType):

@@ -1,0 +1,54 @@
+# Generator lifetimes: a generator outlives the call that made it, so it holds what it needs:
+# its arguments (copies), its object (a class) or a copy of it (a struct).
+from typing import Iterator
+
+
+def each(items: list[str]) -> Iterator[str]:
+    for s in items:
+        yield s + "!"
+
+
+class Box:
+    items: list[int]
+
+    def __init__(self, items: list[int]):
+        self.items = items
+
+    def doubled(self) -> Iterator[int]:
+        for x in self.items:
+            yield x * 2
+
+
+struct Point:
+    x: int
+    y: int
+
+    def coords(self) -> Iterator[int]:
+        yield self.x
+        yield self.y
+
+
+def make() -> Iterator[int]:
+    return Box([1, 2, 3]).doubled()  # the Box is only kept alive by the generator
+
+
+def guarded() -> Iterator[int]:
+    try:
+        yield 1
+        yield 2
+    finally:
+        print("cleanup")
+
+
+g = each(["a", "b"] + ["c"])  # a temporary list
+print(list(g))
+h = make()
+print(list(h))
+p = Point(3, 4)
+c = p.coords()
+p.x = 100  # a struct is a value: the generator has its own copy
+print(list(c))
+gg = guarded()
+print(next(gg))
+gg = guarded()  # the first one is dropped mid-way
+print(list(gg))

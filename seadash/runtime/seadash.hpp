@@ -6,6 +6,7 @@
 #pragma once
 
 #include <algorithm>
+#include <coroutine>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -97,6 +98,7 @@ SD_EXCEPTION(ConnectionRefusedError, ConnectionError)
 SD_EXCEPTION(ConnectionResetError, ConnectionError)
 SD_EXCEPTION(UnicodeError, ValueError)
 SD_EXCEPTION(UnicodeDecodeError, UnicodeError)
+SD_EXCEPTION(StopIteration, Exception)
 #undef SD_EXCEPTION
 
 struct Thrown {
@@ -160,6 +162,104 @@ inline std::string ascii(const std::string& text) {
         i = j;
     }
     return out;
+}
+
+// A generator (or iter(xs)): a coroutine that runs until its next `yield` each time a
+// value is wanted. Copies share it, like Python's iterator objects, so a `for` loop
+// continues where next() left off.
+template <class T>
+class Generator {
+public:
+    struct promise_type {
+        std::optional<T> value;
+        std::exception_ptr error;
+        Generator get_return_object() { return Generator(std::coroutine_handle<promise_type>::from_promise(*this)); }
+        std::suspend_always initial_suspend() noexcept { return {}; }  // nothing runs until the first value is wanted
+        std::suspend_always final_suspend() noexcept { return {}; }
+        std::suspend_always yield_value(T v) {
+            value = std::move(v);
+            return {};
+        }
+        void return_void() {}
+        void unhandled_exception() { error = std::current_exception(); }
+    };
+    using handle = std::coroutine_handle<promise_type>;
+    using value_type = T;
+
+private:
+    struct State {
+        handle h;
+        bool finished = false, running = false;
+        State(handle h_) : h(h_) {}
+        State(const State&) = delete;
+        ~State() {
+            if (h) h.destroy();
+        }
+    };
+    std::shared_ptr<State> s_;
+
+public:
+    Generator() = default;
+    explicit Generator(handle h) : s_(std::make_shared<State>(h)) {}
+
+    // Run to the next `yield`; false once the generator has finished. An exception in
+    // the generator comes out here, as in Python.
+    bool advance() const {
+        if (!s_ || s_->finished) return false;
+        if (s_->running) raise("ValueError", "generator already executing");
+        s_->running = true;
+        s_->h.promise().value.reset();
+        s_->h.resume();
+        s_->running = false;
+        if (s_->h.done()) {
+            s_->finished = true;
+            if (auto e = std::exchange(s_->h.promise().error, nullptr)) std::rethrow_exception(e);
+            return false;
+        }
+        return true;
+    }
+    T take() const { return std::move(*s_->h.promise().value); }
+
+    struct sentinel {};
+    struct iterator {
+        const Generator* g;
+        std::optional<T> current;
+        void fetch() {
+            current.reset();
+            if (g->advance()) current.emplace(g->take());
+        }
+        const T& operator*() const { return *current; }
+        iterator& operator++() {
+            fetch();
+            return *this;
+        }
+        bool operator!=(sentinel) const { return current.has_value(); }
+        bool operator==(sentinel) const { return !current.has_value(); }
+    };
+    iterator begin() const {
+        iterator it{this, std::nullopt};
+        it.fetch();
+        return it;
+    }
+    sentinel end() const { return {}; }
+    std::string sd_repr() const { return "<generator object>"; }
+};
+
+// iter(xs): an iterator over (a copy of) a collection's items.
+template <class T, class L>
+Generator<T> iterate(L items) {
+    for (auto& x : items) co_yield T(x);
+}
+
+template <class T>
+T next(const Generator<T>& g) {
+    if (!g.advance()) raise<StopIteration>("");
+    return g.take();
+}
+template <class R, class T, class D>
+R next_or(const Generator<T>& g, D fallback) {  // next(it, default)
+    if (!g.advance()) return R(std::move(fallback));
+    return R(g.take());
 }
 
 // A hint to the CPU inside a spin-wait loop.

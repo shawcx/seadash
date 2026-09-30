@@ -122,6 +122,8 @@ def stmt(s: A.Stmt, depth: int) -> list[str]:
             return [pad + "(continue)"]
         case A.Return(value):
             return [pad + sexp("return", *([expr(value)] if value else []))]
+        case A.Yield(value, from_):
+            return [pad + sexp("yield-from" if from_ else "yield", *([expr(value)] if value else []))]
         case A.Assert(test, msg):
             return [pad + sexp("assert", expr(test), *([expr(msg)] if msg else []))]
         case A.Nonlocal(names):

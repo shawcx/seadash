@@ -39,7 +39,8 @@ from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA,
-    SYNC_ARITY, ClassRefType, CounterType, MatchType, NamespaceType, PatternType, ProcessType, VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
+    SYNC_ARITY, ClassRefType, CounterType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
+    VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
@@ -516,6 +517,15 @@ class Checker:
             resolved.append(Param(p.name, self.resolve_type(p.annotation), p.default, p.loc))
         ret = self.resolve_type(node.returns) if node.returns else NONE
         info = FuncInfo(node.name, resolved, ret, node, owner, module=self.module_name, kind=kind)
+        if has_yield(node.body):
+            if not isinstance(ret, GeneratorType):
+                raise self.error(
+                    f"'{node.name}' is a generator (it has 'yield'), so its return type is Iterator[T]: "
+                    f"write `-> Iterator[int]` (with the type it yields)", node,
+                )
+            if owner is not None and threads.is_synchronized(owner):
+                raise self.error("a Synchronized class's methods can't be generators (the lock can't be held across a yield)", node)
+            info.generator = True
         node.sym = info
         return info
 
@@ -590,7 +600,7 @@ class Checker:
             pnode.sym = var
         self.enter(scope, state)
         self.check_block(node.body)
-        if not self.state.dead and info.ret != NONE and not isinstance(info.ret, OptionalType):
+        if not self.state.dead and info.ret != NONE and not isinstance(info.ret, OptionalType) and not info.generator:
             raise self.error(
                 f"function '{info.name}' can reach its end without returning a value "
                 f"(it's declared to return {info.ret})", node,
@@ -827,6 +837,8 @@ class Checker:
 
     def check_nested_def(self, node: A.FunctionDef) -> None:
         """A def inside a function: a local variable holding a closure."""
+        if has_yield(node.body):
+            raise self.error("nested functions can't be generators yet; move it to the top level", node)
         if node.type_params:
             raise self.error("generic functions are not supported yet", node)
         info = self.resolve_signature(node, owner=None)
@@ -909,8 +921,12 @@ class Checker:
             return gen.checker.instantiate_class(gen, tuple(self.resolve_type(a) for a in args), node)
         if name in ("TextIO", "BinaryIO") and not args:
             return BINARY_FILE if name == "BinaryIO" else TEXT_FILE
-        if name in ("Iterator", "Iterable") and len(args) == 1:  # typing.Iterator[T], for __iter__
-            return IterType(self.resolve_type(args[0]), "iter")
+        if name in ("Iterator", "Iterable", "Generator") and args:  # typing.Iterator[T] / Generator[T, None, None]
+            if name != "Generator" and len(args) != 1 or name == "Generator" and (
+                len(args) != 3 or any(self.resolve_type(a) != NONE for a in args[1:])
+            ):
+                raise self.error(f"write Iterator[T] (or Generator[T, None, None]: send() isn't supported)", node)
+            return GeneratorType(self.resolve_type(args[0]))
         if name == "Optional" and len(args) == 1:  # typing.Optional[T] is T?
             inner = self.resolve_type(args[0])
             return inner if isinstance(inner, OptionalType) else OptionalType(inner)
@@ -1000,6 +1016,8 @@ class Checker:
                 self.state.dead = True
             case A.Return(value):
                 self.check_return(stmt, value)
+            case A.Yield(value, from_):
+                self.check_yield(stmt, value, from_)
             case A.Assert(test, msg):
                 self.state, _ = self.check_condition(test)  # after `assert x`, x is known not None
                 if msg is not None:
@@ -1233,6 +1251,27 @@ class Checker:
             self.globals[name] = var
         return var
 
+    def check_yield(self, stmt: A.Yield, value: A.Expr | None, from_: bool) -> None:
+        scope = self.scope
+        if scope.is_module:
+            raise self.error("'yield' outside a function", stmt)
+        info = scope.info
+        if not info.generator:  # a nested def or lambda
+            raise self.error("only top-level functions and methods can be generators (for now)", stmt)
+        elem = info.ret.elem
+        if from_:
+            got = self.loop_element(value, self.check_expr(value, ListType(elem)))
+            if not assignable(got, elem):
+                raise self.error(f"'{info.name}' yields {elem}, but this gives {got}", value)
+            return
+        if value is None:
+            if not assignable(NONE, elem):
+                raise self.error(f"a bare `yield` gives None, but '{info.name}' yields {elem}", stmt)
+            return
+        got = self.check_expr(value, elem)
+        if not assignable(got, elem):
+            raise self.error(f"'{info.name}' yields {elem}, not {got}", value)
+
     def check_return(self, stmt: A.Return, value: A.Expr | None) -> None:
         scope = self.scope
         if scope.is_module:
@@ -1240,6 +1279,11 @@ class Checker:
         if self.finally_loops:
             raise self.error("'return' can't be used inside a 'finally' block", stmt)
         name = scope.info.name
+        if scope.info.generator:
+            if value is not None:
+                raise self.error("a generator can only `return` without a value (to finish early)", value)
+            self.state.dead = True
+            return
         if value is None:
             if scope.ret != NONE and not isinstance(scope.ret, OptionalType):
                 raise self.error(f"'{name}' must return a {scope.ret}", stmt)
@@ -1539,7 +1583,8 @@ class Checker:
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
         ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE, PATH, *DATETIME_TYPES) or isinstance(
-            t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType, MatchType, VarTupleType)
+            t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType, MatchType, VarTupleType,
+                GeneratorType)
         ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__"))
         if not ok:
             raise self.error(f"{t} can't be used as a condition", e)
@@ -3212,3 +3257,20 @@ def datetime_arithmetic(op: str, l: Type, r: Type) -> Type | None:
         case "//", _, _ if l == TIMEDELTA:
             return INT if r == TIMEDELTA else TIMEDELTA if r == INT else None
     return None
+
+
+def has_yield(body: list[A.Stmt]) -> bool:
+    """Is this a generator's body? (A nested def's yields are its own.)"""
+    for stmt in body:
+        match stmt:
+            case A.Yield():
+                return True
+            case A.FunctionDef() | A.ClassDef():
+                continue
+        for field in ("body", "orelse", "finalbody"):
+            if has_yield(getattr(stmt, field, None) or []):
+                return True
+        for handler in getattr(stmt, "handlers", None) or []:
+            if has_yield(handler.body):
+                return True
+    return False

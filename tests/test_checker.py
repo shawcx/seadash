@@ -1534,3 +1534,34 @@ def test_argparse_subcommand_narrowing():
     assert err(SUBCOMMANDS + "if args.command == 'rm':\n    x = args.text.upper()\n").message.startswith(
         "str? might be None"
     )
+
+
+GEN = "from typing import Iterator\n"
+
+
+def test_generator_types():
+    info = ok(
+        GEN + "def gen(n: int) -> Iterator[int]:\n    yield n\n"
+        "g = gen(1)\nfirst = next(g)\nmaybe = next(g, None)\nfallback = next(g, 0)\nit = iter([1.5])\nall_of = list(g)\n"
+    )
+    assert {"g: Iterator[int]", "first: int", "maybe: int?", "fallback: int", "it: Iterator[float]",
+            "all_of: list[int]"} <= set(variables(info))
+
+
+def test_generator_errors():
+    assert err("def gen():\n    yield 1\n").message == (
+        "'gen' is a generator (it has 'yield'), so its return type is Iterator[T]: write `-> Iterator[int]` "
+        "(with the type it yields)"
+    )
+    assert err(GEN + "def gen() -> Iterator[int]:\n    yield 'a'\n").message == "'gen' yields int, not str"
+    assert err(GEN + "def gen() -> Iterator[int]:\n    yield from ['a']\n").message == (
+        "'gen' yields int, but this gives str"
+    )
+    assert err(GEN + "def gen() -> Iterator[int]:\n    yield 1\n    return 5\n").message == (
+        "a generator can only `return` without a value (to finish early)"
+    )
+    assert err(GEN + "def f():\n    def g() -> Iterator[int]:\n        yield 1\n").message == (
+        "nested functions can't be generators yet; move it to the top level"
+    )
+    assert err("x = next([1, 2])\n").message == "next() needs an iterator (a generator, or iter(...)), not list[int]"
+    assert err("yield 1\n").message == "'yield' outside a function"
