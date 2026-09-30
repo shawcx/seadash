@@ -1,0 +1,31 @@
+# hashlib and hmac, on OpenSSL.
+import hashlib
+import hmac
+from hashlib import sha256
+
+h = sha256(b"abc")
+h.update(b"def")
+print(h.hexdigest(), h.name, h.digest_size, h.block_size, h.digest()[:4])
+print(hashlib.md5(b"").hexdigest(), hashlib.new("sha1", b"x").hexdigest(), hashlib.new("SHA256").hexdigest()[:16])
+print(hashlib.sha3_256(b"a").hexdigest()[:16], hashlib.shake_128(b"a").hexdigest(8), hashlib.blake2s(b"a").hexdigest()[:16])
+print(hashlib.sha512(b"seadash").hexdigest()[:32], hashlib.blake2b(b"a").digest_size, hashlib.sha1(string=b"kw").hexdigest()[:8])
+copy = h.copy()
+copy.update(b"!")
+print(h.hexdigest() != copy.hexdigest(), h.hexdigest() == sha256(b"abcdef").hexdigest())
+print(hashlib.pbkdf2_hmac("sha256", b"pw", b"salt", 1000).hex()[:16], len(hashlib.pbkdf2_hmac("sha1", b"p", b"s", 2, dklen=10)))
+print(sorted(hashlib.algorithms_guaranteed), "sha256" in hashlib.algorithms_available)
+chunks = hashlib.sha256()
+for part in [b"a", b"b", b"c"]:
+    chunks.update(part)
+print(chunks.hexdigest() == hashlib.sha256(b"abc").hexdigest())
+
+mac = hmac.new(b"key", b"msg", hashlib.sha256)
+print(mac.hexdigest()[:16], mac.name, mac.digest_size, mac.block_size)
+mac2 = hmac.new(b"key", digestmod="sha1")
+mac2.update(b"part one")
+print(mac2.hexdigest()[:16], hmac.digest(b"key", b"msg", "sha256") == mac.digest())
+print(hmac.compare_digest("abc", "abc"), hmac.compare_digest(b"abc", b"abd"), hmac.new(b"k", b"m", sha256).hexdigest()[:8])
+try:
+    hashlib.new("nope")
+except ValueError as e:
+    print("error:", e)

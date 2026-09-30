@@ -36,6 +36,8 @@ SOCKET = Prim("socket")  # socket.socket: a thread-safe handle
 PATH = Prim("Path")  # pathlib.Path: an immutable path value
 TEXT_WRAPPER = Prim("TextWrapper")  # textwrap.TextWrapper
 STR_TEMPLATE = Prim("Template")  # string.Template
+HASH = Prim("hash")  # a hashlib hash object
+HMAC_T = Prim("HMAC")  # hmac.HMAC
 TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
 
 DATE = Prim("date")  # the datetime module's value types

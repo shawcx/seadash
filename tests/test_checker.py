@@ -1600,3 +1600,18 @@ def test_zoneinfo_types():
         "d = at(tz)\n"
     )
     assert {"tz: timezone", "now: datetime", "names: set[str]", "d: datetime"} <= set(variables(info))
+
+
+def test_hashlib_types_and_errors():
+    info = ok("import hashlib\nimport hmac\nh = hashlib.sha256(b'x')\nd = h.hexdigest()\nm = hmac.new(b'k', b'm', hashlib.sha1)\n"
+              "raw = m.digest()\nsame = hmac.compare_digest(raw, raw)\n")
+    assert {"h: hash", "d: str", "m: HMAC", "raw: bytes", "same: bool"} <= set(variables(info))
+    assert err("import hashlib\nh = hashlib.sha256('text')\n").message == (
+        "hashlib.sha256() data: strings must be encoded before hashing; use s.encode()"
+    )
+    assert err("import hmac\nm = hmac.new(b'k', b'm')\n").message == (
+        "hmac.new() needs digestmod= (like hashlib.sha256 or 'sha256')"
+    )
+    assert err("import hmac\nx = hmac.compare_digest('a', b'a')\n").message == (
+        "compare_digest() compares two str or two bytes, not str and bytes"
+    )

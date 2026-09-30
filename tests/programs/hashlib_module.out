@@ -1,0 +1,12 @@
+bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721 sha256 32 64 b'\xbe\xf5~\xc7'
+d41d8cd98f00b204e9800998ecf8427e 11f6ad8ec52a2984abaafd7c3b516503785c2072 e3b0c44298fc1c14
+80084bf2fba02475 85c8de88d28866bf 4a0d129873403037
+5e24d33a17a64d3d49385ae874226cc6 64 5f1c0be8
+True True
+0a38253555ce37f5 10
+['blake2b', 'blake2s', 'md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha3_224', 'sha3_256', 'sha3_384', 'sha3_512', 'sha512', 'shake_128', 'shake_256'] True
+True
+2d93cbc1be167bcb hmac-sha256 32 64
+4833a9735d64597b True
+True False b60090e3
+error: unsupported hash type nope

@@ -81,7 +81,7 @@ You need:
 
 - **Python 3.12+**, to run the compiler.
 - **A C++23 compiler:** g++ 14 or newer. Set `SEADASH_CXX` to pick a specific one.
-- **zlib and PCRE2** development headers, for the `zlib` and `re` modules (`apt install zlib1g-dev libpcre2-dev`).
+- **zlib, PCRE2 and OpenSSL** development headers, for the `zlib`, `re`/`textwrap` and `hashlib` modules (`apt install zlib1g-dev libpcre2-dev libssl-dev`).
 
 ```console
 $ python3 -m venv .venv && .venv/bin/pip install -e .
@@ -179,6 +179,7 @@ def work():
 | `socket` | TCP/UDP with Python's API and errors |
 | `threading`, `queue` | threads, locks, events, queues; plus seadash's `Mutex[T]`, `Atomic` and `Synchronized` |
 | `itertools` | all of it, lazily: `count`, `cycle`, `repeat`, `accumulate`, `chain`, `groupby`, `islice`, `tee`, `zip_longest`, `product`, `permutations`, `combinations`, `pairwise`, `batched`... (`permutations(xs, 2)` gives `tuple[T, T]`) |
+| `hashlib`, `hmac` | every guaranteed algorithm (md5, sha1/2/3, blake2, shake) on OpenSSL, `pbkdf2_hmac`, `file_digest`; `hmac.new`, `hmac.digest`, `compare_digest` |
 | `string` | the character-set constants, `capwords`, and `Template` (`$name` / `${name}` with `substitute` and `safe_substitute`) |
 | `textwrap` | `wrap`, `fill`, `shorten`, `dedent`, `indent`, `TextWrapper`: a port of Python's algorithm (hyphens, em-dashes, `max_lines`), so lines break where Python's do |
 | `collections` | `defaultdict`, `Counter`, `deque` |

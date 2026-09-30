@@ -37,7 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    TEXT_WRAPPER, STR_TEMPLATE,
+    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
@@ -254,6 +254,10 @@ class CodeGen:
                 return "sd::textwrap::TextWrapper"
             case _ if t == STR_TEMPLATE:
                 return "sd::stringmod::Template"
+            case _ if t == HASH:
+                return "sd::hashlib::Hash"
+            case _ if t == HMAC_T:
+                return "sd::hmac::HMAC"
             case _ if t in DATETIME_TYPES:
                 return f"sd::datetime::{t.name}"
             case ParserType() | SubParsersType():
@@ -1727,6 +1731,24 @@ class CodeGen:
                 return f"{cpp}({self.expr(extra['items'])}, {ml})"
         raise NotImplementedError(f"codegen for {t}()")
 
+    # ---- hashlib, hmac ----------------------------------------------------------------
+
+    def hash_call(self, mod: str, name: str, e: A.Call) -> str:
+        args = e.hash_args
+
+        def digest(node: A.Expr) -> str:
+            return cpp_string(node.hash_name) if hasattr(node, "hash_name") else self.expr(node)
+
+        data = next((self.expr(args[k]) for k in ("data", "string") if k in args), "sd::bytes()")
+        if mod == "hashlib":
+            algorithm = self.expr(args["name"]) if name == "new" else cpp_string(name)
+            return f"sd::hashlib::Hash({algorithm}, {data})"
+        if name == "new":
+            msg = args.get("msg")
+            msg_code = f"std::optional<sd::bytes>({self.expr(msg)})" if msg is not None and not isinstance(msg, A.NoneLit) else "std::nullopt"
+            return f"sd::hmac::new_({self.expr(args['key'])}, {msg_code}, {digest(args['digestmod'])})"
+        return f"sd::hmac::digest({self.expr(args['key'])}, {self.expr(args['msg'])}, {digest(args['digest'])})"
+
     # ---- itertools ------------------------------------------------------------------
 
     def itertools_call(self, name: str, e: A.Call) -> str:
@@ -2154,8 +2176,10 @@ class CodeGen:
             return f"{r}.substitute(sd::dict<std::string, std::string>{{{keywords}}}, {mapping}, {safe})"
         if recv_type == DATETIME and name in ("date", "time"):
             return f"{r}.to_{name}()"  # (a C++ member can't share its class's name)
+        if recv_type in (HASH, HMAC_T) and name == "update":
+            return f"{r}.update({self.expr(e.args[0])})"
         if isinstance(recv_type, (SyncType, ParserType)) or recv_type in (
-            SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, *DATETIME_TYPES
+            SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, *DATETIME_TYPES
         ):
             handler = builtins.method_for(recv_type, name)
             codes = []
@@ -2261,6 +2285,8 @@ class CodeGen:
             return self.process_call(e)
         if mod == "itertools":
             return self.itertools_call(name, e)
+        if mod in ("hashlib", "hmac") and hasattr(e, "hash_args"):
+            return self.hash_call(mod, name, e)
         member = module.members[name]
         if member.cpp is not None and "{T}" in member.cpp:  # the result type picks the template: json.loads
             member = builtins.Function(member.name, member.check, member.cpp.replace("{T}", self.cpp_type(e.ty)), member.params)

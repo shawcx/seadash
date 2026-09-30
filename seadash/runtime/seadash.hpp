@@ -1403,12 +1403,26 @@ std::vector<T> concat(const std::vector<T>& a, const std::vector<T>& b) {
     return out;
 }
 
+// s * n: allocate once, then keep doubling the filled part (fast even for b"x" * 10**8).
 template <class Seq>
 Seq repeat(const Seq& s, std::int64_t n) {
     Seq out;
-    for (std::int64_t i = 0; i < n; ++i) out.insert(out.end(), s.begin(), s.end());
+    if (n <= 0 || s.empty()) return out;
+    if constexpr (requires { out.resize(std::size_t{1}); }) {
+        std::size_t unit = s.size(), total = unit * static_cast<std::size_t>(n);
+        out.resize(total);
+        std::copy(s.begin(), s.end(), out.begin());
+        for (std::size_t filled = unit; filled < total;) {
+            std::size_t chunk = std::min(filled, total - filled);
+            std::copy_n(out.begin(), chunk, out.begin() + filled);
+            filled += chunk;
+        }
+    } else {
+        for (std::int64_t i = 0; i < n; ++i) out.insert(out.end(), s.begin(), s.end());
+    }
     return out;
 }
+inline bytes repeat(const bytes& b, std::int64_t n) { return bytes(repeat(b.data, n)); }
 
 template <class T, class X>
 bool contains(const std::vector<T>& v, const X& x) {
