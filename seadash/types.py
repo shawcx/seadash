@@ -36,6 +36,7 @@ SOCKET = Prim("socket")  # socket.socket: a thread-safe handle
 PATH = Prim("Path")  # pathlib.Path: an immutable path value
 TEXT_WRAPPER = Prim("TextWrapper")  # textwrap.TextWrapper
 STR_TEMPLATE = Prim("Template")  # string.Template
+UUID_T = Prim("UUID")  # uuid.UUID: an immutable 16-byte value
 HASH = Prim("hash")  # a hashlib hash object
 EXECUTOR = Prim("ThreadPoolExecutor")  # concurrent.futures.ThreadPoolExecutor
 LOGGER = Prim("Logger")  # logging.Logger
@@ -454,7 +455,7 @@ def user_dunder(t: Type, name: str) -> FuncInfo | None:
 
 
 def is_hashable(t: Type) -> bool:
-    if t in (INT, FLOAT, BOOL, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA):
+    if t in (INT, FLOAT, BOOL, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T):
         return True
     if user_dunder(t, "__hash__"):
         return True

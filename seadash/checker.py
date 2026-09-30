@@ -39,7 +39,7 @@ from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
-    DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA,
+    DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T,
     SYNC_ARITY, ClassRefType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
@@ -2452,7 +2452,7 @@ class Checker:
     def check_comparison(self, op: str, lt: Type, rt: Type, left: A.Expr, right: A.Expr, e: A.Compare) -> None:
         if op in ("<", ">", "<=", ">="):
             ordered = (is_numeric(lt) and is_numeric(rt)) or (
-                lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA) or isinstance(lt, (TupleType, ListType, VarTupleType)))
+                lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T) or isinstance(lt, (TupleType, ListType, VarTupleType)))
             )
             if not ordered:
                 owner = lt if isinstance(lt, StructType) else rt

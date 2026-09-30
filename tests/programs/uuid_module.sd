@@ -1,0 +1,35 @@
+import uuid
+from uuid import UUID
+
+u = UUID("{12345678-1234-5678-1234-567812345678}")
+print(u, repr(u), u.hex, u.bytes, u.version, u.variant, u.urn)
+print(u.fields, u.time_low, u.time_mid, u.time_hi_version, u.clock_seq_hi_variant, u.clock_seq_low, u.node, u.clock_seq)
+print(UUID("urn:uuid:12345678123456781234567812345678") == u, UUID(bytes=u.bytes) == u, UUID(hex=u.hex, version=4))
+print(UUID("00000000-0000-0000-0000-000000000000").version, uuid.RFC_4122)
+
+dns = uuid.uuid3(uuid.NAMESPACE_DNS, "python.org")
+print(dns, dns.version, dns.variant, uuid.uuid5(uuid.NAMESPACE_URL, "https://example.com/"), uuid.uuid5(uuid.NAMESPACE_OID, "1.2.3"))
+print(uuid.NAMESPACE_DNS, uuid.NAMESPACE_URL, uuid.NAMESPACE_OID, uuid.NAMESPACE_X500, uuid.uuid3(uuid.NAMESPACE_X500, "cn=x"))
+print(uuid.uuid5(uuid.NAMESPACE_DNS, "unicode ☃"), uuid.uuid3(dns, ""))
+
+random_ids = [uuid.uuid4() for _ in range(100)]
+print(len(set(random_ids)), all([r.version == 4 and r.variant == uuid.RFC_4122 for r in random_ids]))
+t = uuid.uuid1()
+print(t.version, t.variant, len(str(t)), uuid.uuid1() != t, uuid.uuid1(node=0x123456789abc, clock_seq=5).node == 0x123456789abc)
+print(uuid.uuid1(clock_seq=0x155).clock_seq, uuid.uuid1().time > 0)
+
+ids = [UUID("00000000-0000-0000-0000-000000000000"), UUID("00000000-0000-0000-0000-000000000005"), UUID("00000000-0000-0000-0000-000000000003"), u]
+ids = sorted(ids)
+print(ids, ids[0] < ids[1], ids[2] > ids[3], ids[1] <= ids[1], u in ids, hash(u) == hash(UUID(hex=u.hex)))
+table = {u: "first", dns: "second"}
+print(table[UUID(u.hex)], table.get(uuid.uuid4()), f"{u}", str(u).upper())
+
+for bad in ["1234", "zz345678-1234-5678-1234-567812345678", "12345678-1234-5678-1234-56781234567"]:
+    try:
+        UUID(bad)
+    except ValueError as e:
+        print("ValueError:", e)
+try:
+    UUID(bytes=b"123")
+except ValueError as e:
+    print("ValueError:", e)

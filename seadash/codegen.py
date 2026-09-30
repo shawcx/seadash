@@ -37,7 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER,
+    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
@@ -260,6 +260,8 @@ class CodeGen:
                 return "sd::textwrap::TextWrapper"
             case _ if t == STR_TEMPLATE:
                 return "sd::stringmod::Template"
+            case _ if t == UUID_T:
+                return "sd::uuid::UUID"
             case _ if t == HASH:
                 return "sd::hashlib::Hash"
             case _ if t == EXECUTOR:
@@ -1670,6 +1672,8 @@ class CodeGen:
                 return self.process_attribute(obj, vt, e.sym[1], e.ty)
             if vt == STR_TEMPLATE:  # t.template
                 return f"{obj}.get_template()"
+            if vt == UUID_T and e.sym[1] == "bytes":
+                return f"{obj}.get_bytes()"
             if isinstance(vt, NamespaceType):  # args.count
                 return f"{obj}.get<{self.cpp_type(e.ty)}>({cpp_string(e.sym[1])})"
             return f"{obj}.{e.sym[1]}()"  # m.string(), pattern.groups()

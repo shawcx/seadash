@@ -204,6 +204,7 @@ def work():
 | `base64`, `binascii`, `zlib` | encode, decode, compress; `hexlify` with separators, `crc32`, `crc_hqx` (not yet: uu and quoted-printable) |
 | `gzip` | `compress`, `decompress` (with Python's exact output and errors) and `open`, which gives the same file objects as `open()` (not yet: the `GzipFile` class) |
 | `shlex` | `split`, `quote`, `join` (POSIX mode) |
+| `uuid` | `UUID` values (ordered, hashable), `uuid1`/`uuid3`/`uuid4`/`uuid5`, the namespaces; not yet: `u.int` (128 bits) and `getnode()` |
 | `json` | typed: `json.loads` straight into your dataclasses, lists and dicts; `json.Value` for dynamic JSON |
 | `os`, `os.path` | files, directories, environment |
 | `sys` | `argv`, `exit`, `stdin`/`stdout`/`stderr`, `platform`, `maxsize` |
