@@ -98,6 +98,11 @@ class Parser:
         tok = self.peek()
         if tok.kind == K.INDENT:
             raise self.error("unexpected indent")
+        if tok.kind == K.NAME and tok.value == "struct" and self.peek(1).kind == K.NAME and self.peek(2).value in (":", "[", "("):
+            raise self.error(
+                f"seadash's value types are written `@value class {self.peek(1).value}:` now "
+                f"(with `from seadash import value`), so that `import struct` works"
+            )
         if tok.kind == K.KEYWORD:
             match tok.value:
                 case "if":
@@ -108,7 +113,7 @@ class Parser:
                     return [self.parse_for()]
                 case "def":
                     return [self.parse_def()]
-                case "class" | "struct":
+                case "class":
                     return [self.parse_class()]
                 case "try":
                     return [self.parse_try()]
@@ -280,7 +285,7 @@ class Parser:
             self.expect_kind(K.NEWLINE, "end of line after a decorator")
         if self.at("def"):
             node = self.parse_def()
-        elif self.at("class") or self.at("struct"):
+        elif self.at("class"):
             node = self.parse_class()
         else:
             raise self.error(f"expected 'def' or 'class' after decorators, found {describe(self.peek())}")

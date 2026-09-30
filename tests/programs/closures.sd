@@ -1,5 +1,7 @@
 # closures share variables with the function that created them, like Python
 
+from seadash import value
+
 def make_counters() -> list[() -> int]:
     fns: list[() -> int] = []
     for i in range(3):
@@ -32,7 +34,8 @@ h = b.handler()
 b.label = "renamed"
 h()                                   # classes are shared references, so it sees the rename
 
-struct Temperature:
+@value
+class Temperature:
     celsius: float
 
     def formatter(self) -> (str) -> str:
@@ -41,7 +44,7 @@ struct Temperature:
 t = Temperature(21.5)
 fmt = t.formatter()
 t.celsius = 30
-print(fmt("C"), t.celsius)            # but `self` in a struct is a value: the lambda has a copy
+print(fmt("C"), t.celsius)            # but `self` in a @value class is a value: the lambda has a copy
 
 tick = Button("x", lambda s: None).click
 tick()

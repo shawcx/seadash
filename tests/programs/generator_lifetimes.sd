@@ -1,6 +1,7 @@
 # Generator lifetimes: a generator outlives the call that made it, so it holds what it needs:
-# its arguments (copies), its object (a class) or a copy of it (a struct).
+# its arguments (lists are shared, as in Python), its object (a class) or a copy of it (a @value class).
 from typing import Iterator
+from seadash import value
 
 
 def each(items: list[str]) -> Iterator[str]:
@@ -19,7 +20,8 @@ class Box:
             yield x * 2
 
 
-struct Point:
+@value
+class Point:
     x: int
     y: int
 
@@ -46,7 +48,7 @@ h = make()
 print(list(h))
 p = Point(3, 4)
 c = p.coords()
-p.x = 100  # a struct is a value: the generator has its own copy
+p.x = 100  # a @value class is a value: the generator has its own copy
 print(list(c))
 gg = guarded()
 print(next(gg))

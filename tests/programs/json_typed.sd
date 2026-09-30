@@ -1,7 +1,9 @@
 # seadash json: decode into the type you ask for; json.Value for unknown shapes
 import json
+from seadash import value
 
-struct Address:
+@value
+class Address:
     city: str
     zip: str = ""
 

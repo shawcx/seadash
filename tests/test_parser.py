@@ -274,9 +274,10 @@ def test_function_definitions():
           (pass)""")
 
 
-def test_struct_and_class():
+def test_value_class_and_class():
     assert s("""
-        struct Point:
+        @value
+        class Point:
             x: float
             y: float = 0.0
 
@@ -289,7 +290,8 @@ def test_struct_and_class():
         class Box[T]:
             item: T
     """) == textwrap.dedent("""\
-        struct Point:
+        @value
+        class Point:
           (: x float)
           (: y float 0.0)
           def length(self) -> float:
@@ -463,3 +465,13 @@ def test_match_patterns():
         A.Name("q"),
     )
     assert case.guard == A.Name("q")
+
+
+def test_struct_is_an_ordinary_name():
+    assert e("struct.pack('<i', 1)") == "(call (. struct pack) '<i' 1)"
+    s("import struct\nstruct = 3\n")
+    err = parse_error("struct Point:\n    x: int\n")
+    assert err.message == (
+        "seadash's value types are written `@value class Point:` now (with `from seadash import value`), "
+        "so that `import struct` works"
+    )

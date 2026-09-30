@@ -8,7 +8,10 @@ from seadash.parser import parse
 
 
 def ok(source: str) -> ModuleInfo:
-    return check(parse(textwrap.dedent(source)))
+    source = textwrap.dedent(source)
+    if "@value" in source and "import value" not in source:
+        source += "\nfrom seadash import value\n"  # (at the end, so line numbers in messages stay put)
+    return check(parse(source))
 
 
 def err(source: str) -> CheckError:
@@ -202,7 +205,8 @@ def test_break_continue_outside_loop():
 
 def test_optional_needs_a_check_before_use():
     e = err("""
-        struct P:
+        @value
+        class P:
             x: int
         def f(p: P?) -> int:
             return p.x
@@ -213,7 +217,8 @@ def test_optional_needs_a_check_before_use():
 @pytest.mark.parametrize("condition", ["p is not None", "p", "p != None"])
 def test_narrowing_in_if(condition):
     ok(f"""
-        struct P:
+        @value
+        class P:
             x: int
         def f(p: P?) -> int:
             if {condition}:
@@ -224,7 +229,8 @@ def test_narrowing_in_if(condition):
 
 def test_narrowing_after_early_return():
     ok("""
-        struct P:
+        @value
+        class P:
             x: int
         def f(p: P?) -> int:
             if p is None:
@@ -412,7 +418,8 @@ def test_local_assignment_shadows_global_for_whole_function():
 
 def test_struct_constructor_and_methods():
     info = ok("""
-        struct Point:
+        @value
+        class Point:
             x: float
             y: float = 0.0
 
@@ -436,7 +443,8 @@ def test_struct_constructor_and_methods():
 ])
 def test_struct_errors(line, msg):
     e = err(f"""
-        struct Point:
+        @value
+        class Point:
             x: float
             y: float = 0.0
             def norm(self) -> float:
@@ -466,11 +474,15 @@ def test_class_with_init():
 
 def test_struct_cannot_contain_itself_but_class_can():
     e = err("""
-        struct Node:
+        @value
+        class Node:
             value: int
             next: Node?
     """)
-    assert e.message == "struct 'Node' can't contain itself (field 'next'); make it a class, or use a list"
+    assert e.message == (
+        "@value class 'Node' can't contain itself (field 'next'): it would be infinitely large. "
+        "Remove @value to make it an ordinary class, or use a list"
+    )
     ok("""
         class Node:
             value: int
@@ -480,14 +492,15 @@ def test_struct_cannot_contain_itself_but_class_can():
 
 def test_struct_body_restrictions():
     e = err("""
-        struct P:
+        @value
+        class P:
             x = 1
     """)
     assert e.message == "a struct body can only contain fields (`x: int`) and methods (`def ...`)"
 
 
 def test_method_needs_self():
-    assert err("struct P:\n    def f(): pass\n").message == "method 'f' needs 'self' as its first parameter"
+    assert err("@value\nclass P:\n    def f(): pass\n").message == "method 'f' needs 'self' as its first parameter"
 
 
 # ---- expressions and operators ----------------------------------------------
@@ -617,8 +630,8 @@ def test_unknown_module_member():
 
 @pytest.mark.parametrize("src,msg", [
     ("x: int | str = 1", "union types are not supported yet (T? or `T | None` for 'T or None' is)"),
-    ("struct A: pass\nstruct B(A): pass", "structs can't inherit (they're values; use a class): `class B(A):`"),
-    ("struct A: pass\nclass B(A): pass", "can't inherit from struct 'A'; only classes can be inherited from"),
+    ("@value\nclass A: pass\n@value\nclass B(A): pass", "a @value class can't inherit (it's a value, not a shared object): remove @value to make `class B(A):` an ordinary class"),
+    ("@value\nclass A: pass\nclass B(A): pass", "can't inherit from 'A', a @value class; only ordinary classes can be inherited from"),
     ("def f():\n    class C: pass", "a class can only be defined at the top level of a module"),
 ])
 def test_not_yet_supported(src, msg):
@@ -631,10 +644,10 @@ def test_not_yet_supported(src, msg):
 @pytest.mark.parametrize("src,msg", [
     ("raise", "a bare 'raise' can only re-raise inside an 'except' block"),
     ("raise 5", "can only raise exceptions, not int"),
-    ("struct P:\n    x: int\nraise P", "can only raise exceptions, not P"),
+    ("@value\nclass P:\n    x: int\nraise P", "can only raise exceptions, not P"),
     ("class E(Exception):\n    code: int\nraise E", "E needs arguments: `raise E(...)`"),
     ("try:\n    pass\nexcept int:\n    pass", "'except' needs an exception class, like `except ValueError:`"),
-    ("struct S(Exception):\n    pass", "exceptions must be classes, not structs: `class S(Exception):`"),
+    ("@value\nclass S(Exception):\n    pass", "an exception can't be a @value class: remove @value to make `class S(Exception):` an ordinary class"),
     ("class ValueError(Exception):\n    pass", "can't define a class named 'ValueError'; that's a built-in type"),
     ("def f() -> int:\n    try:\n        return 1\n    finally:\n        return 2", "'return' can't be used inside a 'finally' block"),
     ("for i in range(3):\n    try:\n        pass\n    finally:\n        break", "'break' can't leave a 'finally' block"),
@@ -698,7 +711,8 @@ def test_try_else_sees_body_assignments():
 ])
 def test_function_value_types(src, ty):
     info = ok(f"""
-        struct P:
+        @value
+        class P:
             x: float
             def scaled(self, k: float) -> P:
                 return P(self.x * k)
@@ -968,7 +982,8 @@ def test_json_accepts_structs_and_nested_types():
     ok("""
         import json
         from json import Value
-        struct P:
+        @value
+        class P:
             x: float
             tags: set[str]
         class Tree:
@@ -1001,7 +1016,8 @@ def test_literal_items_that_really_differ():
 # ---- attribute narrowing ----------------------------------------------------------
 
 NARROW_PRELUDE = """
-struct Address:
+@value
+class Address:
     city: str
 class User:
     name: str
@@ -1145,7 +1161,7 @@ def test_lambda_types_come_from_the_generic_signature():
 @pytest.mark.parametrize("src,msg", [
     ("def f[T]() -> T?:\n    return None\nx = f()", "can't tell what T should be for f; write the types, e.g. f[int](...)"),
     ("def f[T](a: T, b: T) -> T:\n    return a\nx = f(1, 'a')", "argument 'b' of f() must be int, not str"),
-    ("def big[T](xs: list[T]) -> T:\n    return xs[0] if xs[0] > xs[1] else xs[1]\nstruct P:\n    x: int\ny = big([P(1)])",
+    ("def big[T](xs: list[T]) -> T:\n    return xs[0] if xs[0] > xs[1] else xs[1]\n@value\nclass P:\n    x: int\ny = big([P(1)])",
      "in big[P]: '>' isn't supported between P and P (define __gt__ on P)"),
     ("class Box[T]:\n    v: T\nx: Box = Box(1)", "'Box' needs type arguments: Box[T]"),
     ("class Box[T]:\n    v: T\nx = Box[int, str](1)", "Box takes 1 type argument, not 2"),
@@ -1288,7 +1304,7 @@ def test_decorator_errors():
         "@staticmethod only makes sense on a method inside a class"
     )
     assert err("def d(c: int) -> int:\n    return c\n@d\nclass P:\n    x: int\n").message == (
-        "only @dataclass can decorate a class (for now)"
+        "only @dataclass and @value can decorate a class (for now)"
     )
     assert err(
         "class P:\n    x: int\n    @property\n    def y(self):\n        pass\n"

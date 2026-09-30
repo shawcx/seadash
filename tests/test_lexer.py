@@ -41,7 +41,7 @@ def test_missing_final_newline_is_added():
 
 def test_keywords_vs_names():
     assert toks("def struct print None") == [
-        ("KEYWORD", "def"), ("KEYWORD", "struct"), ("NAME", "print"), ("KEYWORD", "None"),
+        ("KEYWORD", "def"), ("NAME", "struct"), ("NAME", "print"), ("KEYWORD", "None"),
         "NEWLINE", "EOF",
     ]
 

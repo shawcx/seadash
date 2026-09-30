@@ -273,6 +273,9 @@ class Checker:
         struct_nodes: list[A.ClassDef] = []
         func_nodes: list[A.FunctionDef] = []
 
+        for stmt in module.body:  # imports first: class and function decorators may come from them
+            if isinstance(stmt, (A.Import, A.ImportFrom)):
+                self.declare_import(stmt)
         for stmt in module.body:
             match stmt:
                 case A.ClassDef() | A.FunctionDef() if stmt.type_params:
@@ -292,7 +295,7 @@ class Checker:
                     else:
                         self.functions[stmt.name] = None  # placeholder until signatures resolve
                 case A.Import() | A.ImportFrom():
-                    self.declare_import(stmt)
+                    pass  # (declared above)
                 case _:
                     top_level.append(stmt)
 
@@ -356,12 +359,10 @@ class Checker:
         if node.name in self.structs or node.name in self.functions or node.name in self.generics:
             raise self.error(f"'{node.name}' is already defined", node)
         if node.name in PRIMITIVES or node.name in builtins.CONTAINER_TYPES or node.name in builtins.EXCEPTIONS:
-            raise self.error(f"can't define a {node.kind} named '{node.name}'; that's a built-in type", node)
+            raise self.error(f"can't define a class named '{node.name}'; that's a built-in type", node)
         if len(node.bases) > 1:
             raise self.error("multiple inheritance is not supported", node.bases[1])
-        for d in node.decorators:
-            if self.classify_decorator(d)[0] != "dataclass":
-                raise self.error("only @dataclass can decorate a class (for now)", d)
+        self.set_class_kind(node)
         st = StructType(node.name, node.kind, node, module=self.module_name)
         node.sym = st
         self.structs[node.name] = st
@@ -462,10 +463,12 @@ class Checker:
         if not isinstance(base, StructType):
             raise self.error(f"a class can only inherit from another class, not {base}", base_expr)
         if st.kind != "class":
-            what = "exceptions must be classes, not structs" if base.is_exception else "structs can't inherit (they're values; use a class)"
-            raise self.error(f"{what}: `class {st.name}({base.name}):`", st.node)
+            what = ("an exception can't be a @value class" if base.is_exception
+                    else "a @value class can't inherit (it's a value, not a shared object)")
+            raise self.error(f"{what}: remove @value to make `class {st.name}({base.name}):` an ordinary class", st.node)
         if base.kind != "class":
-            raise self.error(f"can't inherit from struct '{base.name}'; only classes can be inherited from", base_expr)
+            raise self.error(f"can't inherit from '{base.name}', a @value class; only ordinary classes can be inherited from",
+                             base_expr)
         if base.is_subclass_of(st):
             raise self.error(f"'{st.name}' can't inherit from itself", base_expr)
         st.base = base
@@ -529,8 +532,8 @@ class Checker:
         for f in st.fields.values():
             if contains(f.type):
                 raise self.error(
-                    f"struct '{st.name}' can't contain itself (field '{f.name}'); "
-                    f"make it a class, or use a list", f.loc,
+                    f"@value class '{st.name}' can't contain itself (field '{f.name}'): it would be infinitely "
+                    f"large. Remove @value to make it an ordinary class, or use a list", f.loc,
                 )
 
     def resolve_signature(self, node: A.FunctionDef, owner: StructType | None, kind: str = "method") -> FuncInfo:
@@ -651,9 +654,20 @@ class Checker:
     # C++ template, so a generic body can do anything its type arguments support.
     # =========================================================================
 
+    def set_class_kind(self, node: A.ClassDef) -> None:
+        """`@value class Point:` (from seadash import value) is a value type, kind 'struct';
+        any other class is a shared reference."""
+        kinds = [self.classify_decorator(d)[0] for d in node.decorators]
+        for kind, d in zip(kinds, node.decorators):
+            if kind not in ("dataclass", "value"):
+                raise self.error("only @dataclass and @value can decorate a class (for now)", d)
+        node.kind = "struct" if "value" in kinds else "class"
+
     def declare_generic(self, node: A.FunctionDef | A.ClassDef) -> None:
         if node.name in self.structs or node.name in self.functions or node.name in self.generics:
             raise self.error(f"'{node.name}' is already defined", node)
+        if isinstance(node, A.ClassDef):
+            self.set_class_kind(node)
         if len(set(node.type_params)) != len(node.type_params):
             raise self.error("duplicate type parameter", node)
         kind = "func" if isinstance(node, A.FunctionDef) else "class"
@@ -1089,7 +1103,7 @@ class Checker:
             case A.Global():
                 pass  # handled when the function body starts
             case A.ClassDef():
-                raise self.error(f"a {stmt.kind} can only be defined at the top level of a module", stmt)
+                raise self.error("a class can only be defined at the top level of a module", stmt)
             case A.Import() | A.ImportFrom():
                 raise self.error("imports must be at the top level of a module", stmt)
             case _:

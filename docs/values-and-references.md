@@ -1,5 +1,8 @@
 # Design: values, references and the thread boundary
 
+(Value types were first written with a `struct` keyword; they're `@value` classes now,
+`from seadash import value`, so that Python's `import struct` works.)
+
 Status: **phase 1 implemented** (see Phases). This replaces the earlier rule that lists,
 dicts and sets were values.
 
@@ -10,9 +13,9 @@ dicts and sets were values.
 - At a **thread boundary**, anything that isn't thread-safe is **deep-copied
   automatically**. Thread-safe objects (locks, queues, `Mutex[T]`, `Atomic`,
   `Synchronized` classes, deeply frozen values) are shared.
-- `struct` is seadash's **value type**, and a value all the way down: its fields must be
-  values, and copying a struct copies everything in it.
-- `@dataclass(frozen=True)` makes a struct or class immutable. Immutability is checked at
+- A `@value` class is seadash's **value type**, and a value all the way down: its fields must be
+  values, and copying a value class copies everything in it.
+- `@dataclass(frozen=True)` makes a value class or an ordinary class immutable. Immutability is checked at
   compile time.
 - `threading.Mutex(x)` **takes ownership** of `x`. The view inside `with m as t:` can't
   escape the block.
@@ -20,7 +23,7 @@ dicts and sets were values.
 
 Two short rules for the README:
 
-1. **Everything behaves like Python, except `struct`, which is a value.**
+1. **Everything behaves like Python, except `@value` classes, which are values.**
 2. **Threads get copies of anything that isn't thread-safe.**
 
 ## Why change
@@ -51,7 +54,7 @@ at the thread boundary instead of on every assignment.
 |---|---|---|
 | immutable (value and reference look the same) | `int`, `float`, `bool`, `str`, `bytes`, `None`, dates and times, tuples (of values) | either; the compiler picks |
 | references (Python semantics) | `list`, `dict`, `set`, `deque`, `Counter`, `defaultdict`, classes | shares |
-| values | `struct` | copies |
+| values | `@value` class | copies |
 | thread-safe references | `Lock`, `Event`, `Queue`, `Mutex[T]`, `Atomic`, `Synchronized` classes | shares, also across threads |
 
 A tuple is immutable, so its own semantics don't matter. Its elements follow their own
@@ -138,30 +141,30 @@ New rules:
 Where it fits, handing data over through a `Queue` is often simpler than a lock. With a
 move, sending costs nothing.
 
-## Structs
+## Value classes
 
-### A struct is a value all the way down
+### A value class is a value all the way down
 
-- Copying a struct copies all of its fields, including lists, dicts and sets.
-- **Struct fields must be values:** numbers, `str`, `bytes`, dates and times, `None`,
-  tuples/lists/dicts/sets of values, other structs, and optionals of those. A class, a
+- Copying a value class copies all of its fields, including lists, dicts and sets.
+- **Value class fields must be values:** numbers, `str`, `bytes`, dates and times, `None`,
+  tuples/lists/dicts/sets of values, other value classes, and optionals of those. A class, a
   thread-safe object, a file, socket, generator, future, logger or function is not allowed,
   directly or inside a container:
 
   ```
-  error: struct fields must be values, but 'customer' is a Customer, which is a class (a
-  shared reference). Store an id instead, make Order a class, or make Customer a struct.
+  error: value class fields must be values, but 'customer' is a Customer, which is a class (a
+  shared reference). Store an id instead, make Order a class, or make Customer a value class.
   ```
 
-- Consequences: every struct can cross a thread boundary as a plain copy; a frozen struct
+- Consequences: every value class can cross a thread boundary as a plain copy; a frozen value class
   is always deeply immutable; equality and hashing are by value with no hidden identity;
-  a struct can nest by value (`children: list[Tree]`) but can never contain a cycle.
+  a value class can nest by value (`children: list[Tree]`) but can never contain a cycle.
 
-### Handles in structs
+### Handles in value classes
 
-A struct may hold an **operating system handle as a plain number**: a file descriptor from
+A value class may hold an **operating system handle as a plain number**: a file descriptor from
 `f.fileno()`, `sock.fileno()` or `os.open(...)`. The developer is explicitly responsible
-for it: copying the struct copies the number, not the resource, and closing it
+for it: copying the value class copies the number, not the resource, and closing it
 (`os.close(fd)`) is up to the program. To use it, a program turns it back into an object
 (`os.fdopen(fd)`, `socket.socket(fileno=fd)`).
 
@@ -170,11 +173,11 @@ where missing.
 
 See **Future: implied handles** for making this safer later.
 
-### Modifying structs
+### Modifying value classes
 
-- **Parameters:** a struct parameter is the function's own copy, which it may modify. If
-  the caller needs the change, the function returns the struct.
-- **Containers:** a struct read out of a container is a copy, and changes are written back
+- **Parameters:** a value class parameter is the function's own copy, which it may modify. If
+  the caller needs the change, the function returns it.
+- **Containers:** a value class read out of a container is a copy, and changes are written back
   explicitly:
 
   ```python
@@ -186,31 +189,32 @@ See **Future: implied handles** for making this safer later.
 - **In place:** methods may modify `self` in place, and so may direct assignments through
   a container: `ps[i].step()` and `ps[i].x += v` change the element in the list.
 
-### A struct's list fields
+### A value class's list fields
 
-A struct's list (or dict or set) is reached through the struct:
+A value class's list (or dict or set) is reached through the value class:
 
 | code | meaning |
 |---|---|
-| `s.items.append(x)`, `s.items[0] = y`, `for x in s.items` | works on the struct's own list |
+| `s.items.append(x)`, `s.items[0] = y`, `for x in s.items` | works on the value class's own list |
 | `xs = s.items` | `xs` is a copy; write it back with `s.items = xs` |
-| `s.items = xs` | copies `xs` into the struct |
-| `fill(s.items)` | `fill` works on the struct's own list, so its changes land in `s` |
+| `s.items = xs` | copies `xs` into the value class |
+| `fill(s.items)` | `fill` works on the value class's own list, so its changes land in `s` |
 
 If a function stores a parameter it was given this way (in a field, a closure or a
 container), the compiler stores a copy.
 
-The rule underneath: **nothing holds a reference into a struct beyond a single expression
+The rule underneath: **nothing holds a reference into a value class beyond a single expression
 or call.** Anything that would have to hold one gets a copy. This also keeps it
-memory-safe, since a reference into a struct would dangle once the struct is gone.
+memory-safe, since a reference into a value class would dangle once the value class is gone.
 
 ## Frozen types
 
-`@dataclass(frozen=True)`, Python's spelling, works on both structs and classes:
+`@dataclass(frozen=True)`, Python's spelling, works on both value classes and classes:
 
 ```python
+@value
 @dataclass(frozen=True)
-struct Point:
+class Point:
     x: int
     y: int
 
@@ -222,7 +226,7 @@ q = dataclasses.replace(p, x=5)
 - Assigning a field is a compile error. Python raises `FrozenInstanceError` at run time.
 - `dataclasses.replace(obj, **changes)` makes a modified copy.
 - Frozen types are hashable, as in Python.
-- A frozen **struct** is deeply immutable (its lists are part of the value), so it can
+- A frozen **value class** is deeply immutable (its lists are part of the value), so it can
   always be shared between threads without copying.
 - A frozen **class** is shallowly frozen, as in Python: fields can't be reassigned, but a
   `list` field can still change. It's deeply immutable, and so shared between threads
@@ -231,7 +235,7 @@ q = dataclasses.replace(p, x=5)
 
 ## Modified copies that are never used
 
-Anywhere a copy is made (a struct parameter, a struct read out of a container, a list
+Anywhere a copy is made (a value class parameter, a value class read out of a container, a list
 field bound to a name, a value received by a thread), modifying the copy and then never
 reading it again means the change is lost. That's almost always a mistake, so it's an
 error:
@@ -257,7 +261,7 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
 - **References into containers.** An element reference (`auto&`) held across a call that
   might resize the container would dangle. Generated code re-indexes instead of holding
   element references across calls.
-- **References into structs** follow the struct rule above.
+- **References into value classes** follow the value class rule above.
 
 ## Implementation notes
 
@@ -272,14 +276,15 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
 - **Deep copy.** A runtime `sd::deep_copy(value, memo)` generated per type, keeping
   aliasing and handling cycles.
 - **Checker.** Escape analysis for `Mutex` views and for parameters that might be
-  references into structs; ownership tracking for `Mutex(x)`; the modified-copy check; the
-  struct field rule; frozen types.
+  references into value classes; ownership tracking for `Mutex(x)`; the modified-copy check; the
+  @value
+  class field rule; frozen types.
 
 ### Phases
 
 1. **Done.** Lists, dicts, sets, deques, `Counter` and `defaultdict` are references
    (`sd::list` and friends are handles to shared storage); iteration guards; `is` on them;
-   in-place `+=`, `*=`, `|=`... Structs copy their lists (`sd::value_copy` in generated copy
+   in-place `+=`, `*=`, `|=`... Value classes copy their lists (`sd::value_copy` in generated copy
    constructors, constructors and field assignments). To keep threads safe, this phase also
    brought in the copies at the thread boundary (`Thread` args, `Queue.put`,
    `executor.submit` args and `Future.result()`, `Mutex` in and out, `Synchronized` method
@@ -299,14 +304,14 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
    nested def, or one defined more than once, keeps the older rule (the enclosing function
    mustn't change what it shares). Not done: `Future.result()` still copies on every call.
 3. **Done.** `Mutex` ownership (`Moved` in the checker's flow state) and `RWMutex`.
-4. Struct rules: value fields only, list fields, the modified-copy check.
+4. Value class rules: value fields only, list fields, the modified-copy check.
 5. Frozen types and `dataclasses.replace`; sharing deeply immutable values across threads.
 6. Performance: non-escaping parameters as plain references, inline locals. Compare with
    the benchmarks before and after each phase.
 
 ## Differences from Python after this change
 
-- `struct` (not Python) is a value type.
+- `@value` class (not Python) is a value type.
 - Threads receive copies of anything that isn't thread-safe; modifying such a copy is a
   compile error.
 - Frozen dataclasses are checked at compile time.
@@ -314,7 +319,7 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
 
 ## Open questions
 
-- **Deeply frozen classes as struct fields.** They behave like values, apart from `is`.
+- **Deeply frozen classes as value class fields.** They behave like values, apart from `is`.
   Proposed: not allowed at first; add if needed.
 - **Mutable default arguments** (`def f(xs=[])`). With reference semantics Python's
   gotcha comes back. Options: match Python, evaluate defaults on each call, or make a
@@ -326,11 +331,11 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
 
 ## Future: implied handles
 
-Today a handle in a struct is a plain number the program manages itself. Later, seadash
+Today a handle in a value class is a plain number the program manages itself. Later, seadash
 could understand handles as a kind of value: a file descriptor on Unix, a `HANDLE` on
 Windows if seadash adds Windows support, and so on. Questions to explore then:
 
-- what copying a struct with a handle means (share the number, `dup()` the descriptor, or
+- what copying a value class with a handle means (share the number, `dup()` the descriptor, or
   forbid the copy and move instead);
 - who closes it, and when (ownership, like `with` blocks, or reference counting);
 - how a handle crosses a thread boundary;

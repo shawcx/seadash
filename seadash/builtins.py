@@ -3529,6 +3529,10 @@ MODULES["dataclasses"] = Module("dataclasses", {
     "dataclass": DecoratorName("dataclass"),
     "field": DecoratorName("field"),
 })
+# seadash's own: `@value class Point:` makes a value type (copied on assignment, like an int).
+MODULES["seadash"] = Module("seadash", {
+    "value": DecoratorName("value"),
+})
 MODULES["functools"] = Module("functools", {
     "cache": DecoratorName("cache"),
     "lru_cache": DecoratorName("lru_cache"),

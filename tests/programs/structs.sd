@@ -1,7 +1,9 @@
-# structs are values: assignment and passing copy them
+# @value classes are values: assignment and passing copy them
 import math
+from seadash import value
 
-struct Vec:
+@value
+class Vec:
     x: float
     y: float = 0.0
 
@@ -15,7 +17,8 @@ struct Vec:
     def plus(self, other: Vec) -> Vec:
         return Vec(self.x + other.x, self.y + other.y)
 
-struct Particle:
+@value
+class Particle:
     pos: Vec
     name: str
     tags: list[str]

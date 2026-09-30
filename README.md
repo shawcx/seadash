@@ -122,11 +122,16 @@ a = str(a)          # fine: a is now a str
 total: float = 0    # annotate when you want to
 ```
 
-**`struct` is a value, `class` is a shared reference.** Lists, dicts and sets are shared
-references, as in Python; a struct's lists are part of its value, so they're copied with it.
+**`@value` classes are values; other classes are shared references.** Lists, dicts and sets
+are shared references too, as in Python; a value class's lists are part of its value, so
+they're copied with it. `@value` is ordinary Python syntax, so seadash files still work with
+Python's tools, and dropping the decorator gives Python code.
 
 ```python
-struct Point:
+from seadash import value
+
+@value
+class Point:
     x: int
     y: int
 
@@ -240,7 +245,7 @@ def work():
 seadash borrows Python's syntax, not all of its semantics:
 
 - **Threads get copies.** A list, dict or set passed to a thread, put on a queue, returned from a `Future` or stored in a `Mutex` or `Synchronized` object is copied (all the way down, keeping lists that appear twice shared, like `copy.deepcopy`), so changes made on one side aren't seen on the other. A closure run on a thread gets copies of the enclosing function's variables, made when the thread is created, so `Thread(target=lambda: print(i))` in a loop prints each `i`. Share with a `threading.Mutex` or send results back through a `queue.Queue`. Inside `with m as data:`, `data` can't escape the block.
-- **A struct's lists are part of its value**, copied with the struct and when stored in it (`struct` isn't Python).
+- **`@value` classes are values** (`from seadash import value`, not in Python): assigning or passing one copies it, lists and all.
 - **Static types.** Containers hold one type (`list[int]`, not a mix), and there's no dynamic typing or `eval`. Mixed numbers widen, so `[1, 2.5]` is a `list[float]`.
 - **Generators** don't support `send()`/`throw()`, and nested functions can't be generators yet. (Generators, generator expressions, `map`, `filter`, `zip` and `enumerate` are all lazy, as in Python.)
 - **Strings are UTF-8 bytes.** Indexes and lengths count bytes.

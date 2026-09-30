@@ -1,5 +1,8 @@
-# dunder methods on structs (values) and through base classes
-struct Point:
+# dunder methods on @value classes (values) and through base classes
+from seadash import value
+
+@value
+class Point:
     x: int
     y: int
 
