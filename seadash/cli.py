@@ -6,6 +6,8 @@
     sd emit FILE       print the generated C++
     sd build FILE      compile to a native binary (named after FILE, or -o NAME)
     sd run FILE ARGS   build to a temporary binary and run it
+
+FILE may be `-` to read the program from stdin; `sd run` with no FILE does too.
 """
 
 import argparse
@@ -28,7 +30,7 @@ def cmd_tokens(path: str) -> int:
     try:
         tokens = tokenize(source)
     except CompileError as e:
-        print(e.render(source, path), file=sys.stderr)
+        print(e.render(source, display_name(path)), file=sys.stderr)
         return 1
     for tok in tokens:
         if tok.kind in (TokenKind.NEWLINE, TokenKind.INDENT, TokenKind.DEDENT, TokenKind.EOF):
@@ -43,7 +45,7 @@ def cmd_ast(path: str) -> int:
     try:
         module = parse(source)
     except CompileError as e:
-        print(e.render(source, path), file=sys.stderr)
+        print(e.render(source, display_name(path)), file=sys.stderr)
         return 1
     print(dump(module))
     return 0
@@ -52,9 +54,9 @@ def cmd_ast(path: str) -> int:
 def cmd_check(path: str) -> int:
     source = read_source(path)
     try:
-        info = check_program(source, Path(path))[-1].info
+        info = check_program(source, source_path(path))[-1].info
     except CompileError as e:
-        print(e.render(source, path), file=sys.stderr)
+        print(e.render(source, display_name(path)), file=sys.stderr)
         return 1
 
     def show_vars(variables) -> None:
@@ -76,7 +78,7 @@ def cmd_check(path: str) -> int:
     if info.main_locals:
         print("module code")
         show_vars(info.main_locals)
-    print(f"{path}: ok", file=sys.stderr)
+    print(f"{display_name(path)}: ok", file=sys.stderr)
     return 0
 
 
@@ -84,9 +86,9 @@ def translate_file(path: str) -> Translation | None:
     """seadash source -> C++, printing any compile error. None on failure."""
     source = read_source(path)
     try:
-        return translate(source, Path(path))
+        return translate(source, source_path(path))
     except CompileError as e:
-        print(e.render(source, path), file=sys.stderr)
+        print(e.render(source, display_name(path)), file=sys.stderr)
         return None
 
 
@@ -114,19 +116,33 @@ def build(path: str, output: Path, options: BuildOptions) -> bool:
 
 
 def cmd_build(path: str, output: str | None, options: BuildOptions) -> int:
-    out = Path(output) if output else Path(Path(path).stem)
+    out = Path(output) if output else Path("stdin" if path == STDIN else Path(path).stem)
     return 0 if build(path, out, options) else 1
 
 
 def cmd_run(path: str, args: list[str], options: BuildOptions) -> int:
     with tempfile.TemporaryDirectory(prefix="seadash-") as tmp:
-        binary = Path(tmp) / Path(path).stem
+        binary = Path(tmp) / ("stdin" if path == STDIN else Path(path).stem)
         if not build(path, binary, options):
             return 1
         return subprocess.run([str(binary), *args]).returncode
 
 
+STDIN = "-"
+
+
+def source_path(path: str) -> Path | None:
+    """Where the program lives (imports are found next to it); stdin programs import from the cwd."""
+    return None if path == STDIN else Path(path)
+
+
+def display_name(path: str) -> str:
+    return "<stdin>" if path == STDIN else path
+
+
 def read_source(path: str) -> str:
+    if path == STDIN:
+        return sys.stdin.read()
     try:
         with open(path, encoding="utf-8") as f:
             return f.read()
@@ -149,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     p_build.add_argument("file")
     p_build.add_argument("-o", "--output", help="binary name (default: the file's name without .sd)")
     p_run = sub.add_parser("run", help="build and run")
-    p_run.add_argument("file")
+    p_run.add_argument("file", nargs="?", default=STDIN, help="the program (default: read it from stdin)")
     p_run.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the program")
     for p in (p_build, p_run):
         p.add_argument("--debug", action="store_true", help="compile without optimization (faster build)")

@@ -1,0 +1,136 @@
+from __future__ import annotations
+from dataclasses import dataclass, field
+import functools
+from functools import cache
+
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+    @staticmethod
+    def origin() -> Point:
+        return Point(0, 0)
+
+    @classmethod
+    def diagonal(cls, n: int) -> Point:
+        return cls(n, n)
+
+    @property
+    def norm1(self) -> int:
+        return abs(self.x) + abs(self.y)
+
+
+@dataclass(order=True, frozen=True)
+class Version:
+    major: int
+    minor: int = 0
+
+
+@dataclass
+class Inventory:
+    owner: str
+    items: list[str] = field(default_factory=list)
+    count: int = field(default=0)
+
+
+class Temperature:
+    _c: float
+
+    def __init__(self, celsius: float):
+        self._c = celsius
+
+    @property
+    def celsius(self) -> float:
+        return self._c
+
+    @celsius.setter
+    def celsius(self, value: float):
+        if value < -273.15:
+            raise ValueError("below absolute zero")
+        self._c = value
+
+    @property
+    def fahrenheit(self) -> float:
+        return self._c * 9 / 5 + 32
+
+    @staticmethod
+    def from_fahrenheit(f: float) -> Temperature:
+        return Temperature((f - 32) * 5 / 9)
+
+
+calls = 0
+
+
+@cache
+def fib(n: int) -> int:
+    global calls
+    calls += 1
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+
+@functools.lru_cache(maxsize=None)
+def slow_square(n: int) -> int:
+    return n * n
+
+
+def shout(f: Callable[[str], str]) -> Callable[[str], str]:
+    def wrapper(name: str) -> str:
+        return f(name).upper() + "!"
+    return wrapper
+
+
+def twice(f: Callable[[str], str]) -> Callable[[str], str]:
+    def wrapper(name: str) -> str:
+        return f(f(name))
+    return wrapper
+
+
+@shout
+def greet(name: str) -> str:
+    return "hello " + name
+
+
+@twice
+@shout
+def hey(name: str) -> str:
+    return "hey " + name
+
+
+p = Point.origin()
+q = Point.diagonal(3)
+print(p, q, q.norm1, p == Point(0, 0), q == p)
+print(q.origin(), Point(-2, 5).norm1)
+
+v1 = Version(1, 2)
+v2 = Version(1, 10)
+print(v1 < v2, v2 <= v1, max(v1, v2), v1 == Version(1, 2))
+print(sorted([Version(2), Version(1, 5), Version(1)]))
+print(len({v1, Version(1, 2), v2}))
+
+a = Inventory("ann")
+b = Inventory("bob")
+a.items.append("apple")
+print(a, b, a.count)
+
+t = Temperature(100.0)
+print(t.celsius, t.fahrenheit)
+t.celsius = 0.0
+print(t.fahrenheit)
+t.celsius += 10.0
+print(t.celsius)
+try:
+    t.celsius = -300.0
+except ValueError as e:
+    print("error:", e)
+print(round(Temperature.from_fahrenheit(212.0).celsius, 1))
+
+print(fib(80), calls)
+print(fib(10), calls)
+print(slow_square(12), slow_square(12))
+
+print(greet("world"))
+print(hey("you"))

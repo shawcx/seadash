@@ -1,0 +1,16 @@
+Point(x=0, y=0) Point(x=3, y=3) 6 True False
+Point(x=0, y=0) 7
+True False Version(major=1, minor=10) True
+[Version(major=1, minor=0), Version(major=1, minor=5), Version(major=2, minor=0)]
+2
+Inventory(owner='ann', items=['apple'], count=0) Inventory(owner='bob', items=[], count=0) 0
+100.0 212.0
+32.0
+10.0
+error: below absolute zero
+100.0
+23416728348467685 81
+55 81
+144 144
+HELLO WORLD!
+HEY HEY YOU!!

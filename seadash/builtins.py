@@ -158,13 +158,21 @@ class UserModule(Module):
 
     namespace: str = ""  # C++ namespace, e.g. "sdm::geometry::shapes"
     info: object = None  # its checker.ModuleInfo
+    path: str = ""  # the .sd file ("" for a folder of modules)
+
+
+def module_repr(mod: Module) -> str:
+    """How print() shows a module, like Python: <module 'math' (built-in)>."""
+    if isinstance(mod, UserModule):
+        return f"<module '{mod.name}' from '{mod.path}'>" if mod.path else f"<module '{mod.name}' (namespace)>"
+    return f"<module '{mod.name}' (built-in)>"
 
 
 # ---- predicates -------------------------------------------------------------
 
 
 def printable(t: Type) -> bool:
-    return not isinstance(t, (IterType, ModuleType))
+    return not isinstance(t, IterType)
 
 
 def sized(t: Type) -> bool:
@@ -1294,3 +1302,24 @@ MODULES["socket"] = module_with_params(runtime_module(
 MODULES["socket"].members["socket"].as_type = SOCKET
 MODULES["socket"].members["timeout"] = EXCEPTIONS["TimeoutError"]  # socket.timeout is TimeoutError
 MODULES["socket"].members["error"] = EXCEPTIONS["OSError"]  # socket.error is OSError
+
+
+# ---- decorator modules ----------------------------------------------------------------
+
+
+@dataclass
+class DecoratorName:
+    """dataclasses.dataclass, dataclasses.field, functools.cache, functools.lru_cache:
+    understood by the checker rather than called."""
+
+    name: str
+
+
+MODULES["dataclasses"] = Module("dataclasses", {
+    "dataclass": DecoratorName("dataclass"),
+    "field": DecoratorName("field"),
+})
+MODULES["functools"] = Module("functools", {
+    "cache": DecoratorName("cache"),
+    "lru_cache": DecoratorName("lru_cache"),
+})

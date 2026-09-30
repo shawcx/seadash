@@ -173,6 +173,9 @@ class FuncInfo:
     var: Var | None = None  # for a nested def: the local variable holding it
     module: str = "__main__"
     cpp_name: str | None = None  # generic instances: first[int] is first__int in C++
+    # 'method', 'static' (@staticmethod), 'classmethod', 'getter' (@property), 'setter' (@x.setter)
+    kind: str = "method"
+    cached: bool = False  # @functools.cache
 
     def __str__(self) -> str:
         params = ", ".join(f"{p.name}: {p.type}" for p in self.params)
@@ -200,6 +203,7 @@ class StructType(Type):
     mangled: str | None = None
     origin: str | None = None
     type_args: tuple = ()
+    frozen: bool = False  # @dataclass(frozen=True): fields are read-only after construction
 
     def __str__(self) -> str:
         return self.name
@@ -239,6 +243,17 @@ class StructType(Type):
             if name in t.methods:
                 return t.methods[name]
         return None
+
+
+@dataclass(frozen=True)
+class ClassRefType(Type):
+    """A class itself, as a value: `cls` in a classmethod, `Point` in `Point.origin()`.
+    It can be called (to construct) or used to call static/class methods."""
+
+    st: StructType
+
+    def __str__(self) -> str:
+        return f"type[{self.st.name}]"
 
 
 @dataclass(eq=False)

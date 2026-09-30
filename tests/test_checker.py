@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, json, math, os, queue, random, socket, sys, threading, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, dataclasses, functools, json, math, os, queue, random, socket, sys, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -1263,3 +1263,47 @@ def test_dunder_types(expr, ty):
 ])
 def test_dunder_errors(src, msg):
     assert err(VEC + src).message == msg
+
+
+def test_decorator_errors():
+    assert err(
+        "from dataclasses import dataclass\n@dataclass(frozen=True)\nclass V:\n    x: int\nv = V(1)\nv.x = 2\n"
+    ).message == "V is a frozen dataclass; its field 'x' can't be changed"
+    assert err(
+        "from dataclasses import dataclass\n@dataclass(frozen=True)\nclass V:\n    x: int\nv = V(1)\nv.x += 2\n"
+    ).message == "V is a frozen dataclass; its field 'x' can't be changed"
+    assert err(
+        "class T:\n    c_: float\n    @property\n    def c(self) -> float:\n        return self.c_\nt = T(1.0)\nt.c = 2.0\n"
+    ).message == "property 'c' of T is read-only (add an @c.setter)"
+    assert err(
+        "class P:\n    x: int\n    def m(self) -> int:\n        return 1\nP.m()\n"
+    ).message == "P.m() needs an instance: only @staticmethod and @classmethod methods can be called on the class"
+    assert err(
+        "from functools import cache\n@cache\ndef f(xs: list[int]) -> int:\n    return 0\n"
+    ).message == "functools.cache needs hashable arguments; 'xs' is a list[int]"
+    assert err("@staticmethod\ndef f() -> int:\n    return 1\n").message == (
+        "@staticmethod only makes sense on a method inside a class"
+    )
+    assert err("def d(c: int) -> int:\n    return c\n@d\nclass P:\n    x: int\n").message == (
+        "only @dataclass can decorate a class (for now)"
+    )
+    assert err(
+        "class P:\n    x: int\n    @property\n    def y(self):\n        pass\n"
+    ).message == "a @property takes only self and returns a value"
+    assert err(
+        "from dataclasses import dataclass\n@dataclass(slots=True)\nclass P:\n    x: int\n"
+    ).message == "@dataclass(slots=...) isn't supported"
+
+
+def test_decorator_types():
+    ok(
+        "def shout(f: Callable[[str], str]) -> Callable[[str], str]:\n"
+        "    return lambda s: f(s).upper()\n"
+        "@shout\ndef hi(name: str) -> str:\n    return 'hi ' + name\n"
+        "x = hi('a')\n"
+    )
+    assert err(
+        "def shout(f: Callable[[str], str]) -> Callable[[str], str]:\n"
+        "    return f\n"
+        "@shout\ndef hi(n: int) -> str:\n    return 'hi'\n"
+    ).message == "argument 'f' of shout() must be (str) -> str, not (int) -> str"

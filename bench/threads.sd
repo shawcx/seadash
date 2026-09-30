@@ -1,0 +1,111 @@
+# Runs unchanged under python3 and seadash: threads, queues, locks.
+# CPython's GIL lets only one thread run Python code at a time, so the CPU-bound
+# workers below take turns; seadash threads are OS threads that run in parallel.
+import queue
+import threading
+
+WORKERS = 8
+
+
+def count_primes(lo: int, hi: int) -> int:
+    count = 0
+    for n in range(max(lo, 2), hi):
+        d = 2
+        prime = True
+        while d * d <= n:
+            if n % d == 0:
+                prime = False
+                break
+            d += 1
+        if prime:
+            count += 1
+    return count
+
+
+def prime_worker(jobs: queue.Queue[tuple[int, int]], results: queue.Queue[tuple[int, int]]):
+    # Pull ranges until the (0, 0) sentinel; small chunks keep the threads evenly loaded.
+    while True:
+        lo, hi = jobs.get()
+        if hi == 0:
+            break
+        results.put((lo, count_primes(lo, hi)))
+
+
+def parallel_primes(limit: int, chunk: int) -> int:
+    jobs: queue.Queue[tuple[int, int]] = queue.Queue()
+    results: queue.Queue[tuple[int, int]] = queue.Queue()
+    for lo in range(0, limit, chunk):
+        jobs.put((lo, min(lo + chunk, limit)))
+    for _ in range(WORKERS):
+        jobs.put((0, 0))
+    threads = [threading.Thread(target=prime_worker, args=(jobs, results)) for _ in range(WORKERS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    total = 0
+    while not results.empty():
+        lo, n = results.get()
+        total += n
+    return total
+
+
+def producer(q: queue.Queue[int], n: int, consumers: int):
+    for i in range(n):
+        q.put(i)
+    for _ in range(consumers):
+        q.put(-1)
+
+
+def consumer(q: queue.Queue[int], out: queue.Queue[int]):
+    # Mostly queue traffic: this measures handing items between threads.
+    total = 0
+    while True:
+        item = q.get()
+        if item < 0:
+            break
+        total += item % 7
+    out.put(total)
+
+
+def pipeline(n: int, consumers: int) -> int:
+    q: queue.Queue[int] = queue.Queue(maxsize=1000)
+    out: queue.Queue[int] = queue.Queue()
+    threads = [threading.Thread(target=consumer, args=(q, out)) for _ in range(consumers)]
+    for t in threads:
+        t.start()
+    producer(q, n, consumers)
+    for t in threads:
+        t.join()
+    total = 0
+    for _ in range(consumers):
+        total += out.get()
+    return total
+
+
+def locked_worker(lock: threading.Lock, done: queue.Queue[int], rounds: int):
+    # Many short critical sections: lock acquire/release cost under contention.
+    held = 0
+    for _ in range(rounds):
+        with lock:
+            held += 1
+    done.put(held)
+
+
+def contended_lock(rounds: int) -> int:
+    lock = threading.Lock()
+    done: queue.Queue[int] = queue.Queue()
+    threads = [threading.Thread(target=locked_worker, args=(lock, done, rounds)) for _ in range(WORKERS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    total = 0
+    for _ in range(WORKERS):
+        total += done.get()
+    return total
+
+
+print("primes below 1,500,000:", parallel_primes(1_500_000, 10_000))
+print("pipeline checksum:", pipeline(300_000, 4))
+print("lock acquisitions:", contended_lock(200_000))

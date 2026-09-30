@@ -318,7 +318,10 @@ class CodeGen:
         for fn in self.info.functions:
             self.function(fn)
 
-        top_level = [s for s in self.module.body if not isinstance(s, (A.FunctionDef, A.ClassDef, A.Import, A.ImportFrom))]
+        top_level = [
+            getattr(s, "decorated", s) for s in self.module.body  # a decorated def: `f = deco(<f>)`
+            if not isinstance(s, (A.FunctionDef, A.ClassDef, A.Import, A.ImportFrom)) or hasattr(s, "decorated")
+        ]
         self.func = None
         self.open("void module_main()")
         self.hoist(self.info.main_locals)
@@ -387,7 +390,8 @@ class CodeGen:
             self.line(f"{name}({params}) : {inits} {{}}")
         for m in st.methods.values():
             if m.name != "__init__":
-                self.line(f"{self.cpp_type(m.ret)} {ident(m.name)}({', '.join(self.params(m))});")
+                static = "static " if is_static(m) else ""
+                self.line(f"{static}{self.cpp_type(m.ret)} {fn_name(m)}({', '.join(self.params(m))});")
         self.line("std::string sd_repr() const;")
         self.protocol_members(st, name)
         if st.kind == "struct":
@@ -438,11 +442,14 @@ class CodeGen:
                 self.line(f"void sd_init({', '.join(self.params(st.methods['__init__']))});")
             else:
                 self.line(f"void sd_init({', '.join(f'{self.cpp_type(t)} {n}' for t, n in zip(types, names))});")
-        for m in st.methods.values():
+        for key, m in st.methods.items():
             if m.name == "__init__":
                 continue
-            overrides = st.base is not None and st.base.find_method(m.name) is not None
-            decl = f"{self.cpp_type(m.ret)} {ident(m.name)}({', '.join(self.params(m))})"
+            decl = f"{self.cpp_type(m.ret)} {fn_name(m)}({', '.join(self.params(m))})"
+            if is_static(m):
+                self.line(f"static {decl};")
+                continue
+            overrides = st.base is not None and st.base.find_method(key) is not None
             self.line(f"{decl} override;" if overrides else f"virtual {decl};")
         self.line("std::string sd_repr() const override;" if st.base else "virtual std::string sd_repr() const;")
         self.protocol_members(st, name)
@@ -543,7 +550,7 @@ class CodeGen:
                 params = ", ".join(["sd::init_t", *self.params(m)])
                 self.function_body(m, f"{name}::{name}({params})")
             else:
-                self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{ident(m.name)}({', '.join(self.params(m))})")
+                self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{fn_name(m)}({', '.join(self.params(m))})")
 
     def json_hooks(self, st: StructType) -> bool:
         return self.uses_json and not st.is_exception and (
@@ -603,12 +610,35 @@ class CodeGen:
         return out
 
     def function(self, fn: FuncInfo) -> None:
-        self.function_body(fn, self.signature(fn))
+        if not fn.cached:
+            self.function_body(fn, self.signature(fn))
+            return
+        # @functools.cache: the real body under another name, and a memoizing wrapper. The lock
+        # isn't held while computing, so recursive calls (and other threads) can use the cache.
+        uncached = f"sd_uncached_{fn_name(fn)}"
+        self.function_body(fn, f"{self.cpp_type(fn.ret)} {uncached}({', '.join(self.params(fn))})")
+        types = [self.cpp_type(p.type) for p in fn.params]
+        names = [f"sd_p{i}" for i in range(len(types))]
+        ret = self.cpp_type(fn.ret)
+        self.open(f"{ret} {fn_name(fn)}({', '.join(f'{t} {n}' for t, n in zip(types, names))})")
+        self.line("static std::mutex sd_mu;")
+        self.line(f"static sd::dict<std::tuple<{', '.join(types)}>, {ret}> sd_cache;")
+        self.line(f"std::tuple<{', '.join(types)}> sd_key{{{', '.join(names)}}};")
+        self.open("")
+        self.line("std::lock_guard sd_lock(sd_mu);")
+        self.line("if (const auto* sd_hit = sd_cache.find(sd_key)) return *sd_hit;")
+        self.close()
+        self.line(f"{ret} sd_result = {uncached}({', '.join(names)});")
+        self.line("std::lock_guard sd_lock(sd_mu);")
+        self.line("sd_cache[sd_key] = sd_result;")
+        self.line("return sd_result;")
+        self.close()
+        self.line()
 
     def function_body(self, fn: FuncInfo, header: str) -> None:
         self.func = fn
         self.open(header)
-        if fn.owner is not None and fn.name != "__init__" and is_synchronized(fn.owner):
+        if fn.owner is not None and fn.name != "__init__" and not is_static(fn) and is_synchronized(fn.owner):
             self.line("std::lock_guard<std::recursive_mutex> sd_lock(this->sd_mutex);  // Synchronized")
         self.hoist(fn.locals)
         self.cell_params(fn)
@@ -629,7 +659,7 @@ class CodeGen:
                 self.line(f"{t} {ident(var.cpp_name)}{{}};")
 
     def param_vars(self, fn: FuncInfo) -> list[Var]:
-        nodes = fn.node.params[1:] if fn.owner is not None else fn.node.params
+        nodes = fn.node.params[1:] if fn.owner is not None and fn.kind != "static" else fn.node.params
         return [p.sym for p in nodes]
 
     def cell_params(self, fn: FuncInfo) -> None:
@@ -943,6 +973,9 @@ class CodeGen:
             case A.Name():
                 var: Var = target.sym
                 self.line(f"{self.var_ref(var)} = {self.coerce(code, ty, var.type)};")
+            case A.Attribute() if isinstance(target.sym, tuple) and target.sym[0] == "property_set":
+                setter: FuncInfo = target.sym[1]
+                self.line(f"{self.member(target.value, setter)}({self.coerce(code, ty, setter.params[0].type)});")
             case A.Attribute():
                 self.line(f"{self.attribute(target)} = {self.coerce(code, ty, target.ty)};")
             case A.Index(container, index):
@@ -994,6 +1027,18 @@ class CodeGen:
                 return
             new = self.binop_code(op, current, read_type, self.expr(value), value.ty, result, s.dunder)
             self.line(f"{self.var_ref(write)} = {self.coerce(new, result, write.type)};")
+            return
+        if isinstance(target, A.Attribute) and isinstance(target.sym, tuple) and target.sym[0] == "property":
+            # obj.count += 1 -> obj.sd_set_count(obj.sd_get_count() + 1), evaluating obj once
+            getter: FuncInfo = target.sym[1]
+            setter = target.value.ty.find_method(f"{target.attr}.setter")
+            obj = self.fresh("obj")
+            self.open("")
+            self.line(f"auto&& {obj} = {self.expr(target.value)};")
+            arrow = "->" if getter.owner.kind == "class" else "."
+            new = self.binop_code(op, f"{obj}{arrow}{fn_name(getter)}()", read_type, self.expr(value), value.ty, result, s.dunder)
+            self.line(f"{obj}{arrow}{fn_name(setter)}({self.coerce(new, result, setter.params[0].type)});")
+            self.close()
             return
         ref = self.fresh("ref")
         lvalue = self.attribute(target) if isinstance(target, A.Attribute) else self.index(target)
@@ -1143,6 +1188,8 @@ class CodeGen:
             return qualified(fn_name(sym), sym.module)  # a function used as a value
         if isinstance(sym, A.Lambda):
             return self.expr(sym)  # `key=len` was wrapped as `lambda p: len(p)`
+        if isinstance(sym, builtins.Module):  # print(math)
+            return f"sd::ModuleRef{{{cpp_string(builtins.module_repr(sym))}}}"
         if isinstance(sym, builtins.Value):
             if sym.name == "__name__":
                 return cpp_string(self.module_name)
@@ -1186,12 +1233,19 @@ class CodeGen:
             return f"{capture}({params}) mutable -> void {{{statement} }}"
         return f"{capture}({params}) mutable -> {self.cpp_type(t.ret)} {{ return {body}; }}"
 
+    def member(self, obj: A.Expr, m: FuncInfo) -> str:
+        """`obj.m` / `this->m`, ready to be called."""
+        if is_self(obj):
+            return f"{self.self_prefix(obj.sym.type)}{fn_name(m)}"
+        arrow = "->" if m.owner.kind == "class" else "."
+        return f"{self.expr(obj)}{arrow}{fn_name(m)}"
+
     def bound_method(self, obj: A.Expr, m: FuncInfo) -> str:
         """`counter.tick` as a value: a lambda holding (a copy of / reference to) the object."""
         names = [self.fresh("p") for _ in m.params]
         params = ", ".join(f"{self.cpp_type(p.type)} {n}" for p, n in zip(m.params, names))
         arrow = "->" if m.owner.kind == "class" else "."
-        call = f"sd_o{arrow}{ident(m.name)}({', '.join(names)})"
+        call = f"sd_o{arrow}{fn_name(m)}({', '.join(names)})"
         return f"[sd_o = {self.expr(obj)}]({params}) mutable -> {self.cpp_type(m.ret)} {{ return {call}; }}"
 
     def fstring(self, parts: list) -> str:
@@ -1210,10 +1264,14 @@ class CodeGen:
     def attribute(self, e: A.Attribute) -> str:
         if isinstance(e.sym, builtins.Value):
             return self.module_value(e.sym)
+        if isinstance(e.sym, builtins.Module):  # print(os.path)
+            return f"sd::ModuleRef{{{cpp_string(builtins.module_repr(e.sym))}}}"
         if isinstance(e.sym, A.Lambda):
             return self.expr(e.sym)  # `key=str.lower`
         if isinstance(e.sym, tuple) and e.sym[0] == "thread_attr":
             return f"{self.expr(e.value)}.{e.sym[1]}()"
+        if isinstance(e.sym, tuple) and e.sym[0] == "property":  # obj.area -> obj.sd_get_area()
+            return f"{self.member(e.value, e.sym[1])}()"
         if isinstance(e.sym, FuncInfo):
             if e.sym.owner is None:  # textutil.shout: a module's function, as a value
                 return qualified(fn_name(e.sym), e.sym.module)
@@ -1396,10 +1454,10 @@ class CodeGen:
                 fn = target.target
                 recv = e.func.value
                 args = self.call_args(target.args, fn)
-                if is_self(recv):
-                    return f"{self.self_prefix(recv.sym.type)}{ident(fn.name)}({args})"
-                arrow = "->" if fn.owner.kind == "class" else "."
-                return f"{self.expr(recv)}{arrow}{ident(fn.name)}({args})"
+                return f"{self.member(recv, fn)}({args})"
+            case "static_method":  # Point.origin(), cls.make(), p.helper()
+                fn = target.target
+                return f"{class_name(fn.owner)}::{fn_name(fn)}({self.call_args(target.args, fn)})"
             case "ctor":
                 st: StructType = target.target
                 args = self.slot_codes(target.args, target.params)
@@ -1415,7 +1473,7 @@ class CodeGen:
                 fn = target.target
                 prefix = self.self_prefix(self.func.owner)
                 args = self.call_args(target.args, fn)
-                return f"{prefix}{class_name(fn.owner)}::{ident(fn.name)}({args})"
+                return f"{prefix}{class_name(fn.owner)}::{fn_name(fn)}({args})"
             case "super_init":
                 owner = target.target
                 prefix = self.self_prefix(self.func.owner)
@@ -1679,6 +1737,10 @@ def constant_int(e: A.Expr) -> int | None:
         case A.UnaryOp("-", A.IntLit(v)):
             return -v
     return None
+
+
+def is_static(fn: FuncInfo) -> bool:
+    return fn.kind in ("static", "classmethod")
 
 
 def is_synchronized(st: StructType) -> bool:

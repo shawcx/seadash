@@ -438,6 +438,7 @@ class FunctionDef(Stmt):
     returns: TypeExpr | None
     body: list[Stmt]
     type_params: list[str] = field(default_factory=list)
+    decorators: list[Expr] = field(default_factory=list)
 
 
 @dataclass
@@ -449,6 +450,7 @@ class ClassDef(Stmt):
     bases: list[TypeExpr]
     body: list[Stmt]
     type_params: list[str] = field(default_factory=list)
+    decorators: list[Expr] = field(default_factory=list)
 
 
 @dataclass

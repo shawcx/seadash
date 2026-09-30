@@ -121,7 +121,7 @@ class Parser:
                 case kw if kw in NOT_YET_SUPPORTED:
                     raise self.error(f"'{kw}' is not supported yet")
         if self.at("@"):
-            raise self.error("decorators are not supported yet")
+            return [self.parse_decorated()]
         return self.parse_simple_statements()
 
     def parse_simple_statements(self) -> list[A.Stmt]:
@@ -261,6 +261,21 @@ class Parser:
         body = self.parse_block("'for' statement")
         orelse = self.parse_block("'else'") if self.accept("else") else []
         return A.For(target, it, body, orelse, loc=loc)
+
+    def parse_decorated(self) -> A.FunctionDef | A.ClassDef:
+        """@decorator lines (any expression, as in Python 3.9+) before a def or class."""
+        decorators: list[A.Expr] = []
+        while self.accept("@"):
+            decorators.append(self.parse_named_expr())
+            self.expect_kind(K.NEWLINE, "end of line after a decorator")
+        if self.at("def"):
+            node = self.parse_def()
+        elif self.at("class") or self.at("struct"):
+            node = self.parse_class()
+        else:
+            raise self.error(f"expected 'def' or 'class' after decorators, found {describe(self.peek())}")
+        node.decorators = decorators
+        return node
 
     def parse_try(self) -> A.Try:
         loc = self.next().loc

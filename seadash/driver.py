@@ -67,7 +67,7 @@ class Program:
         members = {**{f.name: f for f in info.functions if f.cpp_name is None},
                    **{st.name: st for st in info.structs if st.origin is None},
                    **{v.name: v for v in info.globals}, **info.generics}
-        user = builtins.UserModule(name, members, namespace=namespace, info=info)
+        user = builtins.UserModule(name, members, namespace=namespace, info=info, path=str(path.resolve()))
         self.loaded[name] = user
         self.units.append(codegen.ModuleUnit(module, info, name, namespace))
         return user

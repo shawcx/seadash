@@ -154,12 +154,14 @@ def stmt(s: A.Stmt, depth: int) -> list[str]:
             return header(f"while {expr(test)}:", body, orelse)
         case A.For(target, it, body, orelse):
             return header(f"for {expr(target)} in {expr(it)}:", body, orelse)
-        case A.FunctionDef(name, params, returns, body, type_params):
+        case A.FunctionDef(name, params, returns, body, type_params, decorators):
             ret = f" -> {returns}" if returns else ""
-            return header(f"def {name}{tparams(type_params)}({', '.join(map(param, params))}){ret}:", body)
-        case A.ClassDef(kind, name, bases, body, type_params):
+            decos = [pad + f"@{expr(d)}" for d in decorators]
+            return decos + header(f"def {name}{tparams(type_params)}({', '.join(map(param, params))}){ret}:", body)
+        case A.ClassDef(kind, name, bases, body, type_params, decorators):
             base_text = f"({', '.join(map(str, bases))})" if bases else ""
-            return header(f"{kind} {name}{tparams(type_params)}{base_text}:", body)
+            decos = [pad + f"@{expr(d)}" for d in decorators]
+            return decos + header(f"{kind} {name}{tparams(type_params)}{base_text}:", body)
     raise TypeError(f"can't dump {s!r}")
 
 

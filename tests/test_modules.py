@@ -105,3 +105,19 @@ def test_generic_with_a_class_from_the_importing_module_is_rejected_for_now(tmp_
         "coll.sd": "def first[T](xs: list[T]) -> T?:\n    return xs[0] if xs else None\n",
     })
     assert e.message == "first (from module 'coll') can't be used with P from module '__main__' yet"
+
+
+def test_printing_modules(tmp_path):
+    main = write(tmp_path, {
+        "main.sd": "import math\nimport geo\nimport os.path\nprint(math, geo, os.path)\n",
+        "geo.sd": "X = 1\n",
+    })
+    cpp = translate(main.read_text(), main).cpp
+    assert "sd::ModuleRef{\"<module 'math' (built-in)>\"s}" in cpp
+    assert f"sd::ModuleRef{{\"<module 'geo' from '{tmp_path / 'geo.sd'}'>\"s}}" in cpp
+    assert "<module 'path' (built-in)>" in cpp or "<module 'os.path' (built-in)>" in cpp
+
+
+def test_modules_cant_be_stored(tmp_path):
+    e = compile_error(tmp_path, {"main.sd": "import math\nm = math\n"})
+    assert e.message == "a module can't be stored in a variable; use `import ... as name` to rename it"

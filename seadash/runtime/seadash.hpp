@@ -134,6 +134,12 @@ template <class E>
     raise<RuntimeError>(msg);
 }
 
+// A module used as a value, e.g. print(math): only its repr is needed.
+struct ModuleRef {
+    std::string text;
+    std::string sd_repr() const { return text; }
+};
+
 // sys.exit(): not an exception seadash code can catch, but `finally` still runs.
 struct Exit {
     int code;

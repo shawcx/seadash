@@ -337,6 +337,37 @@ def test_with():
           (pass)""")
 
 
+def test_decorators():
+    assert s("""
+        @dataclass(order=True)
+        class P:
+            x: int
+            @property
+            def double(self) -> int:
+                return self.x * 2
+            @double.setter
+            def double(self, v: int):
+                pass
+        @functools.cache
+        @retry(3)
+        def f(n: int) -> int:
+            return n
+    """) == textwrap.dedent("""\
+        @(call dataclass order=True)
+        class P:
+          (: x int)
+          @property
+          def double(self) -> int:
+            (return (* (. self x) 2))
+          @(. double setter)
+          def double(self, v: int):
+            (pass)
+        @(. functools cache)
+        @(call retry 3)
+        def f(n: int) -> int:
+          (return n)""")
+
+
 def test_types():
     assert s("x: (int | str)? = None") == "(: x (int | str)? None)"
     assert s("x: mod.Thing") == "(: x mod.Thing)"

@@ -28,15 +28,17 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import textwrap
 from copy import deepcopy
 from dataclasses import dataclass, field
 
 from . import ast as A
 from . import builtins, threads
 from .errors import CheckError, Loc
+from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PRIMITIVES, SOCKET, STR, TEXT_FILE,
-    SYNC_ARITY, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
+    SYNC_ARITY, ClassRefType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
@@ -219,6 +221,7 @@ class Checker:
         self.type_env: dict[str, Type] = {}
         self.pending: list = []  # generic instance bodies waiting to be checked
         self.spawns: list = []  # threading.Thread(...) calls, verified once the program is checked
+        self.decorated: dict[str, str] = {}  # decorated function name -> hidden name of the original
         self.module_checked = False
         self.out_structs: list[StructType] = []
         self.out_functions: list[FuncInfo] = []
@@ -242,6 +245,8 @@ class Checker:
         for stmt in module.body:
             match stmt:
                 case A.ClassDef() | A.FunctionDef() if stmt.type_params:
+                    if stmt.decorators and isinstance(stmt, A.FunctionDef):
+                        raise self.error("decorators on generic functions aren't supported yet", stmt.decorators[0])
                     self.declare_generic(stmt)
                 case A.ClassDef():
                     self.declare_struct(stmt)
@@ -250,7 +255,11 @@ class Checker:
                     if stmt.name in self.functions or stmt.name in self.structs or stmt.name in self.generics:
                         raise self.error(f"'{stmt.name}' is already defined", stmt)
                     func_nodes.append(stmt)
-                    self.functions[stmt.name] = None  # placeholder until signatures resolve
+                    if assignment := self.declare_decorated(stmt):
+                        stmt.decorated = assignment  # codegen emits it where the def was
+                        top_level.append(assignment)  # f = deco(<f>)
+                    else:
+                        self.functions[stmt.name] = None  # placeholder until signatures resolve
                 case A.Import() | A.ImportFrom():
                     self.declare_import(stmt)
                 case _:
@@ -264,7 +273,14 @@ class Checker:
         for node in struct_nodes:
             self.check_overrides(node.sym)
         for node in func_nodes:
-            self.functions[node.name] = self.resolve_signature(node, owner=None)
+            key = self.decorated.get(node.name, node.name)
+            info = self.resolve_signature(node, owner=None)
+            if key != node.name:
+                info.cpp_name = key  # the undecorated function; `f` itself is the decorated value
+            info.cached = any(self.classify_decorator(d)[0] in ("cache", "lru_cache") for d in node.decorators)
+            if info.cached:
+                self.check_cacheable(info)
+            self.functions[key] = info
         for node in struct_nodes:
             self.check_value_recursion(node.sym)
         for info in self.all_functions():
@@ -312,6 +328,9 @@ class Checker:
             raise self.error(f"can't define a {node.kind} named '{node.name}'; that's a built-in type", node)
         if len(node.bases) > 1:
             raise self.error("multiple inheritance is not supported", node.bases[1])
+        for d in node.decorators:
+            if self.classify_decorator(d)[0] != "dataclass":
+                raise self.error("only @dataclass can decorate a class (for now)", d)
         st = StructType(node.name, node.kind, node, module=self.module_name)
         node.sym = st
         self.structs[node.name] = st
@@ -429,17 +448,19 @@ class Checker:
                 case A.AnnAssign(A.Name(name), annotation, default):
                     if name in st.fields or (st.base and st.base.find_field(name)):
                         raise self.error(f"field '{name}' is already defined", stmt)
+                    default = self.field_default(default)
+                    stmt.value = default
                     st.fields[name] = Field(name, self.resolve_type(annotation), default, stmt.loc)
                 case A.FunctionDef(name):
-                    if name in st.methods or name in st.fields:
-                        raise self.error(f"'{name}' is already defined in {st.name}", stmt)
-                    st.methods[name] = self.resolve_signature(stmt, owner=st)
+                    self.declare_method(st, stmt)
                 case A.Pass() | A.ExprStmt(A.StrLit()):
                     pass  # `pass` or a docstring
                 case _:
                     raise self.error(
                         f"a {st.kind} body can only contain fields (`x: int`) and methods (`def ...`)", stmt
                     )
+        for d in st.node.decorators:
+            self.apply_dataclass(st, d)
         self.check_dunder_signatures(st)
         if st.init is not None and st.init.ret != NONE:
             raise self.error("__init__ must not return a value", st.init.node)
@@ -468,11 +489,16 @@ class Checker:
                     f"make it a class, or use a list", f.loc,
                 )
 
-    def resolve_signature(self, node: A.FunctionDef, owner: StructType | None) -> FuncInfo:
+    def resolve_signature(self, node: A.FunctionDef, owner: StructType | None, kind: str = "method") -> FuncInfo:
         if node.type_params and not self.type_env:
             raise self.error("generic methods are not supported yet (make the class generic instead)", node)
         params = list(node.params)
-        if owner is not None:
+        if owner is not None and kind == "classmethod":
+            if not params:
+                raise self.error(f"classmethod '{node.name}' needs 'cls' as its first parameter", node)
+            if params.pop(0).annotation is not None:
+                raise self.error("'cls' doesn't need a type annotation", node)
+        elif owner is not None and kind != "static":
             if not params or params[0].name != "self":
                 raise self.error(f"method '{node.name}' needs 'self' as its first parameter", node)
             first = params.pop(0)
@@ -486,7 +512,7 @@ class Checker:
                 )
             resolved.append(Param(p.name, self.resolve_type(p.annotation), p.default, p.loc))
         ret = self.resolve_type(node.returns) if node.returns else NONE
-        info = FuncInfo(node.name, resolved, ret, node, owner, module=self.module_name)
+        info = FuncInfo(node.name, resolved, ret, node, owner, module=self.module_name, kind=kind)
         node.sym = info
         return info
 
@@ -542,11 +568,17 @@ class Checker:
                     )
                 raise self.error(f"no module-level variable '{name}' for 'global' to use", stmt)
             state.names[name] = Bound(var, var.type)
-        if info.owner is not None:
+        has_receiver = info.owner is not None and info.kind != "static"
+        if has_receiver and info.kind == "classmethod":
+            first = node.params[0]
+            cls_var = Var(first.name, first.name, ClassRefType(info.owner), "param", first.loc, frame=scope.frame)
+            state.names[first.name] = Bound(cls_var, cls_var.type)
+            first.sym = cls_var
+        elif has_receiver:
             self_var = Var("self", "self", info.owner, "param", node.params[0].loc, frame=scope.frame)
             state.names["self"] = Bound(self_var, info.owner)
             node.params[0].sym = self_var
-        param_nodes = node.params[1:] if info.owner is not None else node.params
+        param_nodes = node.params[1:] if has_receiver else node.params
         for p, pnode in zip(info.params, param_nodes):
             var = Var(p.name, p.name, p.type, "param", p.loc, frame=scope.frame)
             scope.vars[(p.name, p.type)] = var
@@ -1042,7 +1074,10 @@ class Checker:
             if not self.dunder(owner, "__setitem__"):
                 raise self.error(f"{owner.name} doesn't support item assignment (define __setitem__)", target)
         elif isinstance(target, A.Attribute) and isinstance(target.sym, Field):
+            self.check_not_frozen(target.value.ty, target.attr, target)
             self.note_attr_assignment(target, target.sym.type, result)
+        elif isinstance(target, A.Attribute) and isinstance(target.sym, tuple) and target.sym[0] == "property":
+            self.property_setter(target.value.ty, target.attr, target)  # obj.count += 1 needs a setter
         # For codegen: what was read (and its type there) and the operation's
         # result type. target.sym is the variable written, which may differ.
         stmt.sym = (read_sym, current, result)
@@ -1055,6 +1090,14 @@ class Checker:
                 owner = self.check_expr(obj)
                 if not isinstance(owner, StructType):
                     raise self.error(f"can't set attribute '{attr}' on {owner}", target)
+                if (getter := owner.find_method(attr)) and getter.kind == "getter":  # obj.area = v
+                    setter = self.property_setter(owner, attr, target)
+                    if not assignable(t, setter.params[0].type):
+                        raise self.error(f"property '{attr}' takes {setter.params[0].type}, not {t}", value)
+                    target.sym = ("property_set", setter)
+                    target.ty = setter.params[0].type
+                    return
+                self.check_not_frozen(owner, attr, target)
                 f = owner.find_field(attr)
                 if f is None:
                     raise self.error(f"{owner.name} has no field '{attr}'", target)
@@ -1129,6 +1172,10 @@ class Checker:
                     f"can't store {t.kind}(...) in a variable; loop over it directly, "
                     f"or make a list with list(...)", value,
                 )
+            if isinstance(t, ClassRefType):
+                raise self.error("a class can't be stored in a variable yet; call it, or call its class methods", value)
+            if isinstance(t, ModuleType):
+                raise self.error(f"a module can't be stored in a variable; use `import ... as name` to rename it", value)
             var = self.variable(name.id, t, name.loc)
         view = var.type
         if isinstance(var.type, OptionalType) and t != NONE and not isinstance(t, OptionalType):
@@ -1671,7 +1718,7 @@ class Checker:
         return t
 
     def check_printable(self, t: Type, e: A.Expr) -> None:
-        if isinstance(t, (IterType, ModuleType)):
+        if isinstance(t, IterType):
             raise self.error(f"{t} can't be converted to a string", e)
 
     def check_sequence_literal(self, e, elts, expected, ctor, word: str) -> Type:
@@ -1975,6 +2022,9 @@ class Checker:
                 return self.callable_as_value(e, expected, f"{value.sym.name}.{attr}")
             return self.module_member(e, value.sym, attr)
         if isinstance(vt, StructType):
+            if (getter := vt.find_method(attr)) and getter.kind == "getter":  # obj.area -> obj.area()
+                e.sym = ("property", getter)
+                return getter.ret
             if f := vt.find_field(attr):
                 self.check_synchronized_access(vt, value, attr, e)
                 e.sym = f
@@ -2123,7 +2173,26 @@ class Checker:
                 e.sym = CallTarget("builtin", name)
                 return builtins.FUNCTIONS[name](ctx)
         if isinstance(func, A.Attribute):
-            owner = self.check_expr(func.value)
+            if (
+                isinstance(func.value, A.Name) and func.value.id not in self.state.names
+                and func.value.id not in self.scope.assigned and (cls := self.lookup_struct(func.value.id))
+            ):
+                owner = ClassRefType(cls)  # Point.origin()
+                func.value.ty, func.value.sym = owner, cls
+            else:
+                owner = self.check_expr(func.value)
+            if isinstance(owner, ClassRefType) or (
+                isinstance(owner, StructType) and (m := owner.find_method(func.attr)) and m.kind in ("static", "classmethod")
+            ):
+                st = owner.st if isinstance(owner, ClassRefType) else owner
+                method = st.find_method(func.attr)
+                if method is None or method.kind not in ("static", "classmethod"):
+                    raise self.error(
+                        f"{st.name}.{func.attr}() needs an instance: only @staticmethod and @classmethod "
+                        f"methods can be called on the class", func,
+                    )
+                e.sym = CallTarget("static_method", method, self.match_args(e, method.params, f"{func.attr}()"))
+                return method.ret
             if isinstance(owner, ModuleType):
                 return self.check_module_call(e, func.value.sym, func.attr, expected)
             if isinstance(owner, StructType):
@@ -2298,6 +2367,141 @@ class Checker:
         if "__hash__" in st.methods and not st.find_method("__eq__"):
             raise self.error("a class with __hash__ also needs __eq__ (equal objects must hash the same)", st.methods["__hash__"].node)
 
+    # ---- decorators --------------------------------------------------------------
+
+    def classify_decorator(self, d: A.Expr) -> tuple[str, A.Expr]:
+        """'staticmethod', 'classmethod', 'property', 'setter', 'dataclass', 'cache', 'lru_cache', or 'user'."""
+        base = d.func if isinstance(d, A.Call) else d
+        if isinstance(base, A.Name) and base.id in ("staticmethod", "classmethod", "property"):
+            return base.id, d
+        marker = None
+        if isinstance(base, A.Name) and base.id in self.imported:
+            mod, member = self.imported[base.id]
+            marker = mod.members.get(member)
+        elif isinstance(base, A.Attribute) and isinstance(base.value, A.Name) and base.value.id in self.modules:
+            marker = self.modules[base.value.id].members.get(base.attr)
+        if isinstance(marker, builtins.DecoratorName):
+            return marker.name, d
+        if isinstance(base, A.Attribute) and base.attr == "setter" and isinstance(base.value, A.Name):
+            return "setter", d
+        return "user", d
+
+    def declare_decorated(self, node: A.FunctionDef) -> A.Assign | None:
+        """A top-level def with user decorators is `f = d1(d2(<undecorated f>))`, run where the
+        def is. Returns that assignment (the undecorated function gets a hidden name)."""
+        kinds = [self.classify_decorator(d)[0] for d in node.decorators]
+        for kind, d in zip(kinds, node.decorators):
+            if kind in ("staticmethod", "classmethod", "property", "setter", "dataclass"):
+                raise self.error(f"@{kind} only makes sense on a method inside a class", d)
+        if node.type_params and node.decorators:
+            raise self.error("decorators on generic functions aren't supported yet", node.decorators[0])
+        if "user" not in kinds:
+            return None
+        if any(k in ("cache", "lru_cache") for k in kinds):
+            raise self.error("functools.cache can't be combined with other decorators yet", node.decorators[0])
+        hidden = f"sd_undecorated_{node.name}"
+        self.decorated[node.name] = hidden
+        self.functions[hidden] = None
+        value: A.Expr = A.Name(hidden, loc=node.loc)
+        for d in reversed(node.decorators):
+            value = A.Call(d, [value], loc=d.loc)
+        return A.Assign([A.Name(node.name, loc=node.loc)], value, loc=node.loc)
+
+    def check_cacheable(self, info: FuncInfo) -> None:
+        for p in info.params:
+            if not is_hashable(p.type):
+                raise self.error(f"functools.cache needs hashable arguments; '{p.name}' is a {p.type}", p.loc)
+        if info.ret == NONE:
+            raise self.error("functools.cache is for functions that return a value", info.node)
+
+    def declare_method(self, st: StructType, node: A.FunctionDef) -> None:
+        name = node.name
+        if len(node.decorators) > 1:
+            raise self.error("a method can have one decorator (for now)", node.decorators[1])
+        kind = self.classify_decorator(node.decorators[0])[0] if node.decorators else "method"
+        if kind in ("cache", "lru_cache", "user", "dataclass"):
+            raise self.error(
+                "methods only support @staticmethod, @classmethod, @property and @<name>.setter (for now)",
+                node.decorators[0],
+            )
+        if kind == "setter":
+            getter = st.methods.get(name)
+            base = node.decorators[0].value
+            if base.id != name or getter is None or getter.kind != "getter":
+                raise self.error(f"@{base.id}.setter must follow a @property named '{base.id}' and share its name", node)
+            info = self.resolve_signature(node, owner=st)
+            if len(info.params) != 1 or info.ret != NONE:
+                raise self.error(f"a property setter takes (self, value) and returns nothing", node)
+            info.kind, info.cpp_name = "setter", f"sd_set_{name}"
+            st.methods[f"{name}.setter"] = info
+            return
+        if name in st.methods or name in st.fields:
+            raise self.error(f"'{name}' is already defined in {st.name}", node)
+        mapped = {"staticmethod": "static", "classmethod": "classmethod", "property": "getter"}.get(kind, "method")
+        info = self.resolve_signature(node, owner=st, kind=mapped)
+        if mapped == "getter":
+            if info.params or info.ret == NONE:
+                raise self.error("a @property takes only self and returns a value", node)
+            info.cpp_name = f"sd_get_{name}"
+        st.methods[name] = info
+
+    def property_setter(self, owner: StructType, attr: str, node: A.Node) -> FuncInfo:
+        setter = owner.find_method(f"{attr}.setter")
+        if setter is None:
+            raise self.error(f"property '{attr}' of {owner.name} is read-only (add an @{attr}.setter)", node)
+        return setter
+
+    def check_not_frozen(self, owner: Type, attr: str, node: A.Node) -> None:
+        if isinstance(owner, StructType) and any(t.frozen for t in owner.ancestors()):
+            raise self.error(f"{owner.name} is a frozen dataclass; its field '{attr}' can't be changed", node)
+
+    def field_default(self, default: A.Expr | None) -> A.Expr | None:
+        """dataclasses.field(default=v) / field(default_factory=f) as a field's default."""
+        if not (isinstance(default, A.Call) and self.classify_decorator(default.func)[0] == "field"):
+            return default
+        if default.args:
+            raise self.error("field() takes keyword arguments: field(default=...) or field(default_factory=...)", default)
+        kw = {k.name: k.value for k in default.keywords}
+        for name in kw:
+            if name not in ("default", "default_factory"):
+                raise self.error(f"field({name}=...) isn't supported yet", default)
+        if "default_factory" in kw:
+            return A.Call(kw["default_factory"], [], loc=default.loc)
+        return kw.get("default")
+
+    def apply_dataclass(self, st: StructType, d: A.Expr) -> None:
+        """@dataclass(eq=True, order=False, frozen=False, unsafe_hash=False): generate the
+        methods Python's dataclass would, as ordinary dunders."""
+        options = {"eq": True, "order": False, "frozen": False, "unsafe_hash": False}
+        for kw in d.keywords if isinstance(d, A.Call) else []:
+            if kw.name not in options:
+                raise self.error(f"@dataclass({kw.name}=...) isn't supported", kw)
+            if not isinstance(kw.value, A.BoolLit):
+                raise self.error(f"@dataclass({kw.name}=...) must be True or False", kw.value)
+            options[kw.name] = kw.value.value
+        st.frozen = options["frozen"]
+        fields = list(st.all_fields())
+        mine = "(" + "".join(f"self.{f}, " for f in fields) + ")"
+        theirs = "(" + "".join(f"other.{f}, " for f in fields) + ")"
+        other = f"other: {st.name}"
+        methods = []
+        if options["eq"] and st.kind == "class" and "__eq__" not in st.methods:  # structs already compare fields
+            methods.append(f"def __eq__(self, {other}) -> bool:\n    return {mine} == {theirs}")
+        if options["order"]:
+            for op, name in (("<", "__lt__"), ("<=", "__le__"), (">", "__gt__"), (">=", "__ge__")):
+                if name not in st.methods:
+                    methods.append(f"def {name}(self, {other}) -> bool:\n    return {mine} {op} {theirs}")
+        if (options["unsafe_hash"] or (options["eq"] and options["frozen"])) and "__hash__" not in st.methods:
+            methods.append(f"def __hash__(self) -> int:\n    return hash({mine})")
+        if not methods:
+            return
+        source = "class Synthesized:\n" + "\n".join(textwrap.indent(m, "    ") for m in methods) + "\n"
+        for fn in parse(source).body[0].body:
+            for n in walk(fn):
+                n.loc = d.loc  # errors in generated methods point at the @dataclass line
+            st.node.body.append(fn)
+            st.methods[fn.name] = self.resolve_signature(fn, owner=st)
+
     def check_isinstance(self, e: A.Call) -> Type:
         """isinstance(x, Dog) or isinstance(x, (Dog, Cat)), for class hierarchies."""
         if len(e.args) != 2 or e.keywords:
@@ -2361,6 +2565,8 @@ class Checker:
 
     def call_value(self, e: A.Call, t: Type) -> Type:
         """Calling a function *value*: a variable, parameter, field or expression of function type."""
+        if isinstance(t, ClassRefType):  # cls(...) in a classmethod
+            return self.check_constructor(e, t.st)
         if m := self.dunder(t, "__call__"):  # obj(args) -> obj.__call__(args)
             e.sym = CallTarget("call_dunder", m, self.match_args(e, m.params, f"{t.name}()"))
             return m.ret
@@ -2389,6 +2595,8 @@ class Checker:
             return self.construct_sync(e, f.kind, None, expected)
         if isinstance(f, GenericDef):  # utils.first(xs) / utils.Stack()
             return self.call_generic(e, f, None, expected)
+        if isinstance(f, Var) and isinstance(f.type, FuncType):  # a decorated function from another module
+            return self.call_value(e, self.module_member(e.func, mod, member))
         if isinstance(f, FuncInfo):  # a function from another .sd module
             e.sym = CallTarget("func", f, self.match_args(e, f.params, f"{mod.name}.{member}()"))
             return f.ret
