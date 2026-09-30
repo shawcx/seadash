@@ -37,7 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, SyncType,
-    CounterType, DefaultDictType, DequeType, DictType, MatchType, PatternType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
+    CounterType, DefaultDictType, DequeType, DictType, MatchType, PatternType, ProcessType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
 
@@ -250,6 +250,8 @@ class CodeGen:
                 return f"std::set<{self.cpp_type(elem)}>"
             case DequeType(elem):
                 return f"sd::deque<{self.cpp_type(elem)}>"
+            case ProcessType(kind):
+                return f"sd::subprocess::{kind}"
             case PatternType():
                 return "sd::re::Pattern"
             case MatchType():
@@ -869,6 +871,8 @@ class CodeGen:
             enter, exit_call = ctx, f"{ctx}->close()"
         elif info.kind == "socket":
             enter, exit_call = ctx, f"{ctx}.close()"
+        elif info.kind == "process":
+            enter, exit_call = ctx, f"{ctx}.sd_exit()"
         else:
             st: StructType = item.context.ty
             arrow = "->" if st.kind == "class" else "."
@@ -881,7 +885,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind not in ("file", "socket"):  # still call __enter__ for its effects
+        elif info.kind not in ("file", "socket", "process"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -1298,6 +1302,11 @@ class CodeGen:
             return self.expr(e.sym)  # `key=str.lower`
         if isinstance(e.sym, tuple) and e.sym[0] == "thread_attr":
             return f"{self.expr(e.value)}.{e.sym[1]}()"
+        if isinstance(e.sym, tuple) and e.sym[0] == "builtin_attr":
+            obj, vt = self.expr(e.value), e.value.ty
+            if isinstance(vt, ProcessType):
+                return self.process_attribute(obj, vt, e.sym[1], e.ty)
+            return f"{obj}.{e.sym[1]}()"  # m.string(), pattern.groups()
         if isinstance(e.sym, tuple) and e.sym[0] == "property":  # obj.area -> obj.sd_get_area()
             return f"{self.member(e.value, e.sym[1])}()"
         if isinstance(e.sym, FuncInfo):
@@ -1564,6 +1573,74 @@ class CodeGen:
                 return f"{cpp}({self.expr(extra['items'])}, {ml})"
         raise NotImplementedError(f"codegen for {t}()")
 
+    # ---- subprocess -----------------------------------------------------------------
+
+    def process_call(self, e: A.Call) -> str:
+        spec = e.process
+        kw, streams, op = spec["kw"], spec["streams"], spec["op"]
+
+        def redirect(name: str) -> str:
+            kind = streams[name]
+            if kind == "inherit":
+                return "sd::subprocess::Redirect()"
+            if kind == "file":
+                return f"sd::subprocess::Redirect({self.expr(kw[name])})"
+            return f"sd::subprocess::Redirect(sd::subprocess::{kind})"
+
+        fields = [f".in = {redirect('stdin')}", f".out = {redirect('stdout')}", f".err = {redirect('stderr')}"]
+        if "shell" in kw:
+            fields.append(f".shell = {self.expr(kw['shell'])}")
+        fields.append(f".text = {'true' if spec['text'] else 'false'}")
+        if "cwd" in kw and not isinstance(kw["cwd"], A.NoneLit):
+            fields.append(f".cwd = {self.expr(kw['cwd'])}")
+        if "env" in kw:
+            fields.append(f".env = {self.expr(kw['env'])}")
+        options = f"sd::subprocess::Options{{{', '.join(fields)}}}"
+        args = f"sd::subprocess::Args({self.expr(e.args[0])})"
+        timeout = self.expr_as(kw["timeout"], OptionalType(FLOAT)) if "timeout" in kw else "std::nullopt"
+        data = f"std::optional<std::string>(sd::raw({self.expr(kw['input'])}))" if "input" in kw else "std::nullopt"
+        match op:
+            case "run":
+                check = self.expr(kw["check"]) if "check" in kw else "false"
+                return f"sd::subprocess::run({args}, {options}, {data}, {timeout}, {check})"
+            case "check_output":
+                out = f"sd::subprocess::check_output({args}, {options}, {data}, {timeout})"
+                return out if spec["text"] else f"sd::bytes({out})"
+            case "call" | "check_call":
+                return f"sd::subprocess::{op}({args}, {options}, {timeout})"
+            case "Popen":
+                return f"sd::subprocess::Popen({args}, {options})"
+        raise NotImplementedError(op)
+
+    def process_attribute(self, obj: str, t: ProcessType, attr: str, result: Type) -> str:
+        if attr == "args":
+            src = f"{obj}.args" if t.kind == "CompletedProcess" else f"{obj}.args_value()"
+            return f"(*{src}.str_)" if result == STR else f"{src}.list_"
+        if t.kind == "CompletedProcess":
+            if attr in ("stdout", "stderr"):
+                raw = "out" if attr == "stdout" else "err"
+                return f"sd::subprocess::as<{self.cpp_type(result)}>({obj}.{raw})"
+            return f"{obj}.{attr}"
+        if attr in ("stdin", "stdout", "stderr"):
+            return f"{obj}.{attr}_{'text' if t.text else 'binary'}()"
+        return f"{obj}.{attr}()"
+
+    def process_method(self, r: str, t: ProcessType, name: str, e: A.Call) -> str:
+        if name == "communicate":
+            args = e.regex_args
+            data = "std::nullopt"
+            if "input" in args and not isinstance(args["input"], A.NoneLit):
+                data = f"std::optional<std::string>(sd::raw({self.expr(args['input'])}))"
+            timeout = self.expr_as(args["timeout"], OptionalType(FLOAT)) if "timeout" in args else "std::nullopt"
+            t0, t1 = (self.cpp_type(x) for x in e.ty.elts)
+            return (f"[](auto sd_r) {{ return std::make_tuple(sd::subprocess::as<{t0}>(std::get<0>(sd_r)), "
+                    f"sd::subprocess::as<{t1}>(std::get<1>(sd_r))); }}({r}.communicate({data}, {timeout}))")
+        if name == "wait":
+            node = e.args[0] if e.args else self.keyword(e, "timeout")
+            return f"{r}.wait({self.expr_as(node, OptionalType(FLOAT)) if node is not None else 'std::nullopt'})"
+        args = ", ".join(self.expr(a) for a in e.args)
+        return f"{r}.{name}({args})"
+
     # ---- re -------------------------------------------------------------------------
 
     def re_call(self, name: str, e: A.Call) -> str:
@@ -1785,6 +1862,8 @@ class CodeGen:
                     codes.append(self.expr_as(node, want) if isinstance(want, Type) else self.expr(node))
             return f"{r}.{name}({', '.join(codes)})"
         match recv_type:
+            case ProcessType():
+                return self.process_method(r, recv_type, name, e)
             case PatternType():
                 return self.regex_op(r, name, e.regex_args, e)
             case MatchType():
@@ -1858,6 +1937,8 @@ class CodeGen:
         mod = module.name
         if mod == "re":
             return self.re_call(name, e)
+        if mod == "subprocess" and hasattr(e, "process"):
+            return self.process_call(e)
         member = module.members[name]
         if member.cpp is not None and "{T}" in member.cpp:  # the result type picks the template: json.loads
             member = builtins.Function(member.name, member.check, member.cpp.replace("{T}", self.cpp_type(e.ty)), member.params)

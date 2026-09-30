@@ -38,7 +38,7 @@ from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PRIMITIVES, SOCKET, STR, TEXT_FILE,
-    SYNC_ARITY, ClassRefType, CounterType, MatchType, PatternType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
+    SYNC_ARITY, ClassRefType, CounterType, MatchType, PatternType, ProcessType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
@@ -1344,6 +1344,8 @@ class Checker:
             return WithInfo("lock", BOOL, None, False)
         if t == SOCKET:
             return WithInfo("socket", t, None, False)
+        if isinstance(t, ProcessType) and t.kind == "Popen":  # waits for the child at the end
+            return WithInfo("process", t, None, False)
         if isinstance(t, SyncType) and t.kind == "Mutex":
             return WithInfo("mutex", t.args[0], None, False)
         if isinstance(t, StructType):
@@ -2051,8 +2053,12 @@ class Checker:
         if (attrs := builtins.type_attributes(vt)) is not None:  # m.string, pattern.groups
             if attr not in attrs:
                 raise self.error(f"{vt} has no attribute '{attr}'", e)
-            e.sym = ("thread_attr", attr)  # read through an accessor: obj.attr()
-            return attrs[attr](vt)
+            try:
+                t = attrs[attr](vt)
+            except builtins.AttributeUnavailable as problem:
+                raise self.error(f"{vt}.{attr}: {problem}", e) from None
+            e.sym = ("builtin_attr", attr)
+            return t
         if isinstance(vt, OptionalType):
             raise self.error(
                 f"{vt} might be None; check it first, e.g. `if {describe_short(value)} is not None:`", value

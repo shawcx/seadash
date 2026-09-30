@@ -1,0 +1,27 @@
+0 'hello world\n' '' ['echo', 'hello', 'world']
+CompletedProcess(args=['echo', 'hello', 'world'], returncode=0, stdout='hello world\n', stderr='')
+b'a\r\nb' ['a', 'b']
+SHOUT THIS
+42
+/tmp
+hi from env
+['err', 'out']
+0
+checked b'raw\n'
+0 1 0
+one
+two (3, '')
+300000
+failed: 2 ['sh', '-c', 'echo boom >&2; exit 2'] 'boom\n' | Command '['sh', '-c', 'echo boom >&2; exit 2']' returned non-zero exit status 2.
+failed: Command 'exit 5' returned non-zero exit status 5.
+timeout: True True
+missing: [Errno 2] No such file or directory: 'no-such-program-xyz'
+1
+got line 1
+got line 2
+got line 3
+exit 0
+'through cat\n' None 0 0
+None
+-9
+b'3' 0

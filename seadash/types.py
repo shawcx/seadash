@@ -122,6 +122,23 @@ class MatchType(Type):
 
 
 @dataclass(frozen=True)
+class ProcessType(Type):
+    """subprocess.CompletedProcess or subprocess.Popen. The checker knows (from the call's
+    literal arguments) whether output is text and which streams are pipes, so
+    `r.stdout` is exactly str or bytes -- and a compile error if it wasn't captured."""
+
+    kind: str  # "CompletedProcess" or "Popen"
+    text: bool = False
+    stdin: bool = False  # a pipe we can write to (Popen)
+    stdout: bool = False  # captured / a pipe
+    stderr: bool = False
+    args: Type | None = None  # list[str] or str, as given
+
+    def __str__(self) -> str:
+        return f"subprocess.{self.kind}"
+
+
+@dataclass(frozen=True)
 class TupleType(Type):
     elts: tuple[Type, ...]
 
@@ -365,6 +382,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return True
     if isinstance(src, StructType) and isinstance(dst, StructType):
         return src.is_subclass_of(dst)
+    if isinstance(src, ProcessType) and isinstance(dst, ProcessType):  # an annotation: subprocess.Popen
+        return src.kind == dst.kind and dst.args is None
     if type(src) is type(dst) and isinstance(src, (PatternType, MatchType)):
         return dst.info is None  # any pattern fits where no particular one is expected
     if isinstance(src, DictType) and type(dst) is DictType:  # defaultdict/Counter -> dict (a copy)

@@ -1,0 +1,68 @@
+# subprocess: run programs. What a result holds follows the call's arguments.
+import subprocess
+from subprocess import PIPE, run
+
+r = subprocess.run(["echo", "hello", "world"], capture_output=True, text=True)
+print(r.returncode, repr(r.stdout), repr(r.stderr), r.args)
+print(r)
+
+b = run(["printf", "a\\r\\nb"], stdout=PIPE)  # bytes, and \r\n kept without text=True
+print(b.stdout, b.stdout.decode().splitlines())
+
+piped = subprocess.run(["tr", "a-z", "A-Z"], input="shout this\n", capture_output=True, text=True)
+print(piped.stdout.strip())
+print(subprocess.run("echo $((6 * 7))", shell=True, capture_output=True, text=True).stdout, end="")
+print(subprocess.run(["pwd"], cwd="/tmp", capture_output=True, text=True).stdout.strip())
+env_run = subprocess.run(["sh", "-c", "echo $GREETING"], env={"GREETING": "hi from env"}, capture_output=True, text=True)
+print(env_run.stdout.strip())
+
+both = subprocess.run(["sh", "-c", "echo out; echo err >&2"], stdout=PIPE, stderr=subprocess.STDOUT, text=True)
+print(sorted(both.stdout.split()))
+quiet = subprocess.run(["sh", "-c", "echo hidden"], stdout=subprocess.DEVNULL)
+print(quiet.returncode)
+
+print(subprocess.check_output(["echo", "checked"], text=True).strip(), subprocess.check_output(["echo", "raw"]))
+print(subprocess.call(["true"]), subprocess.call(["false"]), subprocess.check_call(["true"]))
+print(subprocess.getoutput("echo one; echo two"), subprocess.getstatusoutput("exit 3"))
+
+big = subprocess.run(["sh", "-c", "yes x | head -c 300000"], capture_output=True)
+print(len(big.stdout))
+
+try:
+    subprocess.run(["sh", "-c", "echo boom >&2; exit 2"], check=True, capture_output=True, text=True)
+except subprocess.CalledProcessError as e:
+    print("failed:", e.returncode, e.cmd, repr(e.stderr), "|", e)
+try:
+    subprocess.check_output("exit 5", shell=True)
+except subprocess.CalledProcessError as e:
+    print("failed:", e)
+try:
+    subprocess.run(["sleep", "5"], timeout=0.2)
+except subprocess.TimeoutExpired as e:
+    print("timeout:", 0 < e.timeout <= 0.2, str(e).startswith("Command '['sleep', '5']' timed out after"))
+try:
+    subprocess.run(["no-such-program-xyz"])
+except FileNotFoundError as e:
+    print("missing:", e)
+r.check_returncode()
+print(subprocess.run(["false"]).returncode)
+
+# Popen: streaming, communicate, wait
+with subprocess.Popen(["sh", "-c", "for i in 1 2 3; do echo line $i; done"], stdout=PIPE, text=True) as p:
+    for line in p.stdout:
+        print("got", line.strip())
+print("exit", p.returncode)
+
+cat = subprocess.Popen(["cat"], stdin=PIPE, stdout=PIPE, text=True)
+out, err = cat.communicate("through cat\n")
+print(repr(out), err, cat.returncode, cat.poll())
+
+sleeper = subprocess.Popen(["sleep", "10"])
+print(sleeper.poll())
+sleeper.kill()
+print(sleeper.wait())
+
+writer = subprocess.Popen(["wc", "-l"], stdin=PIPE, stdout=PIPE)
+writer.stdin.write(b"1\n2\n3\n")
+data, _ = writer.communicate()
+print(data.strip(), writer.wait())

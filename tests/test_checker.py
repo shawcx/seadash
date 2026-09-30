@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, queue, random, re, socket, sys, threading, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, queue, random, re, socket, subprocess, sys, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -1392,4 +1392,34 @@ def test_regex_errors():
     )
     assert err("import re\nx = re.search('a', 'b', flag=1)\n").message == (
         "re.search() got an unexpected keyword argument 'flag'"
+    )
+
+
+def test_subprocess_types():
+    info = ok(
+        "import subprocess\n"
+        "t = subprocess.run(['ls'], capture_output=True, text=True).stdout\n"
+        "b = subprocess.run(['ls'], stdout=subprocess.PIPE).stdout\n"
+        "o = subprocess.check_output(['ls'])\n"
+        "p = subprocess.Popen(['cat'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)\n"
+        "out, err = p.communicate('x')\n"
+        "code = p.poll()\n"
+    )
+    assert {"t: str", "b: bytes", "o: bytes", "out: str", "err: str?", "code: int?", "p: subprocess.Popen"} <= set(
+        variables(info)
+    )
+
+
+def test_subprocess_errors():
+    assert err("import subprocess\nr = subprocess.run(['ls'])\nx = r.stdout\n").message == (
+        "subprocess.CompletedProcess.stdout: stdout wasn't captured, so it's None: pass capture_output=True to read it"
+    )
+    assert err("import subprocess\nt = True\nr = subprocess.run(['ls'], text=t)\n").message == (
+        "text= must be True or False written out (it decides the result's type)"
+    )
+    assert err("import subprocess\nr = subprocess.run(['ls'], stdout=subprocess.STDOUT)\n").message == (
+        "only stderr can be subprocess.STDOUT"
+    )
+    assert err("import subprocess\nr = subprocess.check_output(['ls'], stdout=subprocess.PIPE)\n").message == (
+        "subprocess.check_output() got an unexpected keyword argument 'stdout'"
     )
