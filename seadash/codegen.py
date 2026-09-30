@@ -551,6 +551,8 @@ class CodeGen:
             overrides = st.base is not None and st.base.find_method(key) is not None
             self.line(f"{decl} override;" if overrides else f"virtual {decl};")
         self.line("std::string sd_repr() const override;" if st.base else "virtual std::string sd_repr() const;")
+        virtual, override = ("", " override") if st.base else ("virtual ", "")  # (the runtime class, for dataclass __eq__)
+        self.line(f'{virtual}std::string sd_class_name() const{override} {{ return {cpp_string(st.origin or st.name)}; }}')
         self.protocol_members(st, name)
         if self.json_hooks(st):
             virtual = "" if st.base and self.json_hooks(st.base) else "virtual "
@@ -2396,6 +2398,10 @@ class CodeGen:
                 return f"sd::str({a})" if a else '""s'
             case "repr":
                 return f"sd::repr({a})"
+            case "__same_class__":  # (in generated dataclass methods: Python compares only the same class)
+                return f"(typeid(*{args[0]}) == typeid(*{args[1]}))"
+            case "__class_name__":
+                return f"{a}->sd_class_name()"
             case "format" if len(e.args) == 1 or (isinstance(e.args[1], A.StrLit) and not e.args[1].value):
                 return f"sd::str({a})"
             case "format" if isinstance(e.args[1], A.StrLit):

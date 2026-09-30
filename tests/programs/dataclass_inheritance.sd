@@ -1,0 +1,35 @@
+# dataclasses and inheritance: generated __eq__ and ordering compare only the same class, like Python
+from dataclasses import dataclass
+
+
+@dataclass
+class Config:
+    name: str
+
+
+@dataclass
+class Extended(Config):
+    extra: int
+
+
+@dataclass(order=True)
+class Version:
+    major: int
+    minor: int
+
+
+@dataclass(order=True)
+class Tagged(Version):
+    tag: str
+
+
+a, b = Config("x"), Extended("x", 1)
+print(a == Config("x"), a == b, b == a, b == Extended("x", 1), b == Extended("x", 2))
+base: Config = b
+print(base == Extended("x", 1), base == Config("x"))
+v, t = Version(1, 2), Tagged(1, 2, "rc")
+print(v < Version(1, 3), t < Tagged(1, 2, "z"), t == Tagged(1, 2, "rc"))
+try:
+    print(v < t)
+except TypeError as e:
+    print("TypeError:", e)

@@ -290,6 +290,22 @@ def format_spec_error(t: Type, spec: str | None) -> str | None:
     return None
 
 
+def b_same_class(ctx: CallContext) -> Type:
+    """__same_class__(a, b): are two class instances of exactly the same class? (Used by the
+    methods @dataclass generates; not meant for programs.)"""
+    ctx.arity(2)
+    for i in range(2):
+        ctx.need(i, lambda t: isinstance(t, StructType) and t.kind == "class", "a class instance")
+    return BOOL
+
+
+def b_class_name(ctx: CallContext) -> Type:
+    """__class_name__(obj): the name of obj's class at run time (for generated messages)."""
+    ctx.arity(1)
+    ctx.need(0, lambda t: isinstance(t, StructType) and t.kind == "class", "a class instance")
+    return STR
+
+
 def b_format(ctx: CallContext) -> Type:
     """format(x, spec): like f"{x:spec}"."""
     n = ctx.arity(1, 2)
@@ -569,6 +585,8 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "repr": b_repr,
     "ascii": b_repr,
     "format": b_format,
+    "__same_class__": b_same_class,
+    "__class_name__": b_class_name,
     "int": b_int,
     "float": b_float,
     "bool": b_bool,

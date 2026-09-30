@@ -235,6 +235,7 @@ struct Synchronized : std::enable_shared_from_this<Synchronized> {
     mutable std::recursive_mutex sd_mutex;
     virtual ~Synchronized() = default;
     virtual std::string sd_repr() const { return "<Synchronized>"; }
+    virtual std::string sd_class_name() const { return "Synchronized"; }
     virtual std::string sd_str() const { return sd_repr(); }
     virtual bool sd_truthy() const { return true; }
 };

@@ -1,0 +1,4 @@
+True False False True False
+True False
+True True True
+TypeError: '<' not supported between instances of 'Version' and 'Tagged'

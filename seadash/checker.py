@@ -3356,14 +3356,26 @@ class Checker:
         fields = list(st.all_fields())
         mine = "(" + "".join(f"self.{f}, " for f in fields) + ")"
         theirs = "(" + "".join(f"other.{f}, " for f in fields) + ")"
-        other = f"other: {st.name}"
+        def other(name: str) -> str:
+            # Like Python's, the generated method only compares objects of exactly this class;
+            # it takes what the method it overrides takes (a subclass's __eq__ takes a Base).
+            overridden = st.base.find_method(name) if st.base is not None else None
+            return f"other: {overridden.params[0].type if overridden is not None else st.name}"
+
+        same = f"isinstance(other, {st.name}) and __same_class__(self, other)" if st.kind == "class" else "True"
         methods = []
         if options["eq"] and st.kind == "class" and "__eq__" not in st.methods:  # structs already compare fields
-            methods.append(f"def __eq__(self, {other}) -> bool:\n    return {mine} == {theirs}")
+            methods.append(f"def __eq__(self, {other('__eq__')}) -> bool:\n"
+                           f"    if {same}:\n        return {mine} == {theirs}\n    return False")
         if options["order"]:
             for op, name in (("<", "__lt__"), ("<=", "__le__"), (">", "__gt__"), (">=", "__ge__")):
                 if name not in st.methods:
-                    methods.append(f"def {name}(self, {other}) -> bool:\n    return {mine} {op} {theirs}")
+                    fail = (f"    raise TypeError(f\"'{op}' not supported between instances of "
+                            f"'{{__class_name__(self)}}' and '{{__class_name__(other)}}'\")")
+                    methods.append(f"def {name}(self, {other(name)}) -> bool:\n"
+                                   f"    if {same}:\n        return {mine} {op} {theirs}\n{fail}"
+                                   if st.kind == "class" else
+                                   f"def {name}(self, other: {st.name}) -> bool:\n    return {mine} {op} {theirs}")
         hashable = all(is_hashable(f.type) for f in st.all_fields().values())  # (a list field: like Python, it can't be hashed)
         if (options["unsafe_hash"] or (options["eq"] and options["frozen"])) and "__hash__" not in st.methods and hashable:
             methods.append(f"def __hash__(self) -> int:\n    return hash({mine})")
