@@ -27,7 +27,7 @@ def consume(q: queue.Queue[int], out: queue.Queue[tuple[int, int]]):
     out.put((count, total))
 
 
-for maxsize in [1, 3, 0]:
+for maxsize in (1, 3, 0):
     q: queue.Queue[int] = queue.Queue(maxsize=maxsize)
     out: queue.Queue[tuple[int, int]] = queue.Queue()
     consumers = [threading.Thread(target=consume, args=(q, out)) for _ in range(CONSUMERS)]

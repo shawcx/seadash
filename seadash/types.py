@@ -357,6 +357,13 @@ def element_type(t: Type) -> Type | None:
             return JSON_VALUE  # iterating a JSON array
         case FileType(binary):
             return BYTES if binary else STR  # a file iterates over its lines
+        case TupleType(elts) if elts:  # the type all the items share: (1, 2.5) -> float
+            common = elts[0]
+            for x in elts[1:]:
+                common = widen(common, x)
+                if common is None:
+                    return None
+            return common
         case StructType() if (m := user_dunder(t, "__iter__")):
             return element_type(m.ret)  # for x in obj -> obj.__iter__()
     return None

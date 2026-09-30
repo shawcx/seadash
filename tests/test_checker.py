@@ -1307,3 +1307,20 @@ def test_decorator_types():
         "    return f\n"
         "@shout\ndef hi(n: int) -> str:\n    return 'hi'\n"
     ).message == "argument 'f' of shout() must be (str) -> str, not (int) -> str"
+
+
+def test_looping_over_tuples():
+    info = ok(
+        "class A:\n    n: int\nclass B(A):\n    pass\nclass C(A):\n    pass\n"
+        "for i in (1, 2):\n    pass\n"
+        "for f in (1, 2.5):\n    pass\n"
+        "for o in (B(1), C(2)):\n    pass\n"
+        "for m in (1, None):\n    pass\n"
+        "for s in ('a', 'b'):\n    pass\n"
+        "total = sum((1, 2.5))\n"
+    )
+    assert set(variables(info)) == {"i: int", "f: float", "o: A", "m: int?", "s: str", "total: float"}
+    assert err("for x in (1, 'a'):\n    pass\n").message == (
+        "can't loop over tuple[int, str] (its items have different types, so there's no single type for the loop variable)"
+    )
+    assert err("x = sorted((1, 'a'))\n").message.startswith("sorted() argument must be something you can loop over")

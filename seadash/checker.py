@@ -1406,9 +1406,7 @@ class Checker:
 
     def check_for(self, stmt: A.For) -> None:
         iter_type = self.check_expr(stmt.iter)
-        elem = element_type(iter_type)
-        if elem is None:
-            raise self.error(f"can't loop over {iter_type}", stmt.iter)
+        elem = self.loop_element(stmt.iter, iter_type)
 
         def iteration() -> State:
             exhausted = self.state.copy()
@@ -1416,6 +1414,13 @@ class Checker:
             return exhausted
 
         self.check_loop(stmt, iteration)
+
+    def loop_element(self, node: A.Expr, t: Type) -> Type:
+        elem = element_type(t)
+        if elem is None:
+            raise self.error(f"can't loop over {t}{builtins.mixed_tuple_hint(t)}", node)
+        builtins.mark_tuple_iterable(node, t, elem)
+        return elem
 
     def check_loop(self, stmt: A.While | A.For, begin_iteration) -> None:
         """Check a loop body until the variable state at the loop head stops changing.
@@ -1820,9 +1825,7 @@ class Checker:
         self.state = outer.copy()
         for gen in gens:
             iter_type = self.check_expr(gen.iter)
-            elem = element_type(iter_type)
-            if elem is None:
-                raise self.error(f"can't loop over {iter_type}", gen.iter)
+            elem = self.loop_element(gen.iter, iter_type)
             self.bind_comprehension_target(gen.target, elem, gen.iter)
             for cond in gen.ifs:
                 self.state, _ = self.check_condition(cond)

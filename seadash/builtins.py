@@ -105,8 +105,23 @@ class CallContext:
         t = self.arg(i)
         elem = element_type(t)
         if elem is None:
-            raise self.error(f"{self.what} argument must be something you can loop over, not {t}", self.args[i])
+            raise self.error(f"{self.what} argument must be something you can loop over, not {t}{mixed_tuple_hint(t)}",
+                             self.args[i])
+        mark_tuple_iterable(self.args[i], t, elem)
         return elem
+
+
+def mark_tuple_iterable(node, t: Type, elem: Type) -> None:
+    """A tuple used as an iterable is converted to a list of its common element type
+    (codegen reads this mark)."""
+    if isinstance(t, TupleType):
+        node.tuple_elem = elem
+
+
+def mixed_tuple_hint(t: Type) -> str:
+    if isinstance(t, TupleType) and len(t.elts) > 1:
+        return " (its items have different types, so there's no single type for the loop variable)"
+    return ""
 
 
 MANY = 1_000
@@ -341,7 +356,9 @@ def b_filter(ctx: CallContext) -> Type:
 
 def b_reversed(ctx: CallContext) -> Type:
     ctx.arity(1)
-    t = ctx.need(0, lambda t: isinstance(t, ListType) or t == STR, "a list or str")
+    t = ctx.need(0, lambda t: isinstance(t, (ListType, TupleType)) or t == STR, "a list, tuple or str")
+    if isinstance(t, TupleType):
+        return IterType(ctx.iterable(0), "reversed")
     return IterType(element_type(t), "reversed")
 
 
@@ -411,6 +428,7 @@ def b_bytes(ctx: CallContext) -> Type:
         raise ctx.error("bytes(str) needs an encoding; use s.encode() instead", ctx.args[0])
     if t != INT and element_type(t) != INT:
         raise ctx.error(f"bytes() needs a length or a list of ints (0-255), not {t}", ctx.args[0])
+    mark_tuple_iterable(ctx.args[0], t, INT)
     return BYTES
 
 

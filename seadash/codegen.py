@@ -1090,7 +1090,19 @@ class CodeGen:
 
     def expr(self, e: A.Expr) -> str:
         if id(e) in self.precomputed:
-            return self.precomputed[id(e)]
+            return self.precomputed[id(e)]  # already converted, if it's a tuple loop
+        if (elem := getattr(e, "tuple_elem", None)) is not None:
+            if isinstance(e, A.TupleLit):  # `for x in (a, b, c)`: build the list directly
+                return f"{self.cpp_type(ListType(elem))}{{{', '.join(self.expr_as(x, elem) for x in e.elts)}}}"
+            return self.tuple_as_list(self.expr_code(e), e.ty, elem)
+        return self.expr_code(e)
+
+    def tuple_as_list(self, code: str, t: TupleType, elem: Type) -> str:
+        """`for x in (a, b)`: the tuple's items as a list of their common type."""
+        items = ", ".join(self.coerce(f"std::get<{i}>(sd_tup)", et, elem) for i, et in enumerate(t.elts))
+        return f"[&](auto&& sd_tup) {{ return {self.cpp_type(ListType(elem))}{{{items}}}; }}({code})"
+
+    def expr_code(self, e: A.Expr) -> str:
         match e:
             case A.IntLit(v):
                 return f"{v}_i"
