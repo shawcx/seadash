@@ -31,6 +31,7 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - `http.client`: file or iterable request bodies, `encode_chunked`.
 - `sqlite3`: `row_factory`/`sqlite3.Row`, `create_function`, iterating a cursor directly.
 - `uuid`: `u.int` (128 bits), `getnode()`.
+- `math`: `fsum` (an exactly rounded sum; `sum()` adds floats left to right).
 - No tracebacks for uncaught exceptions.
 
 ## Decided against

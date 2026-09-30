@@ -27,6 +27,10 @@ The name is final (a nod to the author's two kids).
 - **Typed JSON**: `json.loads` decodes into the expected type; `json.Value` for any JSON.
 - **Literal arguments decide types** where Python's result depends on them: `open(p, "rb")`,
   `subprocess.run(..., text=True)`, `permutations(xs, 2)`, `add_argument(type=int)`.
+- **Floats are IEEE doubles**, evaluated as written, with the same result on every platform
+  (hence `-ffp-contract=off`, and never `-ffast-math`). Operators match Python as a
+  consequence; matching Python's library results to the last bit (its compensated `sum()`,
+  libm's last digit) is not a goal.
 - "Fast development" means fast to write code; a build step is fine.
 
 ## Layout
