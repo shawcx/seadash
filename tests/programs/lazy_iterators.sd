@@ -1,0 +1,39 @@
+# map, filter, zip, enumerate and generator expressions are lazy: values are made as
+# they're read, so they work on infinite generators and can be stored and resumed.
+from typing import Iterator
+
+
+def naturals() -> Iterator[int]:
+    n = 0
+    while True:
+        yield n
+        n += 1
+
+
+def noisy(xs: list[int]) -> Iterator[int]:
+    for x in xs:
+        print("  producing", x)
+        yield x
+
+
+scale = 10
+squares = (x * x * scale for x in naturals())
+print(next(squares), next(squares), next(squares))
+for i, s in enumerate(squares, 1):
+    if i > 2:
+        break
+    print(i, s)
+for a, b in zip("abc", naturals()):
+    print(a, b)
+evens = filter(lambda n: n % 2 == 0, naturals())
+doubled = map(lambda n: n * 2, evens)
+print(next(doubled), next(doubled), list(zip(doubled, range(3))))
+lazy = map(lambda x: x + 1, noisy([1, 2, 3]))
+print("made map")
+print(next(lazy))
+print(list(lazy))
+words = ["apple", "kiwi", "banana"]
+lengths = (len(w) for w in words if len(w) > 4)
+print(sum(lengths), dict(zip(words, map(len, words))), list(enumerate("ab")))
+nested = ((i, j) for i in range(3) for j in range(i) if (i + j) % 2 == 1)
+print(list(nested), sorted(x for x in [3, 1, 2]), max(len(w) for w in words), 5 in (x for x in range(10)))

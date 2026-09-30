@@ -1235,6 +1235,42 @@ auto max_by(It&& it, F&& key) {
     return extreme_by(std::forward<It>(it), key, true, "max");
 }
 
+// Lazy map/filter/enumerate/zip: generators over their arguments (taken by value, so
+// they outlive the call; a generator argument is shared, so it's consumed as they go).
+template <class R, class F, class It>
+Generator<R> map_lazy(F f, It items) {
+    for (auto&& x : iter(items)) co_yield R(f(x));
+}
+template <class T, class F, class It>
+Generator<T> filter_lazy(F f, It items) {
+    for (auto&& x : iter(items))
+        if (truthy(f(x))) co_yield T(x);
+}
+template <class T, class It>
+Generator<std::tuple<std::int64_t, T>> enumerate_lazy(It items, std::int64_t start) {
+    for (auto&& x : iter(items)) co_yield std::tuple<std::int64_t, T>(start++, T(x));
+}
+template <class R, std::size_t... I, class... Its>
+Generator<R> zip_impl(std::index_sequence<I...>, Its... its) {
+    std::tuple<decltype(iter(std::declval<Its&>()))...> sources(iter(its)...);
+    auto at = std::make_tuple(std::get<I>(sources).begin()...);
+    auto end = std::make_tuple(std::get<I>(sources).end()...);
+    while (((std::get<I>(at) != std::get<I>(end)) && ...)) {  // stops at the shortest
+        co_yield R(*std::get<I>(at)...);
+        (++std::get<I>(at), ...);
+    }
+}
+template <class R, class... Its>
+Generator<R> zip_lazy(Its... its) {
+    return zip_impl<R>(std::index_sequence_for<Its...>{}, std::move(its)...);
+}
+template <class T, class X>
+bool contains(const Generator<T>& g, const X& x) {  // `x in gen` reads until it finds x, like Python
+    for (auto&& v : g)
+        if (v == x) return true;
+    return false;
+}
+
 template <class F, class It>
 auto map(F&& f, It&& it) {
     auto&& src = iter(std::forward<It>(it));

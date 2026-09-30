@@ -147,7 +147,7 @@ if (i := find(names, "bob")) is not None:
 
 **Also supported:**
 - **Functions:** generics (`def first[T](xs: list[T]) -> T | None`, `class Stack[T]:`), closures that share variables like Python's, lambdas, and functions as values.
-- **Generators:** `yield` and `yield from` (in functions and methods, including `__iter__`), `next()`, and `iter()`; they're C++20 coroutines, so values are made on demand, even from infinite generators.
+- **Generators:** `yield` and `yield from` (in functions and methods, including `__iter__`), `next()`, and `iter()`; they're C++20 coroutines, so values are made on demand, even from infinite generators. Generator expressions, `map`, `filter`, `zip` and `enumerate` are lazy too.
 - **Error handling:** exceptions (`try`/`except`/`finally`/`raise`, custom exception classes), and `with` statements.
 - **Classes:** inheritance and dunder methods (`__add__`, `__eq__`, `__lt__`, `__hash__`, `__getitem__`, `__iter__`, `__str__`...).
 - **Decorators:** `@dataclass`, `@property`, `@staticmethod`, `@classmethod`, `@functools.cache`, and your own decorators.
@@ -195,7 +195,7 @@ seadash borrows Python's syntax, not all of its semantics:
 
 - **Lists, dicts and sets are values.** Assigning or passing one makes a copy, so a function that appends to its list parameter changes its own copy, not yours. Use a `class` when you want sharing.
 - **Static types.** Containers hold one type (`list[int]`, not a mix), and there's no dynamic typing or `eval`. Mixed numbers widen, so `[1, 2.5]` is a `list[float]`.
-- **Some builtins are eager.** Generators are lazy, but `map`, `filter`, `zip` and `enumerate` build lists (so don't `zip` an infinite generator), and generator expressions `(x for x in xs)` are computed up front. Generators don't support `send()`/`throw()`, and nested functions can't be generators yet.
+- **Generators** don't support `send()`/`throw()`, and nested functions can't be generators yet. (Generators, generator expressions, `map`, `filter`, `zip` and `enumerate` are all lazy, as in Python.)
 - **Strings are UTF-8 bytes.** Indexes and lengths count bytes.
 - **Not supported yet:** a few dynamic features, such as `type(x)`, `**kwargs`, unions other than `T | None`, and multiple inheritance.
 

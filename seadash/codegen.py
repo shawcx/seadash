@@ -1233,6 +1233,8 @@ class CodeGen:
             case A.TupleLit(elts):
                 args = ", ".join(self.expr_as(x, t) for x, t in zip(elts, e.ty.elts))
                 return f"{self.cpp_type(e.ty)}{{{args}}}"  # braces: evaluated left to right
+            case A.GeneratorExp():
+                return self.generator_expression(e)
             case A.ListComp() | A.SetComp() | A.DictComp() | A.GeneratorExp():
                 return self.comprehension(e)
             case A.UnaryOp("not", operand):
@@ -1558,6 +1560,53 @@ class CodeGen:
         code.append(add)
         code.append("}" * len(gens))
         code.append(f"return {result}; }}()")
+        return " ".join(code)
+
+    def generator_expression(self, e: A.GeneratorExp) -> str:
+        """(f(x) for x in xs if p(x)): a coroutine made on the spot. Like Python, the first
+        iterable is evaluated now; the variables it uses from around it are passed in
+        (a coroutine can outlive the expression, so it can't capture by reference)."""
+        elem = e.ty.elem
+        bound = set()  # variables the expression binds itself (its loops', nested ones', lambdas')
+        for node in walk_expr(e):
+            if isinstance(node, A.Comprehension):
+                bound |= {id(n.sym) for n in walk_expr(node.target) if isinstance(n, A.Name)}
+            elif isinstance(node, A.Lambda):
+                bound |= {id(p.sym) for p in node.params}
+        outer: dict[str, str] = {}  # C++ parameter -> the argument for it
+        uses_self = False
+        for gen_index, gen in enumerate(e.generators):
+            parts = [gen.target, *gen.ifs] + ([] if gen_index == 0 else [gen.iter])
+            for part in [*parts, e.elt]:
+                for n in walk_expr(part):
+                    if not isinstance(n, A.Name) or not isinstance(n.sym, Var) or id(n.sym) in bound:
+                        continue
+                    var = n.sym
+                    if is_self(n):
+                        uses_self = True
+                    elif var.kind != "global":
+                        outer[ident(var.cpp_name)] = ident(var.cpp_name)  # a cell stays shared
+        params = ["auto sd_first", *(f"auto {p}" for p in outer)]
+        args = [self.expr(e.generators[0].iter), *outer.values()]
+        if uses_self:
+            self_var = next(n.sym for n in walk_expr(e) if isinstance(n, A.Name) and is_self(n))
+            params.append("auto sd_self")
+            args.append(self.var_code(self_var, self_var.type))
+            self.lambda_self += 1
+        try:
+            code = [f"[]({', '.join(params)}) -> {self.cpp_type(e.ty)} {{"]
+            for i, gen in enumerate(e.generators):
+                v = self.fresh("v")
+                source = "sd_first" if i == 0 else self.expr(gen.iter)
+                code.append(f"for (auto&& {v} : sd::iter({source})) {{")
+                code.extend(self.bind_comprehension(gen.target, v))
+                code.extend(f"if (!{self.cond(c)}) continue;" for c in gen.ifs)
+            code.append(f"co_yield {self.expr_as(e.elt, elem)};")
+            code.append("}" * len(e.generators))
+            code.append(f"}}({', '.join(args)})")
+        finally:
+            if uses_self:
+                self.lambda_self -= 1
         return " ".join(code)
 
     def bind_comprehension(self, target: A.Expr, source: str) -> list[str]:
@@ -1906,7 +1955,9 @@ class CodeGen:
             case "sum" if len(e.args) == 2 or e.keywords:
                 start = e.args[1] if len(e.args) == 2 else self.keyword(e, "start")
                 return f"sd::sum({self.expr(e.args[0])}, {self.expr_as(start, e.ty)})"
-            case "sum" | "any" | "all" | "reversed" | "zip" | "ord" | "chr":
+            case "zip":
+                return f"sd::zip_lazy<{self.cpp_type(e.ty.elem)}>({', '.join(args)})"
+            case "sum" | "any" | "all" | "reversed" | "ord" | "chr":
                 return f"sd::{name}({', '.join(args)})"
             case "sorted":
                 rev = self.keyword(e, "reverse")
@@ -1914,10 +1965,13 @@ class CodeGen:
                 if key := self.keyword(e, "key"):
                     return f"sd::sorted_by({a}, {self.expr(key)}, {rev_code})"
                 return f"sd::sorted({a}, {rev_code})"
-            case "map" | "filter":
-                return f"sd::{name}({args[0]}, {args[1]})"
+            case "map":
+                return f"sd::map_lazy<{self.cpp_type(e.ty.elem)}>({args[0]}, {args[1]})"
+            case "filter":
+                return f"sd::filter_lazy<{self.cpp_type(e.ty.elem)}>({args[0]}, {args[1]})"
             case "enumerate":
-                return f"sd::enumerate({', '.join(args)})"
+                item = self.cpp_type(e.ty.elem.elts[1])
+                return f"sd::enumerate_lazy<{item}>({args[0]}, {args[1] if len(args) > 1 else '0'})"
             case "list":
                 return f"sd::to_list({a})" if a else f"{self.cpp_type(e.ty)}{{}}"
             case "iter" if isinstance(e.args[0].ty, GeneratorType):

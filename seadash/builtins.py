@@ -364,7 +364,7 @@ def b_map(ctx: CallContext) -> Type:
     result = ctx.function(ctx.args[0], (elem,), "function")
     if result == NONE:
         raise ctx.error(f"{ctx.what} function must return a value", ctx.args[0])
-    return IterType(result, "map")
+    return GeneratorType(result)
 
 
 def b_filter(ctx: CallContext) -> Type:
@@ -372,7 +372,7 @@ def b_filter(ctx: CallContext) -> Type:
     elem = ctx.iterable(1)
     result = ctx.function(ctx.args[0], (elem,), "function")
     ctx.checker.check_truthy(result, ctx.args[0])
-    return IterType(elem, "filter")
+    return GeneratorType(elem)
 
 
 def b_reversed(ctx: CallContext) -> Type:
@@ -388,16 +388,16 @@ def b_enumerate(ctx: CallContext) -> Type:
     elem = ctx.iterable(0)
     if n == 2:
         ctx.expect(1, INT)
-    return IterType(TupleType((INT, elem)), "enumerate")
+    return GeneratorType(TupleType((INT, elem)))
 
 
 def b_zip(ctx: CallContext) -> Type:
     n = ctx.arity(2, MANY)
-    return IterType(TupleType(tuple(ctx.iterable(i) for i in range(n))), "zip")
+    return GeneratorType(TupleType(tuple(ctx.iterable(i) for i in range(n))))
 
 
 def b_iter(ctx: CallContext) -> Type:
-    """iter(xs): what __iter__ returns in Python code. seadash iterators are simple (eager)."""
+    """iter(xs): an iterator over xs (what __iter__ usually returns)."""
     ctx.arity(1)
     t = ctx.arg(0)
     if isinstance(t, GeneratorType):

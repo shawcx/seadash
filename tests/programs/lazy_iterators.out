@@ -1,0 +1,15 @@
+0 10 40
+1 90
+2 160
+a 0
+b 1
+c 2
+0 4 [(8, 0), (12, 1), (16, 2)]
+made map
+  producing 1
+2
+  producing 2
+  producing 3
+[3, 4]
+11 {'apple': 5, 'kiwi': 4, 'banana': 6} [(0, 'a'), (1, 'b')]
+[(1, 0), (2, 1)] [1, 2, 3] 6 True

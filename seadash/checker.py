@@ -1648,7 +1648,7 @@ class Checker:
                 self.check_hashable(t.elem, "set elements", elt)
                 return t
             case A.GeneratorExp(elt, gens):
-                return IterType(self.check_comprehension(gens, lambda: self.check_expr(elt)), "generator")
+                return GeneratorType(self.check_comprehension(gens, lambda: self.check_expr(elt)))  # lazy
             case A.DictComp(key, value, gens):
                 k, v = self.check_comprehension(gens, lambda: (self.check_expr(key), self.check_expr(value)))
                 self.check_hashable(k, "dict keys", key)
@@ -2086,7 +2086,9 @@ class Checker:
                 raise self.error(f"comparing {lt} with {rt} using '{op}' is always {op == '!='}", e)
         elif op in ("in", "not in"):
             match rt:
-                case ListType(elem) | SetType(elem) | DequeType(elem) | VarTupleType(elem) | IterType(elem, "range"):
+                case ListType(elem) | SetType(elem) | DequeType(elem) | VarTupleType(elem) | GeneratorType(elem) | IterType(
+                    elem, "range"
+                ):
                     ok = assignable(lt, elem)
                 case DictType(key):
                     ok = assignable(lt, key)
