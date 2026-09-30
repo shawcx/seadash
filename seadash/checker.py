@@ -27,6 +27,7 @@ that state; reassigning it first is fine.
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import re
 import textwrap
 from copy import deepcopy
@@ -393,9 +394,10 @@ class Checker:
             if not isinstance(mod, builtins.Module):
                 mod = None
         if mod is None:
-            available = ", ".join(sorted(m for m in builtins.MODULES if not m.startswith("_")))
-            local = f"no {name.replace('.', '/')}.sd next to this file, and " if self.loader else ""
-            raise self.error(f"no module named '{name}' ({local}built-in modules are: {available})", node)
+            local = f" (and no {name.replace('.', '/')}.sd next to this file)" if self.loader else ""
+            close = difflib.get_close_matches(name, [m for m in builtins.MODULES if not m.startswith("_")], n=1)
+            hint = f"; did you mean '{close[0]}'?" if close else ""
+            raise self.error(f"no module named '{name}'{local}{hint}", node)
         return mod
 
     def lookup_struct(self, name: str) -> StructType | None:
