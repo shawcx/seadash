@@ -1,0 +1,16 @@
+[0, 1, 4, 9, 16, 25, 36, 49, 64, 81]
+[10, 40, 90]
+[0, 1, 4, 9, 16]
+[True, True, True, True, True] 0
+[3, 12, 6] no args
+ok 0
+ok 1
+ok 2
+failed: bad input 3
+ok 4
+True True
+3 0 [0, 1, 4]
+49
+True True
+True [0, 1, 4]
+error: cannot schedule new futures after shutdown

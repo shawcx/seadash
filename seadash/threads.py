@@ -28,7 +28,7 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, DATETIME_TYPES,
-    DefaultDictType, DequeType, DictType, GeneratorType, MatchType, PatternType, ProcessType, VarTupleType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
+    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, EXECUTOR, MatchType, PatternType, ProcessType, VarTupleType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
 MUTATING_METHODS = frozenset(
@@ -54,8 +54,10 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
             return None
         case SyncType():
             return None
-        case _ if t == SOCKET:
+        case _ if t == SOCKET or t == EXECUTOR:
             return None
+        case FutureType(x):  # its result is copied out
+            return unsendable(x, seen)
         case PatternType() | MatchType():  # immutable (a Match holds its own copy of the string)
             return None
         case ProcessType(kind="CompletedProcess"):
@@ -87,7 +89,9 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
 
 def shareable(t: Type) -> bool:
     """Safe to access from several threads at once without copying."""
-    return isinstance(t, SyncType) or t in (JSON_VALUE, SOCKET) or (isinstance(t, StructType) and is_synchronized(t))
+    return isinstance(t, (SyncType, FutureType)) or t in (JSON_VALUE, SOCKET, EXECUTOR) or (
+        isinstance(t, StructType) and is_synchronized(t)
+    )
 
 
 def children(node):
@@ -201,11 +205,11 @@ class Program:
         bodies = []
         for module, info, name in self.units:
             spawn_seen = False
+            spawn_calls = {id(call) for call, _, _ in info.spawns}  # Thread(...), executor.submit/map, callbacks
             top = [s for s in module.body if not isinstance(s, (A.FunctionDef, A.ClassDef, A.Import, A.ImportFrom))]
             for stmt in top:
                 # Module code that runs before any thread starts may build its globals freely.
-                spawn_seen = spawn_seen or any(isinstance(n, A.Call) and getattr(n.sym, "kind", None) == "sync_new"
-                                               and n.sym.target[0].kind == "Thread" for n in walk(stmt))
+                spawn_seen = spawn_seen or any(id(n) in spawn_calls for n in walk(stmt))
                 if spawn_seen:
                     bodies.append(stmt)
             for fn in self.all_functions(info):
@@ -234,7 +238,8 @@ class Spawn:
         self.call = call
         self.scope = scope  # the FunctionScope the Thread(...) call is in
         self.module = module
-        _, self.extra = call.sym.target
+        # threading.Thread(...) keeps its details in its call target; executor.submit()/map() on the call
+        self.extra = getattr(call, "spawn_extra", None) or call.sym.target[1]
 
     def fail(self, message: str, node: A.Node) -> ThreadSafetyError:
         return ThreadSafetyError(message, node.loc, self.module)
@@ -249,6 +254,12 @@ class Spawn:
                         f"can't pass this to a thread: {reason}. Threads receive copies of values, "
                         f"or thread-safe objects (Lock, Queue, Mutex, Atomic, Synchronized classes)", node,
                     )
+        result = self.extra.get("result")
+        if result is not None and (reason := unsendable(result)):
+            raise self.fail(
+                f"work on another thread can't return this: {reason}. Return values that can be copied, "
+                f"or thread-safe objects", self.extra["target"],
+            )
         roots, captured = self.roots(self.extra["target"])
         self.check_captures(captured, roots)
         self.check_reachable(roots)

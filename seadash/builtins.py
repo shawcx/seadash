@@ -18,7 +18,7 @@ from .types import (
     BINARY_FILE, TEXT_FILE,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
-    GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T,
+    GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -830,6 +830,10 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             return PATH_METHODS.get(name)
         case _ if t == HASH:
             return HASH_METHODS.get(name)
+        case _ if t == EXECUTOR:
+            return EXECUTOR_METHODS.get(name)
+        case FutureType():
+            return FUTURE_METHODS.get(name)
         case _ if t == HMAC_T:
             return HMAC_METHODS.get(name)
         case _ if t == STR_TEMPLATE:
@@ -985,6 +989,10 @@ BASE_EXCEPTION = EXCEPTIONS["BaseException"]
 
 
 # ---- modules backed by runtime headers --------------------------------------
+
+
+def cpp_string_literal(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"s'
 
 
 def runtime_module(name: str, header: str, libs: tuple[str, ...] = (), **members) -> Module:
@@ -2511,6 +2519,121 @@ MODULES["hmac"] = Module("hmac", {
     "compare_digest": Function("compare_digest", compare_digest, "sd::hmac::compare_digest"),
     "HMAC": NamedType("HMAC", HMAC_T),
 }, "modules/hashlib.hpp", ("crypto",))
+
+
+# ---- concurrent.futures -------------------------------------------------------------------
+#
+# The work runs on other threads, so submit() and map() are checked like threading.Thread:
+# arguments and results must be values that can be copied (or thread-safe objects), and
+# the function mustn't reach shared mutable state (threads.Spawn).
+
+def record_spawn(ctx: CallContext, fn: A.Expr, arg_nodes: list[A.Expr], arg_types: tuple, result: Type) -> None:
+    args = A.TupleLit(list(arg_nodes), loc=ctx.call.loc)
+    args.ty = TupleType(tuple(arg_types))
+    ctx.call.spawn_extra = {"target": fn, "args": args if arg_nodes else None, "result": result}
+    ctx.checker.spawns.append((ctx.call, ctx.checker.scope, ctx.checker.module_name))
+
+
+def work_function(ctx: CallContext, fn: A.Expr, params: tuple) -> Type:
+    ft = ctx.checker.check_expr(fn, FuncType(params, None))
+    if not isinstance(ft, FuncType):
+        raise ctx.error(f"{ctx.what} needs a function to run, not {ft}", fn)
+    if len(ft.params) != len(params) or not all(assignable(a, p) for a, p in zip(params, ft.params)):
+        takes = ", ".join(map(str, ft.params)) or "no arguments"
+        given = ", ".join(map(str, params)) or "none"
+        raise ctx.error(f"the function takes ({takes}), but it's given ({given})", fn)
+    return ft.ret
+
+
+def executor_submit(ctx: CallContext) -> Type:
+    if not ctx.args:
+        raise ctx.error("submit() needs the function to run")
+    if ctx.call.keywords:
+        raise ctx.error("submit() passes positional arguments only (wrap keyword arguments in a lambda)", ctx.call.keywords[0])
+    arg_types = tuple(ctx.checker.check_expr(a) for a in ctx.args[1:])
+    result = work_function(ctx, ctx.args[0], arg_types)
+    record_spawn(ctx, ctx.args[0], ctx.args[1:], arg_types, result)
+    ctx.call.work_types = (arg_types, result)
+    return FutureType(result)
+
+
+def executor_map(ctx: CallContext) -> Type:
+    ctx.arity(2, MANY, keywords=("timeout", "chunksize"))
+    elems = tuple(iterable_of(ctx, a) for a in ctx.args[1:])
+    result = work_function(ctx, ctx.args[0], elems)
+    if result == NONE:
+        raise ctx.error("map()'s function must return a value (use submit() for work without a result)", ctx.args[0])
+    ctx.keyword("timeout", OptionalType(FLOAT))
+    ctx.keyword("chunksize", INT)
+    record_spawn(ctx, ctx.args[0], ctx.args[1:], elems, result)
+    ctx.call.work_types = (elems, result)
+    return GeneratorType(result)
+
+
+def future_callback(ctx: CallContext) -> Type:
+    """The callback may run on the worker thread, so it's checked like work given to a thread."""
+    ctx.arity(1)
+    ctx.checker.expect_type(ctx.args[0], FuncType((ctx.receiver,), NONE), "add_done_callback() callback")
+    record_spawn(ctx, ctx.args[0], [], (), None)
+    return NONE
+
+
+def futures_of(ctx: CallContext) -> FutureType:
+    elem = iterable_of(ctx, ctx.args[0])
+    if not isinstance(elem, FutureType):
+        raise ctx.error(f"{ctx.what} needs futures, not {elem}", ctx.args[0])
+    return elem
+
+
+def futures_as_completed(ctx: CallContext) -> Type:
+    ctx.arity(1, 2, keywords=("timeout",))
+    f = futures_of(ctx)
+    if len(ctx.args) == 2:
+        ctx.expect(1, OptionalType(FLOAT))
+    ctx.keyword("timeout", OptionalType(FLOAT))
+    return GeneratorType(f)
+
+
+def futures_wait(ctx: CallContext) -> Type:
+    ctx.arity(1, 3, keywords=("timeout", "return_when"))
+    f = futures_of(ctx)
+    if len(ctx.args) > 1:
+        ctx.expect(1, OptionalType(FLOAT))
+    if len(ctx.args) > 2:
+        ctx.expect(2, STR)
+    ctx.keyword("timeout", OptionalType(FLOAT))
+    ctx.keyword("return_when", STR)
+    return TupleType((SetType(f), SetType(f)))
+
+
+EXECUTOR_METHODS = {
+    "submit": executor_submit,
+    "map": executor_map,
+    "shutdown": sync_method(NONE, ("wait", BOOL, "true"), ("cancel_futures", BOOL, "false")),
+}
+FUTURE_METHODS = {
+    "result": sync_method(lambda f: f.elem, ("timeout", OptionalType(FLOAT), "std::nullopt")),
+    "exception": sync_method(OptionalType(EXCEPTIONS["Exception"]), ("timeout", OptionalType(FLOAT), "std::nullopt")),
+    "done": sync_method(BOOL),
+    "running": sync_method(BOOL),
+    "cancelled": sync_method(BOOL),
+    "cancel": sync_method(BOOL),
+    "add_done_callback": future_callback,
+}
+FUTURES = module_with_params(runtime_module(
+    "concurrent.futures", "modules/futures.hpp", ("pthread",),
+    ThreadPoolExecutor=(signature(EXECUTOR, ("max_workers", OptionalType(INT), "std::nullopt"),
+                                  ("thread_name_prefix", STR, '""s')), "sd::futures::ThreadPoolExecutor"),
+    as_completed=(futures_as_completed, None),
+    wait=(futures_wait, None),
+    CancelledError=exception_class("CancelledError", "sd::futures::CancelledError"),
+    TimeoutError=EXCEPTIONS["TimeoutError"],
+    **{name: (STR, cpp_string_literal(name)) for name in ("FIRST_COMPLETED", "FIRST_EXCEPTION", "ALL_COMPLETED")},
+))
+FUTURES.members["ThreadPoolExecutor"].as_type = EXECUTOR
+FUTURE_MARKER = NamedType("Future", FutureType(NONE))  # Future[T] in annotations (see checker.resolve_type_name)
+FUTURES.members["Future"] = FUTURE_MARKER
+MODULES["concurrent"] = Module("concurrent", {"futures": FUTURES})
 
 
 class AttributeUnavailable(Exception):

@@ -1,0 +1,58 @@
+# concurrent.futures: a thread pool, futures, map, as_completed and wait.
+import concurrent.futures
+import queue
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def slow_square(n: int) -> int:
+    time.sleep(0.01 * (5 - n % 5))  # finish out of order
+    return n * n
+
+
+def fails(n: int) -> int:
+    if n == 3:
+        raise ValueError(f"bad input {n}")
+    return n
+
+
+def total(xs: list[int]) -> int:
+    return sum(xs)
+
+
+with ThreadPoolExecutor(max_workers=4) as pool:
+    print(list(pool.map(slow_square, range(10))))  # results in order
+    print(list(pool.map(lambda a, b: a * b, [1, 2, 3], [10, 20, 30])))
+    futures = [pool.submit(slow_square, n) for n in range(5)]
+    print(sorted(f.result() for f in as_completed(futures)))  # as each finishes
+    print([f.done() for f in futures], futures[0].result(timeout=5.0))
+    chunks = [[1, 2], [3, 4, 5], [6]]
+    print([pool.submit(total, c).result() for c in chunks], pool.submit(lambda: "no args").result())
+
+    risky = [pool.submit(fails, n) for n in range(5)]
+    for f in risky:
+        try:
+            print("ok", f.result())
+        except ValueError as e:
+            print("failed:", e)
+    err = risky[3].exception()
+    print(err is not None, risky[0].exception() is None)
+
+    done, pending = concurrent.futures.wait([pool.submit(slow_square, n) for n in range(3)])
+    print(len(done), len(pending), sorted(f.result() for f in done))
+
+    seen: queue.Queue[int] = queue.Queue()  # (callbacks may run on a worker thread)
+    cb = pool.submit(slow_square, 7)
+    cb.add_done_callback(lambda f: seen.put(f.result()))
+    print(seen.get(timeout=5.0))
+
+pool2 = ThreadPoolExecutor(2)
+first = pool2.submit(time.sleep, 0.2)
+queued = [pool2.submit(slow_square, n) for n in range(4)]
+print(queued[-1].cancel(), queued[-1].cancelled())
+pool2.shutdown()
+print(first.done(), [f.result() for f in queued[:-1]])
+try:
+    pool2.submit(slow_square, 1)
+except RuntimeError as e:
+    print("error:", e)

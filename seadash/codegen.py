@@ -37,7 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T,
+    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
@@ -256,6 +256,10 @@ class CodeGen:
                 return "sd::stringmod::Template"
             case _ if t == HASH:
                 return "sd::hashlib::Hash"
+            case _ if t == EXECUTOR:
+                return "sd::futures::ThreadPoolExecutor"
+            case FutureType(elem):
+                return f"sd::futures::Future<{self.cpp_type(elem)}>"
             case _ if t == HMAC_T:
                 return "sd::hmac::HMAC"
             case _ if t in DATETIME_TYPES:
@@ -955,6 +959,8 @@ class CodeGen:
             enter, exit_call = ctx, f"{ctx}.sd_exit()"
         elif info.kind == "tempdir":
             enter, exit_call = f"{ctx}.name()", f"{ctx}.cleanup()"
+        elif info.kind == "executor":
+            enter, exit_call = ctx, f"{ctx}.shutdown(true, false)"
         else:
             st: StructType = item.context.ty
             arrow = "->" if st.kind == "class" else "."
@@ -967,7 +973,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind not in ("file", "socket", "process", "tempdir"):  # still call __enter__ for its effects
+        elif info.kind not in ("file", "socket", "process", "tempdir", "executor"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -2177,9 +2183,20 @@ class CodeGen:
             return f"{r}.substitute(sd::dict<std::string, std::string>{{{keywords}}}, {mapping}, {safe})"
         if recv_type == DATETIME and name in ("date", "time"):
             return f"{r}.to_{name}()"  # (a C++ member can't share its class's name)
+        if recv_type == EXECUTOR and name in ("submit", "map"):
+            params, result = e.work_types
+            fn = self.expr_as(e.args[0], FuncType(params, result))
+            if name == "submit":
+                args = ", ".join([fn, *(self.expr_as(a, p) for a, p in zip(e.args[1:], params))])
+                return f"{r}.submit<{self.cpp_type(result)}>({args})"
+            timeout = self.keyword(e, "timeout")
+            t = self.expr_as(timeout, OptionalType(FLOAT)) if timeout is not None else "std::nullopt"
+            return f"{r}.map<{self.cpp_type(result)}>({', '.join([fn, t, *(self.expr(a) for a in e.args[1:])])})"
+        if isinstance(recv_type, FutureType) and name == "add_done_callback":
+            return f"{r}.add_done_callback({self.expr_as(e.args[0], FuncType((recv_type,), NONE))})"
         if recv_type in (HASH, HMAC_T) and name == "update":
             return f"{r}.update({self.expr(e.args[0])})"
-        if isinstance(recv_type, (SyncType, ParserType)) or recv_type in (
+        if isinstance(recv_type, (SyncType, ParserType, FutureType)) or recv_type in (EXECUTOR,) or recv_type in (
             SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, *DATETIME_TYPES
         ):
             handler = builtins.method_for(recv_type, name)
@@ -2288,6 +2305,15 @@ class CodeGen:
             return self.itertools_call(name, e)
         if mod in ("hashlib", "hmac") and hasattr(e, "hash_args"):
             return self.hash_call(mod, name, e)
+        if mod == "concurrent.futures" and name in ("as_completed", "wait"):
+            elem = self.cpp_type(e.ty.elem.elem if name == "as_completed" else e.ty.elts[0].elem.elem)
+            timeout_node = e.args[1] if len(e.args) > 1 else self.keyword(e, "timeout")
+            timeout = self.expr_as(timeout_node, OptionalType(FLOAT)) if timeout_node is not None else "std::nullopt"
+            if name == "as_completed":
+                return f"sd::futures::as_completed<{elem}>({self.expr(e.args[0])}, {timeout})"
+            when = e.args[2] if len(e.args) > 2 else self.keyword(e, "return_when")
+            return (f"sd::futures::wait<{elem}>({self.expr(e.args[0])}, {timeout}, "
+                    f"{self.expr(when) if when is not None else chr(34) + 'ALL_COMPLETED' + chr(34) + 's'})")
         member = module.members[name]
         if member.cpp is not None and "{T}" in member.cpp:  # the result type picks the template: json.loads
             member = builtins.Function(member.name, member.check, member.cpp.replace("{T}", self.cpp_type(e.ty)), member.params)

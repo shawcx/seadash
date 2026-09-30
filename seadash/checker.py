@@ -40,7 +40,7 @@ from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA,
-    SYNC_ARITY, ClassRefType, CounterType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
+    SYNC_ARITY, ClassRefType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
@@ -908,6 +908,10 @@ class Checker:
             t = SyncType(kind, tuple(self.resolve_type(a) for a in args))
             self.check_sync_contents(t, node)
             return t
+        if self.module_member_named(name) is builtins.FUTURE_MARKER:  # Future[int]
+            if len(args) != 1:
+                raise self.error("Future takes one type argument, e.g. Future[int]", node)
+            return FutureType(self.resolve_type(args[0]))
         if (kind := self.collection_kind_named(name)) is not None:  # deque[int], defaultdict[str, int]
             return self.collection_type(kind, [self.resolve_type(a) for a in args], node)
         gen = self.generics.get(name)
@@ -1407,6 +1411,8 @@ class Checker:
             return WithInfo("lock", BOOL, None, False)
         if t == SOCKET:
             return WithInfo("socket", t, None, False)
+        if t == builtins.EXECUTOR:  # `with ThreadPoolExecutor() as pool:` waits for the work at the end
+            return WithInfo("executor", t, None, False)
         if t == TEMPDIR:  # `with TemporaryDirectory() as tmp:` gives its name, removed at the end
             return WithInfo("tempdir", STR, None, False)
         if isinstance(t, ProcessType) and t.kind == "Popen":  # waits for the child at the end
@@ -2426,6 +2432,22 @@ class Checker:
         return member
 
     # ---- collections ----------------------------------------------------------------
+
+    def module_member_named(self, name: str):
+        """What `name` (imported, or `module.member`) refers to in a module, or None."""
+        if "." in name:
+            mod_name, _, member = name.rpartition(".")
+            mod = self.modules.get(mod_name)
+            if mod is None and "." in mod_name:  # concurrent.futures.Future after `import concurrent.futures`
+                head, *rest = mod_name.split(".")
+                mod = self.modules.get(head)
+                for part in rest:
+                    mod = mod.members.get(part) if mod is not None else None
+            return mod.members.get(member) if isinstance(mod, builtins.Module) else None
+        if name in self.imported:
+            mod, member = self.imported[name]
+            return mod.members.get(member)
+        return None
 
     def collection_kind_named(self, name: str) -> str | None:
         """`deque` (imported from collections) or `collections.deque` as a name."""

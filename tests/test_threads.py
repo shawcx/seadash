@@ -183,3 +183,20 @@ UNSAFE = [
 @pytest.mark.parametrize("src,msg", UNSAFE)
 def test_unsafe_sharing_is_an_error(src, msg):
     assert compile_error(src).message.startswith(msg)
+
+
+FUTURES = "from concurrent.futures import ThreadPoolExecutor\n"
+
+
+def test_executor_work_is_checked_like_threads():
+    # a done-callback may run on a worker thread
+    e = compile_error(FUTURES + "seen: list[int] = []\nwith ThreadPoolExecutor() as pool:\n"
+                      "    pool.submit(abs, -1).add_done_callback(lambda f: seen.append(f.result()))\n")
+    assert e.message.startswith("thread code uses the module-level 'seen' (list[int]), but it's modified")
+    e = compile_error(FUTURES + "class Box:\n    n: int\nwith ThreadPoolExecutor() as pool:\n    f = pool.submit(lambda: Box(1))\n")
+    assert e.message.startswith("work on another thread can't return this: a Box is a class instance")
+    e = compile_error(FUTURES + "class Box:\n    n: int\nb = Box(1)\nwith ThreadPoolExecutor() as pool:\n"
+                      "    f = pool.submit(lambda x: x.n, b)\n")
+    assert e.message.startswith("can't pass this to a thread: a Box is a class instance")
+    compile_ok(FUTURES + "import queue\nq: queue.Queue[int] = queue.Queue()\nwith ThreadPoolExecutor() as pool:\n"
+               "    pool.submit(abs, -1).add_done_callback(lambda f: q.put(f.result()))\n")

@@ -1615,3 +1615,15 @@ def test_hashlib_types_and_errors():
     assert err("import hmac\nx = hmac.compare_digest('a', b'a')\n").message == (
         "compare_digest() compares two str or two bytes, not str and bytes"
     )
+
+
+FUTURES = "from concurrent.futures import ThreadPoolExecutor, Future\n"
+
+
+def test_futures_types_and_races():
+    info = ok(FUTURES + "def sq(n: int) -> int:\n    return n * n\n"
+              "with ThreadPoolExecutor() as pool:\n    f = pool.submit(sq, 2)\n    r = f.result()\n"
+              "    squares = list(pool.map(sq, [1, 2]))\n    g: Future[int] = f\n")
+    assert {"f: Future[int]", "r: int", "squares: list[int]", "g: Future[int]"} <= set(variables(info))
+    assert err(FUTURES + "def sq(n: int) -> int:\n    return n\nwith ThreadPoolExecutor() as pool:\n    f = pool.submit(sq)\n"
+               ).message == "the function takes (int), but it's given (none)"

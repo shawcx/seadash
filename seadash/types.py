@@ -37,6 +37,7 @@ PATH = Prim("Path")  # pathlib.Path: an immutable path value
 TEXT_WRAPPER = Prim("TextWrapper")  # textwrap.TextWrapper
 STR_TEMPLATE = Prim("Template")  # string.Template
 HASH = Prim("hash")  # a hashlib hash object
+EXECUTOR = Prim("ThreadPoolExecutor")  # concurrent.futures.ThreadPoolExecutor
 HMAC_T = Prim("HMAC")  # hmac.HMAC
 TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
 
@@ -149,6 +150,16 @@ class ProcessType(Type):
 
     def __str__(self) -> str:
         return f"subprocess.{self.kind}"
+
+
+@dataclass(frozen=True)
+class FutureType(Type):
+    """concurrent.futures.Future[T]: a result being computed on another thread."""
+
+    elem: Type
+
+    def __str__(self) -> str:
+        return f"Future[{self.elem}]"
 
 
 @dataclass(frozen=True)
@@ -441,7 +452,7 @@ def is_hashable(t: Type) -> bool:
         return all(is_hashable(e) for e in t.elts)
     if isinstance(t, VarTupleType):
         return is_hashable(t.elem)
-    return False
+    return isinstance(t, FutureType)  # (by identity)
 
 
 def assignable(src: Type, dst: Type) -> bool:
