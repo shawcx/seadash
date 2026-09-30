@@ -8,6 +8,7 @@ of N runs, wall clock).
     .venv/bin/python bench/run.py lists      # names containing "lists"
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,8 @@ RUNS = 3
 def run(cmd: list[str]) -> tuple[float, str]:
     """(wall seconds, stdout)."""
     start = time.perf_counter()
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    env = {**os.environ, "PYTHONPATH": str(BENCH / "python")}  # (`from seadash import value` under python3)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
     return time.perf_counter() - start, result.stdout
 
 

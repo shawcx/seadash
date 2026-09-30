@@ -320,8 +320,18 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
    change either are `threads.deeply_immutable`, and cross into threads shared, not copied.
    Frozen dataclasses with a list field get no `__hash__` (like Python, they can't be
    hashed). `frozenset` is left for later.
-6. Performance: non-escaping parameters as plain references, inline locals. Compare with
-   the benchmarks before and after each phase.
+6. **Done, in part.** Parameters were already plain `const&` (no reference counting).
+   Added: `small_lists` and `particles` benchmarks; list/dict/set blocks from a per-thread
+   pool (`make_pooled`, capped free lists); list variables declared before their first
+   assignment don't allocate (`sd::unset`); `for x in xs` refers to each item instead of
+   copying it when nothing can tell (`flow.loop_by_reference`); `index`, `slice` and
+   `extend` work on the vector directly. Against the compiler before phase 1: `small_lists`
+   0.46s -> 0.49s, `particles` 0.12s -> 0.14s, `lists_dicts` 0.28s -> 0.30s. The rest is
+   mostly the second allocation per list (handle block + items); a list keeping a few items
+   inline would remove it. Not done, measured as not worth it yet: lists that never leave
+   their function stored inline (most hot lists are returned or stored), non-atomic
+   reference counts (handles are rarely copied in hot loops), and classes on their own
+   reference count.
 
 ## Differences from Python after this change
 

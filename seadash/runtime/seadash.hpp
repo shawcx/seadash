@@ -375,6 +375,87 @@ struct Bool {
 };
 
 // ============================================================================
+// Allocation: list/dict/set handles are made and freed a lot, so their blocks come from
+// a per-thread free list (capped: a block freed on another thread just joins that
+// thread's list, and past the cap goes back to the heap).
+// ============================================================================
+
+template <std::size_t N>
+struct BlockPool {
+    struct Node {
+        Node* next;
+    };
+    struct FreeList {
+        Node* head = nullptr;
+        std::size_t count = 0;
+        ~FreeList() {
+            while (head) {
+                Node* n = head;
+                head = n->next;
+                ::operator delete(n);
+            }
+        }
+    };
+    static constexpr std::size_t size = N < sizeof(Node) ? sizeof(Node) : N;
+    static constexpr std::size_t cap = 4096;
+    static FreeList& free_list() {
+        thread_local FreeList list;
+        return list;
+    }
+    static void* get() {
+        FreeList& f = free_list();
+        if (Node* n = f.head) {
+            f.head = n->next;
+            --f.count;
+            return n;
+        }
+        return ::operator new(size);
+    }
+    static void put(void* p) {
+        FreeList& f = free_list();
+        if (f.count >= cap) {
+            ::operator delete(p);
+            return;
+        }
+        Node* n = static_cast<Node*>(p);
+        n->next = f.head;
+        f.head = n;
+        ++f.count;
+    }
+};
+
+template <class T>
+struct PoolAlloc {
+    using value_type = T;
+    PoolAlloc() = default;
+    template <class U>
+    PoolAlloc(const PoolAlloc<U>&) {}
+    T* allocate(std::size_t n) {
+        return n == 1 ? static_cast<T*>(BlockPool<sizeof(T)>::get()) : static_cast<T*>(::operator new(n * sizeof(T)));
+    }
+    void deallocate(T* p, std::size_t n) {
+        if (n == 1)
+            BlockPool<sizeof(T)>::put(p);
+        else
+            ::operator delete(p);
+    }
+    template <class U>
+    bool operator==(const PoolAlloc<U>&) const { return true; }
+};
+
+// A variable declared before its first assignment (codegen declares locals up front): a
+// list/dict/set handle made with `unset` has no storage until it's used, which the checker
+// guarantees comes after an assignment. (It saves an allocation per list variable.)
+struct unset_t {};
+inline constexpr unset_t unset{};
+
+// std::make_shared, with the block from the pool.
+template <class T, class... A>
+std::shared_ptr<T> make_pooled(A&&... a) {
+    return std::allocate_shared<T>(PoolAlloc<T>{}, std::forward<A>(a)...);
+}
+
+// ============================================================================
 // list: a shared reference to a vector, like a Python list
 // ============================================================================
 //
@@ -402,13 +483,14 @@ private:
     template <class U> friend class list;
 
 public:
-    list() : p_(std::make_shared<vector_type>()) {}
-    list(std::initializer_list<value_type> init) : p_(std::make_shared<vector_type>(init)) {}
-    list(vector_type v) : p_(std::make_shared<vector_type>(std::move(v))) {}  // (runtime helpers build vectors)
-    explicit list(size_type n, const value_type& x = value_type()) : p_(std::make_shared<vector_type>(n, x)) {}
+    list() : p_(make_pooled<vector_type>()) {}
+    list(unset_t) {}
+    list(std::initializer_list<value_type> init) : p_(make_pooled<vector_type>(init)) {}
+    list(vector_type v) : p_(make_pooled<vector_type>(std::move(v))) {}  // (runtime helpers build vectors)
+    explicit list(size_type n, const value_type& x = value_type()) : p_(make_pooled<vector_type>(n, x)) {}
     template <class It>
         requires(!std::is_integral_v<It>)
-    list(It first, It last) : p_(std::make_shared<vector_type>(first, last)) {}
+    list(It first, It last) : p_(make_pooled<vector_type>(first, last)) {}
     // list[bool] and list[Bool] store the same thing: share it.
     template <class U>
         requires(!std::is_same_v<U, T> && std::is_same_v<typename list<U>::vector_type, vector_type>)
@@ -416,7 +498,7 @@ public:
 
     vector_type& vec() const {
         if (!p_) [[unlikely]]
-            p_ = std::make_shared<vector_type>();
+            p_ = make_pooled<vector_type>();
         return *p_;
     }
     operator vector_type&() const { return vec(); }
@@ -511,15 +593,16 @@ private:
     mutable std::shared_ptr<set_type> p_;  // (null only after being moved from)
 
 public:
-    set() : p_(std::make_shared<set_type>()) {}
-    set(std::initializer_list<T> init) : p_(std::make_shared<set_type>(init)) {}
-    set(set_type s) : p_(std::make_shared<set_type>(std::move(s))) {}
+    set() : p_(make_pooled<set_type>()) {}
+    set(unset_t) {}
+    set(std::initializer_list<T> init) : p_(make_pooled<set_type>(init)) {}
+    set(set_type s) : p_(make_pooled<set_type>(std::move(s))) {}
     template <class It>
-    set(It first, It last) : p_(std::make_shared<set_type>(first, last)) {}
+    set(It first, It last) : p_(make_pooled<set_type>(first, last)) {}
 
     set_type& std_set() const {
         if (!p_) [[unlikely]]
-            p_ = std::make_shared<set_type>();
+            p_ = make_pooled<set_type>();
         return *p_;
     }
     operator set_type&() const { return std_set(); }
@@ -660,10 +743,10 @@ class dict {
         std::vector<std::int32_t> table;  // entry index, or EMPTY / DELETED
         std::size_t live = 0;
     };
-    mutable std::shared_ptr<Data> p_ = std::make_shared<Data>();  // (null only after a move)
+    mutable std::shared_ptr<Data> p_ = make_pooled<Data>();  // (null only after a move)
     Data& data() const {
         if (!p_) [[unlikely]]
-            p_ = std::make_shared<Data>();
+            p_ = make_pooled<Data>();
         return *p_;
     }
 
@@ -740,6 +823,7 @@ class dict {
 
 public:
     dict() = default;
+    dict(unset_t) : p_() {}
     dict(std::initializer_list<std::pair<K, V>> init) {
         for (const auto& [k, v] : init) (*this)[k] = v;
     }
@@ -785,7 +869,7 @@ public:
     key_range sd_keys() const { return {(data(), p_)}; }
 
     // For value_copy: stop sharing (a Counter or defaultdict keeps its own type).
-    void detach() { p_ = std::make_shared<Data>(data()); }
+    void detach() { p_ = make_pooled<Data>(data()); }
     template <class F>
     void for_each_value(F f) const {
         Data& D = data();
@@ -1534,7 +1618,8 @@ const T& index(const std::vector<T>& v, std::int64_t i) {
 }
 template <class T>
 auto& index(const list<T>& v, std::int64_t i) {
-    return v[norm_index(i, v.size(), "list")];
+    auto& vec = v.vec();
+    return vec[norm_index(i, vec.size(), "list")];
 }
 inline std::string index(const std::string& s, std::int64_t i) {
     return std::string(1, s[norm_index(i, s.size(), "string")]);
@@ -1557,6 +1642,13 @@ T tuple_index(const std::tuple<T, Ts...>& t, std::int64_t i) {
 }
 
 using opt_int = std::optional<std::int64_t>;
+
+template <class Seq>
+Seq slice(const Seq& s, opt_int lo, opt_int hi, opt_int step_);
+template <class T>
+list<T> slice(const list<T>& s, opt_int lo, opt_int hi, opt_int step_) {
+    return list<T>(slice(s.vec(), lo, hi, step_));  // (on the vector: no handle per item)
+}
 
 template <class Seq>
 Seq slice(const Seq& s, opt_int lo, opt_int hi, opt_int step_) {
@@ -3080,6 +3172,14 @@ std::int64_t list_count(const list<T>& v, const X& x) {
 }
 template <class T, class It>
 void list_extend(const list<T>& v, It&& it) {
+    using U = std::remove_cvref_t<It>;
+    if constexpr (is_list<U>::value) {
+        if (it.identity() != v.identity()) {  // another list: straight from its vector
+            auto& src = it.vec();
+            v.vec().insert(v.vec().end(), src.begin(), src.end());
+            return;
+        }
+    }
     auto items = to_list(std::forward<It>(it));  // copy first: `xs.extend(xs)` is fine
     v.insert(v.end(), items.begin(), items.end());
 }

@@ -18,6 +18,7 @@ class defaultdict : public dict<K, V> {
 
 public:
     defaultdict() = default;
+    defaultdict(unset_t) : base(unset) {}
     defaultdict(std::function<V()> factory, std::string factory_repr, base init = {})
         : base(init.copy()), factory_(std::move(factory)), factory_repr_(std::move(factory_repr)) {}
 
@@ -45,6 +46,7 @@ class Counter : public dict<K, std::int64_t> {
 
 public:
     Counter() = default;
+    Counter(unset_t) : base(unset) {}
     explicit Counter(const base& counts) : base(counts.copy()) {}
     template <class It>
     static Counter from_items(const It& xs) {
@@ -133,10 +135,10 @@ class deque {
         std::deque<T> d;
         std::optional<std::int64_t> maxlen;
     };
-    mutable std::shared_ptr<State> s_ = std::make_shared<State>();  // shared by copies, like list
+    mutable std::shared_ptr<State> s_ = make_pooled<State>();  // shared by copies, like list
     State& st() const {
         if (!s_) [[unlikely]]
-            s_ = std::make_shared<State>();  // (only after being moved from)
+            s_ = make_pooled<State>();  // (only after being moved from)
         return *s_;
     }
 
@@ -151,6 +153,7 @@ class deque {
 public:
     using value_type = T;
     deque() = default;
+    deque(unset_t) : s_() {}
     explicit deque(std::optional<std::int64_t> maxlen) {
         st().maxlen = maxlen;
         if (maxlen && *maxlen < 0) raise("ValueError", "maxlen must be non-negative");

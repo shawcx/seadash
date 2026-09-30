@@ -441,3 +441,35 @@ def test_mutex_ownership_allows_new_values():
             print(config.get(), shared.get())
         f()
     """)
+
+
+LOOP_HEADER = """from seadash import value
+@value
+class P:
+    x: int
+    tags: list[str]
+    def total(self) -> int:
+        return self.x + len(self.tags)
+    def bump(self):
+        self.x += 1
+def grow(ps: list[P]):
+    ps.append(P(0, []))
+"""
+
+
+@pytest.mark.parametrize("body,by_reference", [
+    ("for p in ps:\n        print(p.x, p.total(), len(p.tags))", True),
+    ("out: list[P] = []\n    for p in ps:\n        out.append(P(p.x + 1, p.tags))\n    print(out)", True),
+    ("p = P(0, [])\n    for p in ps:\n        print(p.x)\n    print(p)", False),  # read after the loop
+    ("for p in ps:\n        ps.append(p)", False),                           # grows the list
+    ("for p in ps:\n        grow(ps)", False),
+    ("other = ps\n    for p in ps:\n        other.append(p)", False),         # an alias grows it
+    ("for p in ps:\n        p.bump()\n        print(p)", False),             # changes its copy
+    ("for p in ps:\n        p = P(1, [])\n        print(p)", False),
+    ("for p in ps:\n        f = lambda: p.x\n        print(f())", False),
+    ("names = ['a']\n    for n in names:\n        print(n.upper())", True),   # strings too
+])
+def test_loops_refer_to_items_when_nothing_can_tell(body, by_reference):
+    src = LOOP_HEADER + "def f(ps: list[P]):\n    " + body + "\n"
+    cpp = translate(src).cpp
+    assert ("auto& p = " in cpp or "auto& n = " in cpp) == by_reference

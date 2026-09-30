@@ -347,3 +347,104 @@ def changes_to(body: list[A.Stmt], var: Var, threads):
                 yield n
             case A.AugAssign(target) if base_var(target) is var or (isinstance(target, A.Name) and target.sym is var):
                 yield n
+
+
+# ---- looping without copying each item ------------------------------------------------
+
+
+def _fresh_local(var: Var, body_of_function: list) -> bool:
+    """Is every value ever bound to var a newly built list/dict/set (so it can't be another
+    list under a different name)?"""
+    for n in walk(body_of_function):
+        match n:
+            case A.Assign(targets, value) if any(isinstance(t, A.Name) and t.sym is var for t in targets):
+                if not isinstance(value, (A.ListLit, A.ListComp, A.DictLit, A.DictComp, A.SetLit, A.SetComp)):
+                    return False
+            case A.AnnAssign(A.Name() as t, _, value) if t.sym is var:
+                if value is not None and not isinstance(value, (A.ListLit, A.ListComp, A.DictLit, A.DictComp, A.SetLit, A.SetComp)):
+                    return False
+            case A.For(target) | A.NamedExpr(target) if any(isinstance(x, A.Name) and x.sym is var for x in walk(target)):
+                return False
+    return var.kind == "local"
+
+
+_harmless: dict[int, bool] = {}
+
+
+def harmless_method(fn) -> bool:
+    """Does this method (and what it calls) change nothing but its own locals, and call only
+    built-ins? Then a loop can call it without the list it's looping over changing."""
+    from . import threads
+
+    if id(fn) in _harmless:
+        return _harmless[id(fn)]
+    _harmless[id(fn)] = False  # (while looking: recursion isn't harmless)
+    ok = getattr(fn, "node", None) is not None and not fn.generator
+    if ok:
+        for n in walk(fn.node.body):
+            if isinstance(n, (A.FunctionDef, A.Lambda, A.Global, A.Nonlocal, A.Yield)):
+                ok = False
+            elif isinstance(n, (A.Assign, A.AugAssign)):
+                targets = n.targets if isinstance(n, A.Assign) else [n.target]
+                ok = ok and all(isinstance(t, A.Name) and getattr(t.sym, "kind", None) == "local" for t in targets)
+            elif isinstance(n, A.Call):
+                kind = getattr(n.sym, "kind", None)
+                if kind == "builtin":
+                    continue
+                if kind == "builtin_method" and isinstance(n.func, A.Attribute) and n.func.attr not in threads.MUTATING_METHODS:
+                    continue
+                if kind in ("method", "self_call") and harmless_method(n.sym.target):
+                    continue
+                ok = False
+            if not ok:
+                break
+    _harmless[id(fn)] = ok
+    return ok
+
+
+def loop_by_reference(fn_body: list, loop: A.For) -> bool:
+    """Can `for x in xs:` bind x to each item in place instead of copying it? Only when
+    nothing can tell: the body doesn't change or keep x, x isn't read after the loop, and
+    nothing in the body can grow xs (which would move its items)."""
+    from . import threads
+
+    target, iterable = loop.target, loop.iter
+    if not (isinstance(target, A.Name) and isinstance(target.sym, Var) and isinstance(iterable, A.Name)
+            and isinstance(iterable.sym, Var)):
+        return False
+    var, seq = target.sym, iterable.sym
+    elem = element_type(seq.type) if seq.type is not None else None
+    if var.captured or seq.captured or seq.kind not in ("local", "param") or elem is None or var.type != elem:
+        return False
+    from .types import BOOL, FLOAT, INT, ListType
+    if not isinstance(seq.type, ListType) or elem in (INT, FLOAT, BOOL):
+        return False  # (only lists; scalars are as cheap to copy as to refer to)
+    body = loop.body
+    if any(mentions(s, var) for s in loop.orelse) or mentions(body, seq):
+        return False
+    assigned, _, _ = threads.uses(body)
+    if assigned.get(id(var), 0) or (is_value_class(var.type) and id(var) in threads.direct_changes(body)):
+        return False
+    for n in walk(body):
+        if isinstance(n, (A.FunctionDef, A.Lambda, A.Yield, A.Global, A.Nonlocal)):
+            return False
+        if isinstance(n, A.Call):
+            kind = getattr(n.sym, "kind", None)
+            if kind == "builtin":
+                continue
+            if kind == "builtin_method" and isinstance(n.func, A.Attribute):
+                if n.func.attr not in threads.MUTATING_METHODS:
+                    continue
+                recv = n.func.value
+                owner = base_var(recv)
+                if recv.ty != seq.type or (owner is not None and owner is not seq and _fresh_local(owner, fn_body)):
+                    continue  # (a list of another type, or one built here, can't be xs)
+                return False
+            if kind == "ctor" and n.sym.target.init is None:
+                continue  # (a constructor that only stores its fields)
+            if kind == "method" and harmless_method(n.sym.target):
+                continue
+            if kind == "module_func" and not getattr(n.sym.target[0].members.get(n.sym.target[1]), "mutates_first_arg", False):
+                continue
+            return False
+    return unread_after(fn_body, loop, var)

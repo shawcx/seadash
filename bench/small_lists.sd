@@ -1,0 +1,58 @@
+# Runs unchanged under python3 and seadash.
+# Lists the way Python programs use them: many small ones, passed to and returned from
+# functions, and grouped in dicts.
+
+
+def neighbours(x: int, y: int, size: int) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nx = x + dx
+        ny = y + dy
+        if 0 <= nx < size and 0 <= ny < size:
+            out.append((nx, ny))
+    return out
+
+
+def merge_sort(xs: list[int]) -> list[int]:
+    if len(xs) <= 1:
+        return xs
+    mid = len(xs) // 2
+    left = merge_sort(xs[:mid])
+    right = merge_sort(xs[mid:])
+    merged: list[int] = []
+    i = 0
+    j = 0
+    while i < len(left) and j < len(right):
+        if left[i] <= right[j]:
+            merged.append(left[i])
+            i += 1
+        else:
+            merged.append(right[j])
+            j += 1
+    merged.extend(left[i:])
+    merged.extend(right[j:])
+    return merged
+
+
+def main():
+    size = 700
+    total = 0
+    for x in range(size):
+        for y in range(size):
+            for nx, ny in neighbours(x, y, size):
+                total += nx * ny % 7
+    seed = 1
+    data: list[int] = []
+    for _ in range(600_000):
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        data.append(seed % 1000)
+    ordered = merge_sort(data)
+    groups: dict[int, list[int]] = {}
+    for v in data:
+        groups.setdefault(v % 100, []).append(v)
+    rows = [[i, i * 2, i * 3] for i in range(1_000_000)]
+    row_total = sum(sum(r) for r in rows)
+    print(total, ordered[:5], ordered[-1], len(groups), sum(len(g) for g in groups.values()), row_total)
+
+
+main()

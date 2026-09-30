@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from . import ast as A
 from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
-from .flow import last_use, mark_copy_outs, sub_blocks
+from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
     TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T,
@@ -389,7 +389,7 @@ class CodeGen:
             self.line()
         if self.info.globals:
             for var in self.info.globals:
-                self.line(f"{self.cpp_type(var.type)} {ident(var.cpp_name)}{{}};")
+                self.line(f"{self.cpp_type(var.type)} {ident(var.cpp_name)}{self.unset_init(var.type)};")
             self.line()
         for st in structs:
             self.struct_members(st)
@@ -785,11 +785,19 @@ class CodeGen:
             if var.kind == "global":
                 continue
             t = self.cpp_type(var.type)
+            unset = "sd::unset" if self.unset_init(var.type) != "{}" else ""
             if var.captured:  # shared with a closure: a cell both sides point to
-                self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>();")
+                self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>({unset});")
             else:
                 # Python doesn't mind a variable that's assigned but never read (`for _ in ...`, `a, b = t`)
-                self.line(f"[[maybe_unused]] {t} {ident(var.cpp_name)}{{}};")
+                self.line(f"[[maybe_unused]] {t} {ident(var.cpp_name)}{self.unset_init(var.type)};")
+
+    def unset_init(self, t: Type) -> str:
+        """How a variable is declared before its first assignment: a list, dict or set with no
+        storage yet (the checker makes sure it's assigned before it's read)."""
+        if isinstance(t, (ListType, SetType, DictType, DequeType, CounterType, DefaultDictType)):
+            return "{sd::unset}"
+        return "{}"
 
     def param_vars(self, fn: FuncInfo) -> list[Var]:
         nodes = fn.node.params[1:] if fn.owner is not None and fn.kind != "static" else fn.node.params
@@ -881,10 +889,12 @@ class CodeGen:
             case A.For(target, it, body, orelse):
                 v = self.fresh("v")
                 elem = element_type(it.ty)
-                self.loop(
-                    f"for (auto&& {v} : sd::iter({self.expr(it)}))", body, orelse,
-                    prologue=lambda: self.assign(target, v, elem),
-                )
+                if self.func is not None and loop_by_reference(self.func.node.body, s):
+                    # Nothing can tell the item from a copy: refer to it (no copy per iteration).
+                    prologue = lambda: self.line(f"[[maybe_unused]] auto& {ident(target.sym.cpp_name)} = {v};")
+                else:
+                    prologue = lambda: self.assign(target, v, elem)
+                self.loop(f"for (auto&& {v} : sd::iter({self.expr(it)}))", body, orelse, prologue=prologue)
             case _:
                 raise NotImplementedError(f"codegen for {type(s).__name__}")
 
