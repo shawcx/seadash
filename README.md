@@ -214,8 +214,8 @@ def work():
 
 | module | notes |
 |---|---|
-| `base64`, `binascii`, `zlib` | encode, decode, compress; `hexlify` with separators, `crc32`, `crc_hqx` (not yet: uu and quoted-printable) |
-| `gzip`, `bz2`, `lzma` | `compress`, `decompress` (Python's exact output and errors) and `open`, which gives the same file objects as `open()`; `lzma` does the xz and .lzma formats with presets and integrity checks (not yet: the `GzipFile`/`BZ2File`/`LZMAFile` classes, incremental (de)compressors, `FORMAT_RAW` and filter chains) |
+| `base64`, `binascii`, `zlib` | encode, decode, compress; `hexlify` with separators, `crc32`, `crc_hqx` (not yet: uu and quoted-printable); zlib's `compressobj`/`decompressobj` with `wbits`, `flush` modes, `unconsumed_tail`, `copy` |
+| `gzip`, `bz2`, `lzma` | `compress`, `decompress` (Python's exact output and errors) and `open`, which gives the same file objects as `open()`, as do `GzipFile`/`BZ2File`/`LZMAFile`; the incremental `BZ2Compressor`/`BZ2Decompressor` and `LZMACompressor`/`LZMADecompressor` (with `max_length`, `eof`, `needs_input`, `unused_data`); `lzma` does the xz and .lzma formats with presets and integrity checks (not yet: `fileobj=`, `FORMAT_RAW` and filter chains) |
 | `errno`, `stat` | the error numbers and `errorcode` (and `OSError` carries `errno`, `strerror` and `filename`); the `st_mode` bits, `S_ISDIR`..., `S_IMODE`, `S_IFMT`, `filemode` |
 | `shlex` | `split`, `quote`, `join` (POSIX mode) |
 | `uuid` | `UUID` values (ordered, hashable), `uuid1`/`uuid3`/`uuid4`/`uuid5`, the namespaces; not yet: `u.int` (128 bits) and `getnode()` |

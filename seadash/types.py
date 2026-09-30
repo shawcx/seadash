@@ -37,6 +37,24 @@ PATH = Prim("Path")  # pathlib.Path: an immutable path value
 TEXT_WRAPPER = Prim("TextWrapper")  # textwrap.TextWrapper
 STR_TEMPLATE = Prim("Template")  # string.Template
 UUID_T = Prim("UUID")  # uuid.UUID: an immutable 16-byte value
+
+# Incremental (de)compressors: handles (copies share the state) whose methods and attributes
+# are in builtins.CODEC_METHODS and CODEC_ATTRIBUTES. Maps each type to its C++ class.
+CODEC_TYPES: dict[Prim, str] = {}
+
+
+def codec_type(name: str, cpp: str) -> Prim:
+    t = Prim(name)
+    CODEC_TYPES[t] = cpp
+    return t
+
+
+ZLIB_COMPRESS = codec_type("zlib.Compress", "sd::zlib::Compress")
+ZLIB_DECOMPRESS = codec_type("zlib.Decompress", "sd::zlib::Decompress")
+BZ2_COMPRESSOR = codec_type("bz2.BZ2Compressor", "sd::bz2::BZ2Compressor")
+BZ2_DECOMPRESSOR = codec_type("bz2.BZ2Decompressor", "sd::bz2::BZ2Decompressor")
+LZMA_COMPRESSOR = codec_type("lzma.LZMACompressor", "sd::lzma::LZMACompressor")
+LZMA_DECOMPRESSOR = codec_type("lzma.LZMADecompressor", "sd::lzma::LZMADecompressor")
 HASH = Prim("hash")  # a hashlib hash object
 EXECUTOR = Prim("ThreadPoolExecutor")  # concurrent.futures.ThreadPoolExecutor
 LOGGER = Prim("Logger")  # logging.Logger

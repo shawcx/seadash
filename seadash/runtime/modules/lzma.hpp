@@ -264,4 +264,123 @@ inline std::shared_ptr<BinaryFile> open_binary(const std::string& path, const st
     return std::make_shared<BinaryFile>(open_xz(path, mode, format, check_id, preset), path, mode);
 }
 
+// ---- LZMACompressor / LZMADecompressor: incremental, sharing state between copies -----
+
+class LZMACompressor {
+    struct State {
+        lzma_stream zs = LZMA_STREAM_INIT;
+        bool live = false, flushed = false;
+        ~State() {
+            if (live) lzma_end(&zs);
+        }
+    };
+    std::shared_ptr<State> s_;
+
+    bytes run(const std::string& in, lzma_action action) {
+        lzma_stream& zs = s_->zs;
+        zs.next_in = reinterpret_cast<const std::uint8_t*>(in.data());
+        zs.avail_in = in.size();
+        std::string out;
+        std::uint8_t chunk[CHUNK];
+        lzma_ret rc;
+        do {
+            zs.next_out = chunk;
+            zs.avail_out = sizeof chunk;
+            rc = lzma_code(&zs, action);
+            check(rc);
+            out.append(reinterpret_cast<char*>(chunk), sizeof chunk - zs.avail_out);
+        } while (action == LZMA_FINISH ? rc != LZMA_STREAM_END : zs.avail_in > 0);
+        return bytes(out);
+    }
+
+public:
+    explicit LZMACompressor(std::int64_t format = FORMAT_XZ, std::int64_t check_id = -1, std::optional<std::int64_t> preset = std::nullopt)
+        : s_(std::make_shared<State>()) {
+        init_encoder(s_->zs, format, check_id, preset);
+        s_->live = true;
+    }
+    bytes compress(const bytes& data) {
+        if (s_->flushed) raise("ValueError", "Compressor has been flushed");
+        return run(data.data, LZMA_RUN);
+    }
+    bytes flush() {
+        if (s_->flushed) raise("ValueError", "Repeated call to flush()");
+        s_->flushed = true;
+        return run("", LZMA_FINISH);
+    }
+    std::string sd_repr() const { return "<lzma.LZMACompressor object>"; }
+};
+
+class LZMADecompressor {
+    struct State {
+        lzma_stream zs = LZMA_STREAM_INIT;
+        bool live = false, eof = false, needs_input = true;
+        std::int64_t check_id = CHECK_UNKNOWN;
+        std::string input, unused_data;
+        ~State() {
+            if (live) lzma_end(&zs);
+        }
+    };
+    std::shared_ptr<State> s_;
+
+public:
+    explicit LZMADecompressor(std::int64_t format = FORMAT_AUTO, std::optional<std::int64_t> memlimit = std::nullopt)
+        : s_(std::make_shared<State>()) {
+        if (memlimit && (format == FORMAT_RAW)) raise("ValueError", "Cannot specify memory limit with FORMAT_RAW");
+        init_decoder(s_->zs, format, LZMA_TELL_ANY_CHECK | LZMA_TELL_NO_CHECK);
+        if (memlimit) lzma_memlimit_set(&s_->zs, static_cast<std::uint64_t>(*memlimit));
+        if (format == FORMAT_ALONE) s_->check_id = CHECK_NONE;
+        s_->live = true;
+    }
+    bytes decompress(const bytes& data, std::int64_t max_length = -1) {
+        if (s_->eof) raise("EOFError", "End of stream already reached");
+        lzma_stream& zs = s_->zs;
+        s_->input += data.data;
+        zs.next_in = reinterpret_cast<const std::uint8_t*>(s_->input.data());
+        zs.avail_in = s_->input.size();
+        std::string out;
+        std::uint8_t chunk[CHUNK];
+        zs.avail_out = 1;
+        while (true) {
+            std::size_t room = max_length < 0 ? sizeof chunk : std::min<std::size_t>(sizeof chunk, static_cast<std::size_t>(max_length) - out.size());
+            if (room == 0) break;
+            zs.next_out = chunk;
+            zs.avail_out = room;
+            lzma_ret rc = lzma_code(&zs, LZMA_RUN);
+            out.append(reinterpret_cast<char*>(chunk), room - zs.avail_out);
+            if (rc == LZMA_STREAM_END) {
+                s_->eof = true;
+                break;
+            }
+            if (rc == LZMA_GET_CHECK || rc == LZMA_NO_CHECK) {
+                s_->check_id = lzma_get_check(&zs);
+            } else if (rc == LZMA_BUF_ERROR) {
+                if (zs.avail_in == 0 && zs.avail_out != 0) break;  // needs more input
+                lzma::check(rc);
+            } else {
+                lzma::check(rc);
+            }
+            if (zs.avail_in == 0 && zs.avail_out > 0) break;
+        }
+        std::string left(s_->input.data() + (s_->input.size() - zs.avail_in), zs.avail_in);
+        if (s_->eof) {
+            s_->needs_input = false;
+            s_->unused_data = left;
+            s_->input.clear();
+        } else if (left.empty()) {
+            s_->needs_input = zs.avail_out != 0;
+            s_->input.clear();
+        } else {
+            s_->needs_input = false;
+            s_->input = left;
+        }
+        return bytes(out);
+    }
+    bool eof() const { return s_->eof; }
+    bool needs_input() const { return s_->needs_input; }
+    std::int64_t check() const { return s_->check_id; }
+    bytes unused_data() const { return bytes(s_->unused_data); }
+    std::string sd_repr() const { return "<lzma.LZMADecompressor object>"; }
+};
+
 }  // namespace sd::lzma

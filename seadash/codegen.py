@@ -38,7 +38,7 @@ from .checker import CallTarget, Dunder, ModuleInfo
 from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T,
+    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T, CODEC_TYPES,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
@@ -263,6 +263,8 @@ class CodeGen:
                 return "sd::stringmod::Template"
             case _ if t == UUID_T:
                 return "sd::uuid::UUID"
+            case _ if t in CODEC_TYPES:
+                return CODEC_TYPES[t]
             case _ if t == HASH:
                 return "sd::hashlib::Hash"
             case _ if t == EXECUTOR:
@@ -2637,7 +2639,7 @@ class CodeGen:
             return f"{r}.{name}({', '.join(self.expr(a) for a in e.args)})"
         if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType)) or recv_type in (EXECUTOR, LOGGER, LOG_HANDLER) or recv_type in (
             SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, *DATETIME_TYPES,
-            HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
+            HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS, *CODEC_TYPES,
         ):
             handler = builtins.method_for(recv_type, name)
             codes = []
@@ -2773,8 +2775,9 @@ class CodeGen:
         if mod == "urllib.parse" and name == "urlencode":
             doseq = e.args[1] if len(e.args) > 1 else self.keyword(e, "doseq")
             return f"sd::urlparse::urlencode({self.expr(e.args[0])}, {self.expr(doseq) if doseq is not None else 'false'})"
-        if mod in builtins.COMPRESSED_OPEN_OPTIONS and name == "open":
-            path = self.expr(e.args[0]) + (".str()" if e.args[0].ty == PATH else "")
+        if mod in builtins.COMPRESSED_OPEN_OPTIONS and name in ("open", "GzipFile", "BZ2File", "LZMAFile"):
+            filename = e.args[0] if e.args else self.keyword(e, "filename")
+            path = self.expr(filename) + (".str()" if filename.ty == PATH else "")
             mode = e.args[1] if len(e.args) > 1 else self.keyword(e, "mode")
             args = [path, self.expr(mode) if mode else '"rb"s']
             for i, (option, t, default) in enumerate(builtins.COMPRESSED_OPEN_OPTIONS[mod]):

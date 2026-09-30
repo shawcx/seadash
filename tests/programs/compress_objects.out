@@ -1,0 +1,27 @@
+34 True b'x\x9c'
+zlib.error: Error -2 while compressing data: inconsistent stream state
+b'hello hello hello hello h' True False b''
+True True b'EXTRA' b'EXTRA' b''
+265 b'' False
+True True False
+zlib.error: Error -3 while decompressing data: incorrect header check
+b'x\x9c' b'JLJ\x06\x00\x00\x00\xff\xff' b"\x03\x00\x02M\x01'"
+b'hi'
+4 2 3 0 8 15 8 16384 0 1 2 3 4
+70 True
+ValueError: Compressor has been flushed
+ValueError: Repeated call to flush()
+b'' False True b''
+b'hello hell' False False
+True True False b''
+EOFError: End of stream already reached
+OSError: Invalid data stream
+96 True
+ValueError: Repeated call to flush()
+16 b'' 4 False True
+True True b'TAIL' False
+0 True True 16
+LZMAError: Input format not supported by decoder
+True
+b'hello ' 1244
+b'hello ' 1244

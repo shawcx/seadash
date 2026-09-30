@@ -1,0 +1,98 @@
+# Incremental compression: zlib.compressobj/decompressobj, BZ2Compressor/BZ2Decompressor,
+# LZMACompressor/LZMADecompressor, and the GzipFile/BZ2File/LZMAFile classes.
+import bz2
+import gzip
+import lzma
+import zlib
+
+parts = [b"hello " * 100, b"world " * 100, b"!" * 50]
+whole = b"".join(parts)
+
+# zlib
+c = zlib.compressobj(6)
+packed = b"".join([c.compress(p) for p in parts]) + c.flush()
+print(len(packed), zlib.decompress(packed) == whole, packed[:2])
+try:
+    c.compress(b"more")
+except zlib.error as e:
+    print("zlib.error:", e)
+d = zlib.decompressobj()
+first = d.decompress(packed[:40], 25)
+print(first, len(d.unconsumed_tail) > 0, d.eof, d.unused_data)
+rest = d.decompress(d.unconsumed_tail + packed[40:] + b"EXTRA")
+print(len(first) + len(rest) == len(whole), d.eof, d.unused_data, d.unconsumed_tail, d.flush())
+d2 = zlib.decompressobj()
+head = d2.decompress(packed[:12])
+print(len(head), d2.flush(), d2.eof)
+d3 = d2.copy()  # an independent decompressor at the same point
+print(head + d3.decompress(packed[12:]) == whole, d3.eof, d2.eof)
+try:
+    zlib.decompressobj().decompress(b"garbage")
+except zlib.error as e:
+    print("zlib.error:", e)
+sync = zlib.compressobj()
+print(sync.compress(b"abc"), sync.flush(zlib.Z_SYNC_FLUSH), sync.flush())
+gz = zlib.compressobj(wbits=31)  # a gzip stream; 47 reads either
+print(zlib.decompressobj(wbits=47).decompress(gz.compress(b"hi") + gz.flush()))
+print(zlib.Z_FINISH, zlib.Z_SYNC_FLUSH, zlib.Z_FULL_FLUSH, zlib.Z_NO_FLUSH, zlib.DEFLATED, zlib.MAX_WBITS, zlib.DEF_MEM_LEVEL, zlib.DEF_BUF_SIZE, zlib.Z_DEFAULT_STRATEGY, zlib.Z_FILTERED, zlib.Z_HUFFMAN_ONLY, zlib.Z_RLE, zlib.Z_FIXED)
+
+# bz2
+bc = bz2.BZ2Compressor(1)
+bpacked = b"".join([bc.compress(p) for p in parts]) + bc.flush()
+print(len(bpacked), bz2.decompress(bpacked) == whole)
+for bad in [lambda: bc.compress(b"x"), lambda: bc.flush()]:
+    try:
+        bad()
+    except ValueError as e:
+        print("ValueError:", e)
+bd = bz2.BZ2Decompressor()
+out = bd.decompress(bpacked[:30], 10)
+print(out, bd.eof, bd.needs_input, bd.unused_data)
+out = bd.decompress(bpacked[30:], 10)
+print(out, bd.eof, bd.needs_input)
+total = out
+while not bd.eof:
+    total += bd.decompress(b"", 100)  # the rest is buffered inside: no input needed
+print(total == whole, bd.eof, bd.needs_input, bd.unused_data)
+try:
+    bd.decompress(b"x")
+except EOFError as e:
+    print("EOFError:", e)
+try:
+    bz2.BZ2Decompressor().decompress(b"garbage")
+except OSError as e:
+    print("OSError:", e)
+
+# lzma
+lc = lzma.LZMACompressor(preset=1)
+lpacked = b"".join([lc.compress(p) for p in parts]) + lc.flush()
+print(len(lpacked), lzma.decompress(lpacked) == whole)
+try:
+    lc.flush()
+except ValueError as e:
+    print("ValueError:", e)
+ld = lzma.LZMADecompressor()
+print(ld.check, ld.decompress(lpacked[:20], 5), ld.check, ld.eof, ld.needs_input)
+print(len(ld.decompress(lpacked[20:] + b"TAIL")) == len(whole), ld.eof, ld.unused_data, ld.needs_input)
+alone = lzma.LZMACompressor(format=lzma.FORMAT_ALONE)
+apacked = alone.compress(whole) + alone.flush()
+ad = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+print(ad.check, ad.decompress(apacked) == whole, ad.eof, lzma.CHECK_UNKNOWN)
+try:
+    lzma.LZMADecompressor().decompress(b"garbage")
+except lzma.LZMAError as e:
+    print("LZMAError:", e)
+
+# the file classes are the binary file objects
+with gzip.GzipFile("a.gz", "w") as f:
+    f.write(whole)
+with gzip.GzipFile(filename="a.gz") as f:
+    print(f.read() == whole)
+with bz2.BZ2File("a.bz2", "w", compresslevel=1) as f:
+    f.write(whole)
+with bz2.BZ2File("a.bz2", "rb") as f:
+    print(f.read(6), len(f.read()))
+with lzma.LZMAFile("a.xz", "w", preset=1) as f:
+    f.write(whole)
+with lzma.LZMAFile("a.xz") as f:
+    print(f.read(6), len(f.read()))

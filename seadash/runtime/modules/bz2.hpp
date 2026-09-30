@@ -209,4 +209,112 @@ inline std::shared_ptr<BinaryFile> open_binary(const std::string& path, const st
     return std::make_shared<BinaryFile>(open_bz(path, mode, compresslevel), path, mode);
 }
 
+// ---- BZ2Compressor / BZ2Decompressor: incremental, sharing state between copies -------
+
+class BZ2Compressor {
+    struct State {
+        bz_stream zs{};
+        bool live = false, flushed = false;
+        ~State() {
+            if (live) BZ2_bzCompressEnd(&zs);
+        }
+    };
+    std::shared_ptr<State> s_;
+
+    bytes run(const std::string& in, int action) {
+        bz_stream& zs = s_->zs;
+        zs.next_in = const_cast<char*>(in.data());
+        zs.avail_in = static_cast<unsigned>(in.size());
+        std::string out;
+        char chunk[CHUNK];
+        int rc;
+        do {
+            zs.next_out = chunk;
+            zs.avail_out = sizeof chunk;
+            rc = BZ2_bzCompress(&zs, action);
+            if (rc < 0) raise("OSError", "Invalid data stream");
+            out.append(chunk, sizeof chunk - zs.avail_out);
+        } while (action == BZ_FINISH ? rc != BZ_STREAM_END : zs.avail_in > 0);
+        return bytes(out);
+    }
+
+public:
+    explicit BZ2Compressor(std::int64_t compresslevel = 9) : s_(std::make_shared<State>()) {
+        check_level(compresslevel);
+        if (BZ2_bzCompressInit(&s_->zs, static_cast<int>(compresslevel), 0, 0) != BZ_OK) raise("MemoryError", "");
+        s_->live = true;
+    }
+    bytes compress(const bytes& data) {
+        if (s_->flushed) raise("ValueError", "Compressor has been flushed");
+        return run(data.data, BZ_RUN);
+    }
+    bytes flush() {
+        if (s_->flushed) raise("ValueError", "Repeated call to flush()");
+        s_->flushed = true;
+        return run("", BZ_FINISH);
+    }
+    std::string sd_repr() const { return "<bz2.BZ2Compressor object>"; }
+};
+
+class BZ2Decompressor {
+    struct State {
+        bz_stream zs{};
+        bool live = false, eof = false, needs_input = true;
+        std::string input, unused_data;  // input: what decompress() was given but hasn't used
+        ~State() {
+            if (live) BZ2_bzDecompressEnd(&zs);
+        }
+    };
+    std::shared_ptr<State> s_;
+
+public:
+    BZ2Decompressor() : s_(std::make_shared<State>()) {
+        if (BZ2_bzDecompressInit(&s_->zs, 0, 0) != BZ_OK) raise("MemoryError", "");
+        s_->live = true;
+    }
+    // Up to max_length bytes (-1: no limit). Input isn't lost: what wasn't used yet is
+    // kept for the next call, and what follows the end of the stream is unused_data.
+    bytes decompress(const bytes& data, std::int64_t max_length = -1) {
+        if (s_->eof) raise("EOFError", "End of stream already reached");
+        bz_stream& zs = s_->zs;
+        s_->input += data.data;
+        zs.next_in = s_->input.data();
+        zs.avail_in = static_cast<unsigned>(s_->input.size());
+        std::string out;
+        char chunk[CHUNK];
+        zs.avail_out = 1;
+        while (true) {
+            std::size_t room = max_length < 0 ? sizeof chunk : std::min<std::size_t>(sizeof chunk, static_cast<std::size_t>(max_length) - out.size());
+            if (room == 0) break;
+            zs.next_out = chunk;
+            zs.avail_out = static_cast<unsigned>(room);
+            int rc = BZ2_bzDecompress(&zs);
+            out.append(chunk, room - zs.avail_out);
+            if (rc == BZ_STREAM_END) {
+                s_->eof = true;
+                break;
+            }
+            if (rc != BZ_OK) raise("OSError", "Invalid data stream");
+            if (zs.avail_in == 0 && zs.avail_out > 0) break;  // (all input used, and nothing more to give)
+        }
+        std::string left(s_->input.data() + (s_->input.size() - zs.avail_in), zs.avail_in);
+        if (s_->eof) {
+            s_->needs_input = false;
+            s_->unused_data = left;
+            s_->input.clear();
+        } else if (left.empty()) {
+            s_->needs_input = zs.avail_out != 0;  // (a full output buffer may have more behind it)
+            s_->input.clear();
+        } else {
+            s_->needs_input = false;
+            s_->input = left;
+        }
+        return bytes(out);
+    }
+    bool eof() const { return s_->eof; }
+    bool needs_input() const { return s_->needs_input; }
+    bytes unused_data() const { return bytes(s_->unused_data); }
+    std::string sd_repr() const { return "<bz2.BZ2Decompressor object>"; }
+};
+
 }  // namespace sd::bz2

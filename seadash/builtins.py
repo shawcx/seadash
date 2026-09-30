@@ -20,6 +20,7 @@ from .types import (
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
     GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T,
+    CODEC_TYPES, ZLIB_COMPRESS, ZLIB_DECOMPRESS, BZ2_COMPRESSOR, BZ2_DECOMPRESSOR, LZMA_COMPRESSOR, LZMA_DECOMPRESSOR,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
@@ -997,6 +998,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
                     "get_identifiers": sync_method(ListType(STR)), "is_valid": sync_method(BOOL)}.get(name)
         case _ if t == TEXT_WRAPPER:
             return {"wrap": sync_method(ListType(STR), ("text", STR)), "fill": sync_method(STR, ("text", STR))}.get(name)
+        case _ if t in CODEC_TYPES:
+            return CODEC_METHODS[t].get(name)
         case _ if t == TEMPDIR:
             return {"cleanup": sync_method(NONE)}.get(name)
         case ProcessType(kind):
@@ -1185,18 +1188,11 @@ MODULES["base64"] = runtime_module(
     b16decode=(bytes_fn(BYTES), "sd::base64::b16decode"),
 )
 
-MODULES["zlib"] = runtime_module(
-    "zlib", "modules/zlib.hpp", ("z",),
-    compress=(bytes_fn(BYTES, 1, 2, (INT,)), "sd::zlib::compress"),
-    decompress=(bytes_fn(BYTES), "sd::zlib::decompress"),
-    crc32=(bytes_fn(INT, 1, 2, (INT,)), "sd::zlib::crc32"),
-    adler32=(bytes_fn(INT, 1, 2, (INT,)), "sd::zlib::adler32"),
-    error=exception_class("error", "sd::zlib::error"),
-    Z_BEST_SPEED=(INT, "1_i"),
-    Z_BEST_COMPRESSION=(INT, "9_i"),
-    Z_DEFAULT_COMPRESSION=(INT, "(-1_i)"),
-    ZLIB_VERSION=(STR, "std::string(ZLIB_VERSION)"),
-)
+ZLIB_CONSTANTS = {
+    "Z_BEST_SPEED": 1, "Z_BEST_COMPRESSION": 9, "Z_DEFAULT_COMPRESSION": -1, "Z_NO_FLUSH": 0, "Z_PARTIAL_FLUSH": 1,
+    "Z_SYNC_FLUSH": 2, "Z_FULL_FLUSH": 3, "Z_FINISH": 4, "Z_BLOCK": 5, "DEFLATED": 8, "MAX_WBITS": 15, "DEF_MEM_LEVEL": 8,
+    "DEF_BUF_SIZE": 16384, "Z_DEFAULT_STRATEGY": 0, "Z_FILTERED": 1, "Z_HUFFMAN_ONLY": 2, "Z_RLE": 3, "Z_FIXED": 4,
+}
 
 
 def signature(result: Type, *params: tuple) -> Callable[[CallContext], Type]:
@@ -1862,6 +1858,8 @@ def type_attributes(t: Type) -> dict | None:
         return {"name": lambda t: STR, "digest_size": lambda t: INT, "block_size": lambda t: INT}
     if t == STR_TEMPLATE:
         return {"template": lambda t: STR}
+    if t in CODEC_TYPES:
+        return CODEC_ATTRIBUTES[t]
     if t == UUID_T:
         return {"hex": lambda t: STR, "bytes": lambda t: BYTES, "version": lambda t: OptionalType(INT),
                 "variant": lambda t: STR, "urn": lambda t: STR, "fields": lambda t: TupleType((INT,) * 6),
@@ -2592,6 +2590,43 @@ MODULES["string"] = module_with_params(runtime_module(
 MODULES["string"].members["Template"].as_type = STR_TEMPLATE
 
 
+# ---- zlib ----------------------------------------------------------------------------
+
+MODULES["zlib"] = module_with_params(runtime_module(
+    "zlib", "modules/zlib.hpp", ("z",),
+    compress=(bytes_fn(BYTES, 1, 2, (INT,)), "sd::zlib::compress"),
+    decompress=(bytes_fn(BYTES), "sd::zlib::decompress"),
+    crc32=(bytes_fn(INT, 1, 2, (INT,)), "sd::zlib::crc32"),
+    adler32=(bytes_fn(INT, 1, 2, (INT,)), "sd::zlib::adler32"),
+    compressobj=(signature(ZLIB_COMPRESS, ("level", INT, "(-1_i)"), ("method", INT, "8_i"), ("wbits", INT, "15_i"),
+                           ("memLevel", INT, "8_i"), ("strategy", INT, "0_i")), "sd::zlib::compressobj"),
+    decompressobj=(signature(ZLIB_DECOMPRESS, ("wbits", INT, "15_i")), "sd::zlib::decompressobj"),
+    error=exception_class("error", "sd::zlib::error"),
+    **{name: (INT, f"({value}_i)") for name, value in ZLIB_CONSTANTS.items()},
+    ZLIB_VERSION=(STR, "std::string(ZLIB_VERSION)"),
+))
+
+# The incremental (de)compressors' methods and attributes, by type.
+CODEC_METHODS = {
+    ZLIB_COMPRESS: {"compress": sync_method(BYTES, ("data", BYTES)), "flush": sync_method(BYTES, ("mode", INT, "4_i")),
+                    "copy": sync_method(ZLIB_COMPRESS)},
+    ZLIB_DECOMPRESS: {"decompress": sync_method(BYTES, ("data", BYTES), ("max_length", INT, "0_i")),
+                      "flush": sync_method(BYTES, ("length", INT, "16384_i")), "copy": sync_method(ZLIB_DECOMPRESS)},
+    BZ2_COMPRESSOR: {"compress": sync_method(BYTES, ("data", BYTES)), "flush": sync_method(BYTES)},
+    BZ2_DECOMPRESSOR: {"decompress": sync_method(BYTES, ("data", BYTES), ("max_length", INT, "(-1_i)"))},
+    LZMA_COMPRESSOR: {"compress": sync_method(BYTES, ("data", BYTES)), "flush": sync_method(BYTES)},
+    LZMA_DECOMPRESSOR: {"decompress": sync_method(BYTES, ("data", BYTES), ("max_length", INT, "(-1_i)"))},
+}
+CODEC_ATTRIBUTES = {
+    ZLIB_COMPRESS: {},
+    ZLIB_DECOMPRESS: {"eof": lambda t: BOOL, "unused_data": lambda t: BYTES, "unconsumed_tail": lambda t: BYTES},
+    BZ2_COMPRESSOR: {},
+    BZ2_DECOMPRESSOR: {"eof": lambda t: BOOL, "needs_input": lambda t: BOOL, "unused_data": lambda t: BYTES},
+    LZMA_COMPRESSOR: {},
+    LZMA_DECOMPRESSOR: {"eof": lambda t: BOOL, "needs_input": lambda t: BOOL, "unused_data": lambda t: BYTES, "check": lambda t: INT},
+}
+
+
 # ---- binascii ------------------------------------------------------------------------
 
 MODULES["binascii"] = module_with_params(runtime_module(
@@ -2622,14 +2657,23 @@ COMPRESSED_OPEN_OPTIONS = {
 }
 
 
-def compressed_open(module: str) -> Callable[[CallContext], Type]:
+def compressed_open(module: str, binary_only: bool = False) -> Callable[[CallContext], Type]:
+    """gzip.open and friends; binary_only for the GzipFile/BZ2File/LZMAFile classes, which
+    are the binary file object (mode "r" means "rb"; text modes are an error)."""
     options = COMPRESSED_OPEN_OPTIONS[module]
     positional = 3 if module != "lzma" else 2  # (lzma's options are keyword-only)
 
     def handler(ctx: CallContext) -> Type:
-        n = ctx.arity(1, positional, keywords=("mode", *(o[0] for o in options), "encoding", "newline"))
-        ctx.need(0, lambda t: t in (STR, PATH), "a str or Path")
+        n = ctx.arity(0, positional, keywords=("filename", "mode", *(o[0] for o in options), "encoding", "newline"))
+        if n == 0:
+            if ctx.keyword_arg("filename") is None:
+                raise ctx.error(f"{ctx.what} needs a filename (an existing file object isn't supported yet)")
+            ctx.keyword("filename", STR)
+        else:
+            ctx.need(0, lambda t: t in (STR, PATH), "a str or Path")
         mode_node = ctx.args[1] if n >= 2 else ctx.keyword_arg("mode")
+        if binary_only and isinstance(mode_node, A.StrLit) and "t" in mode_node.value:
+            raise ctx.error(f"Invalid mode: {mode_node.value!r} ({ctx.what} is a binary file; use {module}.open for text)", mode_node)
         if n == 3:
             ctx.expect(2, options[0][1])
         else:
@@ -2644,21 +2688,30 @@ def compressed_open(module: str) -> Callable[[CallContext], Type]:
 
     return handler
 
+
 MODULES["gzip"] = module_with_params(runtime_module(
     "gzip", "modules/gzip.hpp", ("z",),
     compress=(signature(BYTES, ("data", BYTES), ("compresslevel", INT, "9_i"), ("mtime", OptionalType(INT), "std::nullopt")),
               "sd::gzip::compress"),
     decompress=(signature(BYTES, ("data", BYTES)), "sd::gzip::decompress"),
     open=(compressed_open("gzip"), None),
+    GzipFile=(compressed_open("gzip", binary_only=True), None),
     BadGzipFile=exception_class("BadGzipFile", "sd::gzip::BadGzipFile", "OSError"),
 ))
+MODULES["gzip"].members["GzipFile"].as_type = BINARY_FILE
 
 MODULES["bz2"] = module_with_params(runtime_module(
     "bz2", "modules/bz2.hpp", ("bz2",),
     compress=(signature(BYTES, ("data", BYTES), ("compresslevel", INT, "9_i")), "sd::bz2::compress"),
     decompress=(signature(BYTES, ("data", BYTES)), "sd::bz2::decompress"),
     open=(compressed_open("bz2"), None),
+    BZ2File=(compressed_open("bz2", binary_only=True), None),
+    BZ2Compressor=(signature(BZ2_COMPRESSOR, ("compresslevel", INT, "9_i")), "sd::bz2::BZ2Compressor"),
+    BZ2Decompressor=(signature(BZ2_DECOMPRESSOR), "sd::bz2::BZ2Decompressor"),
 ))
+MODULES["bz2"].members["BZ2File"].as_type = BINARY_FILE
+MODULES["bz2"].members["BZ2Compressor"].as_type = BZ2_COMPRESSOR
+MODULES["bz2"].members["BZ2Decompressor"].as_type = BZ2_DECOMPRESSOR
 
 MODULES["lzma"] = module_with_params(runtime_module(
     "lzma", "modules/lzma.hpp", ("lzma",),
@@ -2666,6 +2719,11 @@ MODULES["lzma"] = module_with_params(runtime_module(
                         ("preset", OptionalType(INT), "std::nullopt")), "sd::lzma::compress"),
     decompress=(signature(BYTES, ("data", BYTES), ("format", INT, "sd::lzma::FORMAT_AUTO")), "sd::lzma::decompress"),
     open=(compressed_open("lzma"), None),
+    LZMAFile=(compressed_open("lzma", binary_only=True), None),
+    LZMACompressor=(signature(LZMA_COMPRESSOR, ("format", INT, "sd::lzma::FORMAT_XZ"), ("check", INT, "(-1_i)"),
+                              ("preset", OptionalType(INT), "std::nullopt")), "sd::lzma::LZMACompressor"),
+    LZMADecompressor=(signature(LZMA_DECOMPRESSOR, ("format", INT, "sd::lzma::FORMAT_AUTO"), ("memlimit", OptionalType(INT), "std::nullopt")),
+                      "sd::lzma::LZMADecompressor"),
     is_check_supported=(signature(BOOL, ("check_id", INT)), "sd::lzma::is_check_supported"),
     LZMAError=exception_class("LZMAError", "sd::lzma::LZMAError"),
     **{name: (INT, f"sd::lzma::{name}") for name in (
