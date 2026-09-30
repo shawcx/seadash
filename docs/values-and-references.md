@@ -115,17 +115,25 @@ def worker(n: int):
 
 New rules:
 
-1. **`Mutex(x)` takes ownership of `x`.** If `x` is a name, later uses of it are an error
-   ("'xs' was moved into a Mutex; use it through the Mutex"). Otherwise an unlocked alias
-   would exist and could race.
+1. **`Mutex(x)` and `m.set(x)` take ownership of `x`.** If `x` is a local name, it's moved
+   in, and reading it afterwards is an error until it's given a new value ("'xs' was moved
+   into a Mutex (line 4), which owns it now: use it through the Mutex (`with shared as
+   xs:`), or give 'xs' a new value first"). The check is flow-sensitive, so a loop that
+   wraps the same name twice is an error too. An alias the checker can't see (`other = xs`
+   earlier) makes the runtime copy instead (`sd::send`), so the Mutex's data is never
+   shared. A module-level name is copied (functions may still read it), but the module's
+   own code reading it again is the same error. Anything else (a field, a literal, a
+   captured variable) is copied.
 2. **The view doesn't escape.** Inside `with m as t:`, `t` can't be stored in an outer
    variable or field, returned, captured by a closure, sent to another thread, or put in a
    container that outlives the block. Anything read out of `t` that is a reference (for
-   example `row = t[0]` when `t` is a `list[list[int]]`) is subject to the same rule; an
-   explicit `copy.deepcopy(...)` is the way to take data out.
-3. (Proposed) **`threading.RWMutex(x)`** for data read far more than written:
-   `with m.read() as t:` allows many readers at once, and `with m.write() as t:` allows one
-   writer.
+   example `row = t[0]` when `t` is a `list[list[int]]`) is subject to the same rule; copy
+   what you need (`list(t)`, `[list(row) for row in t]`).
+3. **`threading.RWMutex(x)`** for data read far more than written: `with m.read() as t:`
+   allows many readers at once (a `std::shared_mutex`), and `with m.write() as t:` one
+   writer. A `read()` view is read-only: changing it (also through `for row in t:
+   row.append(...)`) is a compile error. There's no plain `with m as t:`, and `read()` /
+   `write()` can only be used as a with item. `get()` and `set()` work as on `Mutex`.
 
 Where it fits, handing data over through a `Queue` is often simpler than a lock. With a
 move, sending costs nothing.
@@ -290,7 +298,7 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
    by a maker from copies of what it captures; a lambda captures copies. A recursive
    nested def, or one defined more than once, keeps the older rule (the enclosing function
    mustn't change what it shares). Not done: `Future.result()` still copies on every call.
-3. `Mutex` ownership; `RWMutex`.
+3. **Done.** `Mutex` ownership (`Moved` in the checker's flow state) and `RWMutex`.
 4. Struct rules: value fields only, list fields, the modified-copy check.
 5. Frozen types and `dataclasses.replace`; sharing deeply immutable values across threads.
 6. Performance: non-escaping parameters as plain references, inline locals. Compare with

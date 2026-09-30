@@ -26,18 +26,29 @@ q.put(sent)
 sent.append(2)
 print(q.get(), sent)
 
-# a Mutex copies what goes in and what comes out
+# a Mutex owns what it's given (the name can't be used again until it's reassigned), and
+# get() hands out copies
 original = {"a": [1]}
 box = threading.Mutex(original)
-original["a"].append(2)
+original = {"a": [2]}  # a new dict: the Mutex's is untouched
 with box as d:
     d["a"].append(3)
 out = box.get()
 out["a"].append(4)
 print(original, box.get(), out)
-box.set(out)
-out["a"].clear()
-print(box.get())
+
+
+def owned(start: list[int]) -> threading.Mutex[list[int]]:
+    items = list(start)
+    items.append(0)
+    other = items  # (an alias: the Mutex gets a copy, so nothing is shared)
+    m = threading.Mutex(items)
+    other.append(-1)
+    m.set(other)
+    return m
+
+
+print(owned([5]).get())
 
 
 # a Synchronized class copies the lists its methods take and return

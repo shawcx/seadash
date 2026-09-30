@@ -1553,6 +1553,12 @@ SYNC_METHODS: dict[str, dict] = {
         "get": sync_method(elem0),
         "set": sync_method(NONE, ("value", elem0)),
     },
+    "RWMutex": {
+        "get": sync_method(elem0),
+        "set": sync_method(NONE, ("value", elem0)),
+        "read": sync_method(lambda r: SyncType("RWRead", r.args)),
+        "write": sync_method(lambda r: SyncType("RWWrite", r.args)),
+    },
     "Queue": {
         "put": sync_method(NONE, ("item", elem0), ("block", BOOL, "true"), ("timeout", OPT_FLOAT, "std::nullopt")),
         "get": sync_method(elem0, ("block", BOOL, "true"), ("timeout", OPT_FLOAT, "std::nullopt")),
@@ -1575,7 +1581,7 @@ THREAD_ATTRIBUTES = {"name": STR, "daemon": BOOL}
 SYNCHRONIZED = StructType("Synchronized", "class", None, builtin=True, cpp_name="sd::threading::Synchronized")
 
 MODULES["threading"] = Module("threading", {
-    **{kind: SyncTypeDef(kind) for kind in ("Thread", "Lock", "RLock", "Event", "Atomic", "Mutex")},
+    **{kind: SyncTypeDef(kind) for kind in ("Thread", "Lock", "RLock", "Event", "Atomic", "Mutex", "RWMutex")},
     "Synchronized": SYNCHRONIZED,
 }, "modules/threading.hpp", ("pthread",))
 

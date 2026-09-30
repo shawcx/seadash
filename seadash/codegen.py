@@ -1020,17 +1020,19 @@ class CodeGen:
         item = items[0]
         info = item.sym
         ctx = self.fresh("ctx")
-        if info.kind in ("lock", "mutex"):
+        if info.kind in ("lock", "mutex", "rw_read", "rw_write"):
             self.open("")
             if info.kind == "lock":  # held for the block, released on every way out (RAII)
                 self.line(f"sd::threading::Held<{self.cpp_type(item.context.ty)}> {ctx}({self.expr(item.context)});")
                 if item.target is not None:
                     self.assign(item.target, "true", BOOL)
             else:  # `with m as data:`: data is a reference into the protected value while locked
-                self.line(f"auto {ctx} = {self.expr(item.context)}.lock();")
+                lock = "" if info.kind != "mutex" else ".lock()"  # (m.read() / m.write() are the guard already)
+                self.line(f"auto {ctx} = {self.expr(item.context)}{lock};")
                 if item.target is not None:
                     var: Var = item.target.sym
-                    self.line(f"{self.cpp_type(var.type)}& {ident(var.cpp_name)} = {ctx}.value();")
+                    const = "const " if info.kind == "rw_read" else ""
+                    self.line(f"{const}{self.cpp_type(var.type)}& {ident(var.cpp_name)} = {ctx}.value();")
             self.with_stmt(items[1:], body)
             self.close()
             return
@@ -2325,11 +2327,11 @@ class CodeGen:
 
     def sync_new(self, e: A.Call, t: SyncType, extra: dict) -> str:
         cpp = self.cpp_type(t)
-        if t.kind in ("Atomic", "Mutex", "Queue"):
+        if t.kind in ("Atomic", "Mutex", "RWMutex", "Queue"):
             node = extra.get("value") or extra.get("maxsize")
             if node is None:
                 return f"{cpp}()"
-            want = t.args[0] if t.kind == "Mutex" else INT
+            want = t.args[0] if t.kind in ("Mutex", "RWMutex") else INT
             return f"{cpp}({self.sent(node, self.expr_as(node, want))})"
         if t.kind != "Thread":
             return f"{cpp}()"
@@ -2510,6 +2512,8 @@ class CodeGen:
     def sent(self, node: A.Expr, code: str) -> str:
         """An argument that another thread receives (sd::send copies it): moved instead, when
         it's a local list the sender never reads again."""
+        if getattr(node, "moved_into_mutex", False) and code == self.expr(node):
+            return f"std::move({code})"  # the Mutex owns it now (the checker stops later reads)
         if (
             isinstance(node, A.Name) and isinstance(node.sym, Var) and node.sym.kind == "local" and not node.sym.captured
             and holds_references(node.sym.type) and code == self.expr(node) and self.func is not None
@@ -2622,7 +2626,7 @@ class CodeGen:
                     codes.append(default[0])
                 else:
                     code = self.expr_as(node, want) if isinstance(want, Type) else self.expr(node)
-                    if isinstance(recv_type, SyncType) and (recv_type.kind, name) in (("Queue", "put"), ("Queue", "put_nowait"), ("Mutex", "set")):
+                    if isinstance(recv_type, SyncType) and (recv_type.kind, name) in (("Queue", "put"), ("Queue", "put_nowait"), ("Mutex", "set"), ("RWMutex", "set")):
                         code = self.sent(node, code)  # the receiving thread gets it: moved if we're done with it
                     codes.append(code)
             dot = "->" if isinstance(recv_type, StructType) else "."  # (a built-in exception: HTTPError.read())

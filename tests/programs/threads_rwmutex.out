@@ -1,0 +1,3 @@
+800 True
+{'mode': 'safe', 'level': '1', 'extra': 'yes'} RWMutex({'mode': 'safe', 'level': '1', 'extra': 'yes'})
+[3, 4]

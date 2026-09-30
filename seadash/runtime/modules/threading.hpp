@@ -6,6 +6,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 
 namespace sd::threading {
@@ -186,6 +187,46 @@ public:
         s_->value = std::move(copy);
     }
     std::string sd_repr() const { return "Mutex(" + repr(get()) + ")"; }
+};
+
+// seadash: a value many threads may read at once, or one may change:
+// `with m.read() as data:` / `with m.write() as data:`.
+template <class T>
+struct ReadGuard {
+    std::shared_lock<std::shared_mutex> lk;
+    const T* v;
+    const T& value() const { return *v; }
+};
+template <class T>
+struct WriteGuard {
+    std::unique_lock<std::shared_mutex> lk;
+    T* v;
+    T& value() { return *v; }
+};
+
+template <class T>
+class RWMutex {
+    struct State {
+        std::shared_mutex mu;
+        T value;
+    };
+    std::shared_ptr<State> s_;
+
+public:
+    RWMutex() : s_(std::make_shared<State>()) {}
+    explicit RWMutex(T value) : s_(std::make_shared<State>()) { s_->value = send(std::move(value)); }
+    ReadGuard<T> read() const { return {std::shared_lock(s_->mu), &s_->value}; }
+    WriteGuard<T> write() const { return {std::unique_lock(s_->mu), &s_->value}; }
+    T get() const {
+        std::shared_lock lk(s_->mu);
+        return value_copy(s_->value);
+    }
+    void set(T value) {
+        T copy = send(std::move(value));
+        std::unique_lock lk(s_->mu);
+        s_->value = std::move(copy);
+    }
+    std::string sd_repr() const { return "RWMutex(" + repr(get()) + ")"; }
 };
 
 // Base class for `class Account(threading.Synchronized)`: every method holds this lock,

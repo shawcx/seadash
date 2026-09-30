@@ -18,7 +18,7 @@ The name is final (a nod to the author's two kids).
   way down (`sd::value_copy`). The design is in `docs/values-and-references.md`.
 - **Closures share captured variables** like Python (cells).
 - **Threads without a GIL**, made safe by the checker (`threads.py`): threads receive copies
-  or thread-safe objects (Lock, Queue, Mutex[T], Atomic, Synchronized classes); unsafe
+  or thread-safe objects (Lock, Queue, Mutex[T], RWMutex[T], Atomic, Synchronized classes); unsafe
   sharing is a compile error with a suggested fix.
 - **Typed JSON**: `json.loads` decodes into the expected type; `json.Value` for any JSON.
 - **Literal arguments decide types** where Python's result depends on them: `open(p, "rb")`,

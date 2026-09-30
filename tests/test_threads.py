@@ -358,3 +358,44 @@ def test_mutex_view_cant_escape(body, msg):
 def test_last_use_moves_instead_of_copying(body, moved):
     cpp = translate(PRELUDE + "def send(q: queue.Queue[list[int]]):\n    xs = [1]\n    " + body + "\n").cpp
     assert ("std::move(xs)" in cpp) == moved
+
+
+@pytest.mark.parametrize("body,msg", [
+    ("data = [1]\n    shared = threading.Mutex(data)\n    data.append(2)",
+     "'data' was moved into a Mutex (line 5), which owns it now: use it through the Mutex (`with shared as data:`), "
+     "or give 'data' a new value first"),
+    ("shared = threading.Mutex([0])\n    data = [1]\n    shared.set(data)\n    print(data)", "'data' was moved into a Mutex"),
+    ("data = [1]\n    for i in range(2):\n        shared = threading.Mutex(data)", "'data' was moved into a Mutex"),
+    ("data = [1]\n    if len(data) > 0:\n        shared = threading.Mutex(data)\n    print(data)", "'data' was moved into a Mutex"),
+    ("config = threading.RWMutex({'a': 1})\n    with config.read() as c:\n        c['a'] = 2",
+     "config.read() gives read-only access (other threads may be reading too), but this changes 'c'. "
+     "Use `with config.write() as c:` to change it"),
+    ("config = threading.RWMutex([[1]])\n    with config.read() as c:\n        for row in c:\n            row.append(2)",
+     "config.read() gives read-only access"),
+    ("config = threading.RWMutex([1])\n    with config as c:\n        pass", "say which: `with config.read() as data:`"),
+    ("config = threading.RWMutex([1])\n    view = config.read()",
+     "read() gives a view of the data that's only valid while locked: use it in a with statement"),
+    ("config = threading.RWMutex([1])\n    keep: list[int] = []\n    with config.write() as c:\n        keep = c",
+     "'c' is only valid while the mutex is held"),
+])
+def test_mutex_ownership_and_rwmutex_errors(body, msg):
+    e = compile_error("def f():\n    " + body + "\nf()\n")
+    assert msg in e.message
+
+
+def test_mutex_ownership_allows_new_values():
+    compile_ok("""
+        def f():
+            data = [1]
+            shared = threading.Mutex(data)
+            data = [5]
+            data.append(6)
+            config = threading.RWMutex({"a": [1]})
+            with config.read() as c:
+                print(len(c["a"]), sorted(c))
+            with config.write() as c:
+                c["a"].append(2)
+                c["b"] = [data[0]]
+            print(config.get(), shared.get())
+        f()
+    """)

@@ -63,9 +63,22 @@ class Conflict:
     sources: frozenset[tuple[Type, Loc]]  # (type, where that version was assigned)
 
 
+LOCKED_VIEWS = ("mutex", "rw_read", "rw_write")  # `with m as data:`: data is only valid in the block
+
+
 @dataclass(frozen=True)
 class MaybeUnbound:
     pass
+
+
+@dataclass(frozen=True)
+class Moved(MaybeUnbound):
+    """Handed to a threading.Mutex, which now owns it: reading the name again is an error
+    until it's given a new value."""
+
+    mutex: str | None  # how the Mutex was written, for the message: "shared"
+    loc: Loc
+    var: Var  # (so `data = []` afterwards still knows it's a list[int])
 
 
 Entry = Bound | Conflict | MaybeUnbound
@@ -104,6 +117,8 @@ def merge(states: list[State]) -> State:
 
 
 def merge_entries(entries: list[Entry | None]) -> Entry:
+    if moved := next((e for e in entries if isinstance(e, Moved)), None):
+        return moved  # (moved on some path: say so, rather than "might not be assigned")
     if any(e is None or isinstance(e, MaybeUnbound) for e in entries):
         return MaybeUnbound()
     first = entries[0]
@@ -234,6 +249,7 @@ class Checker:
         self.type_env: dict[str, Type] = {}
         self.pending: list = []  # generic instance bodies waiting to be checked
         self.spawns: list = []  # threading.Thread(...) calls, verified once the program is checked
+        self.with_contexts: set[int] = set()  # the context expressions of with statements (by id)
         self.decorated: dict[str, str] = {}  # decorated function name -> hidden name of the original
         self.argument_parsers: dict[int, list] = {}  # parser key -> [(dest, type)] from add_argument()
         self.subcommands: dict[int, dict] = {}  # parser key -> its add_subparsers() and add_parser()s
@@ -1027,6 +1043,7 @@ class Checker:
                 t = self.check_expr(value, expected)
                 for target in targets:
                     self.assign(target, t, value)
+                self.name_the_mutex(targets[0], value)
             case A.AnnAssign(target, annotation, value):
                 self.check_ann_assign(stmt, target, annotation, value)
             case A.AugAssign(target, op, value):
@@ -1083,7 +1100,7 @@ class Checker:
         match target:
             case A.Name(name):
                 entry = self.state.names.get(name)
-                return entry.var.type if isinstance(entry, Bound) else None
+                return entry.var.type if isinstance(entry, (Bound, Moved)) else None
             case A.Attribute(value, attr):
                 owner = self.peek_type(value)
                 if isinstance(owner, StructType) and (f := owner.find_field(attr)):
@@ -1394,6 +1411,7 @@ class Checker:
         block can be reached from any point in the body, as after a try/except."""
         can_suppress = False
         for item in stmt.items:
+            self.with_contexts.add(id(item.context))  # (m.read() / m.write() are only allowed here)
             t = self.check_expr(item.context)
             info = self.context_manager(t, item.context)
             item.sym = info
@@ -1403,15 +1421,15 @@ class Checker:
                     raise self.error("__enter__ doesn't return anything, so there's nothing to bind with 'as'", item.target)
                 self.assign(item.target, info.enter_type, item.context)
         for item in stmt.items:
-            if item.sym.kind == "mutex" and not isinstance(item.target, (A.Name, type(None))):
+            if item.sym.kind in LOCKED_VIEWS and not isinstance(item.target, (A.Name, type(None))):
                 raise self.error("`with mutex as name:` needs a plain name (it's a reference to the protected value)", item.target)
         snapshots = [self.state.copy()]
         for s in stmt.body:
             self.check_stmt(s)
             snapshots.append(self.state.copy())
-        escaped = threads.escapes(stmt.body) if any(i.sym.kind == "mutex" for i in stmt.items) else {}
+        _, modified, escaped = threads.uses(stmt.body) if any(i.sym.kind in LOCKED_VIEWS for i in stmt.items) else ({}, {}, {})
         for item in stmt.items:
-            if item.sym.kind == "mutex" and isinstance(item.target, A.Name):
+            if item.sym.kind in LOCKED_VIEWS and isinstance(item.target, A.Name):
                 var = item.target.sym
                 if var.captured:
                     raise self.error(
@@ -1429,6 +1447,13 @@ class Checker:
                         f"'{name}' is only valid while the mutex is held, and this would let the data in it escape the "
                         f"lock (another thread could then change it). Work on it inside the with block, or {copy}",
                         escaped[id(var)],
+                    )
+                if item.sym.kind == "rw_read" and id(var) in modified:
+                    m = describe_short(item.context.func.value) if isinstance(item.context, A.Call) else "the RWMutex"
+                    raise CheckError(
+                        f"{m}.read() gives read-only access (other threads may be reading too), but this changes "
+                        f"'{item.target.id}'. Use `with {m}.write() as {item.target.id}:` to change it",
+                        modified[id(var)],
                     )
                 if not self.state.dead:
                     self.state.names[item.target.id] = MaybeUnbound()  # gone once the lock is released
@@ -1454,6 +1479,12 @@ class Checker:
             return WithInfo("process", t, None, False)
         if isinstance(t, SyncType) and t.kind == "Mutex":
             return WithInfo("mutex", t.args[0], None, False)
+        if isinstance(t, SyncType) and t.kind in ("RWRead", "RWWrite"):  # with m.read() as data:
+            return WithInfo("rw_read" if t.kind == "RWRead" else "rw_write", t.args[0], None, False)
+        if isinstance(t, SyncType) and t.kind == "RWMutex":
+            m = describe_short(node)
+            raise self.error(f"say which: `with {m}.read() as data:` (many readers at once) or "
+                             f"`with {m}.write() as data:` (one writer)", node)
         if isinstance(t, StructType):
             enter = t.find_method("__enter__")
             exit_ = t.find_method("__exit__")
@@ -2063,6 +2094,12 @@ class Checker:
                 f"'{name}' has different types depending on the path taken to get here: {described}. "
                 f"Use one type on every path, or give it a new name", e,
             )
+        if isinstance(entry, Moved):
+            how = f"`with {entry.mutex} as {name}:`" if entry.mutex else "a `with` block"
+            raise self.error(
+                f"'{name}' was moved into a Mutex (line {entry.loc.line}), which owns it now: use it through the "
+                f"Mutex ({how}), or give '{name}' a new value first", e,
+            )
         if isinstance(entry, MaybeUnbound) or name in self.scope.assigned:
             what = "might not be assigned yet" if isinstance(entry, MaybeUnbound) else "is used before it's assigned"
             raise self.error(f"'{name}' {what}", e)
@@ -2165,6 +2202,29 @@ class Checker:
     def check_printable(self, t: Type, e: A.Expr) -> None:
         if isinstance(t, IterType):
             raise self.error(f"{t} can't be converted to a string", e)
+
+    def name_the_mutex(self, target: A.Expr, value: A.Expr) -> None:
+        """`shared = threading.Mutex(data)`: say `with shared as data:` in the moved-from error."""
+        if isinstance(target, A.Name) and isinstance(value, A.Call) and getattr(value.sym, "kind", None) == "sync_new":
+            moved = value.sym.target[1].get("value")
+            if isinstance(moved, A.Name) and isinstance(entry := self.state.names.get(moved.id), Moved):
+                self.state.names[moved.id] = Moved(target.id, entry.loc, entry.var)
+
+    def move_into_mutex(self, value: A.Expr | None, mutex: str | None) -> None:
+        """threading.Mutex(data) / m.set(data): the Mutex owns data now. A plain local name is
+        moved (codegen), and reading it afterwards is an error; anything else is copied."""
+        if not isinstance(value, A.Name) or not isinstance(value.sym, Var):
+            return
+        var = value.sym
+        if not threads.holds_references(var.type):
+            return  # (nothing that could be shared)
+        if var.kind in ("local", "param") and not var.captured:
+            value.moved_into_mutex = True  # (a closure could still read a captured one: that's copied)
+        elif not (var.kind == "global" and self.scope.is_module):
+            return
+        # A module-level name is copied (functions may read it), but the module's own code
+        # reading it again is the same mistake.
+        self.state.names[value.id] = Moved(mutex, value.loc, var)
 
     def check_format_spec(self, part: A.FormattedValue, t: Type) -> None:
         """f"{x:spec}": numbers, strings and dates take a spec. A constant spec is checked
@@ -2753,7 +2813,14 @@ class Checker:
                 raise self.error(f"{owner} has no method '{func.attr}'", func)
             ctx = builtins.CallContext(self, e, f"{type_family(owner)}.{func.attr}()", expected, receiver=owner)
             e.sym = CallTarget("builtin_method", (owner, func.attr))
-            return handler(ctx)
+            result = handler(ctx)
+            if isinstance(result, SyncType) and result.kind in ("RWRead", "RWWrite") and id(e) not in self.with_contexts:
+                raise self.error(f"{func.attr}() gives a view of the data that's only valid while locked: "
+                                 f"use it in a with statement, `with {describe_short(func.value)}.{func.attr}() as data:`", e)
+            if isinstance(owner, SyncType) and owner.kind in ("Mutex", "RWMutex") and func.attr == "set":
+                value = e.args[0] if e.args else next((k.value for k in e.keywords if k.name == "value"), None)
+                self.move_into_mutex(value, describe_short(func.value))
+            return result
         return self.call_value(e, self.check_expr(func))
 
     # ---- threading / queue ----------------------------------------------------
@@ -2996,19 +3063,20 @@ class Checker:
                 self.expect_type(v, INT, "Atomic value")
             extra["value"] = v
             t = SyncType(kind)
-        elif kind == "Mutex":
+        elif kind in ("Mutex", "RWMutex"):
             only(("value",), 1)
             v = take(0, "value")
             if v is None and type_args is None:
-                raise self.error("Mutex needs a starting value, or a type: `Mutex[list[int]]()`", e)
+                raise self.error(f"{kind} needs a starting value, or a type: `{kind}[list[int]]()`", e)
             if v is not None:
                 vt = self.check_expr(v, type_args[0] if type_args else None)
                 if type_args is None:
                     type_args = (vt,)
                 elif not assignable(vt, type_args[0]):
-                    raise self.error(f"this Mutex holds {type_args[0]}, not {vt}", v)
+                    raise self.error(f"this {kind} holds {type_args[0]}, not {vt}", v)
             extra["value"] = v
             t = SyncType(kind, type_args)
+            self.move_into_mutex(v, None)
         elif kind == "Queue":
             only(("maxsize",), 1)
             if type_args is None:

@@ -301,8 +301,11 @@ SYNC_CPP = {
     "Lock": "sd::threading::Lock", "RLock": "sd::threading::RLock", "Event": "sd::threading::Event",
     "Thread": "sd::threading::Thread", "Atomic": "sd::threading::Atomic",
     "Mutex": "sd::threading::Mutex", "Queue": "sd::queue::Queue",
+    "RWMutex": "sd::threading::RWMutex",
+    # what `with m.read() as data:` / `with m.write() as data:` hold (only ever a with item)
+    "RWRead": "sd::threading::ReadGuard", "RWWrite": "sd::threading::WriteGuard",
 }
-SYNC_ARITY = {"Lock": 0, "RLock": 0, "Event": 0, "Thread": 0, "Atomic": 0, "Mutex": 1, "Queue": 1}
+SYNC_ARITY = {"Lock": 0, "RLock": 0, "Event": 0, "Thread": 0, "Atomic": 0, "Mutex": 1, "Queue": 1, "RWMutex": 1}
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,47 @@
+# seadash-only: RWMutex lets many threads read at once, or one write; a Mutex owns what
+# it's given.
+import threading
+
+config = threading.RWMutex({"mode": "fast", "level": "1"})
+seen: threading.Mutex[list[str]] = threading.Mutex([])
+
+
+def reader(rounds: int):
+    for _ in range(rounds):
+        with config.read() as c:
+            mode = c["mode"]
+            size = len(c)
+        with seen as s:
+            s.append(f"{mode}:{size}")
+
+
+def writer():
+    with config.write() as c:
+        c["mode"] = "safe"
+        c["extra"] = "yes"
+
+
+threads = [threading.Thread(target=reader, args=(200,)) for _ in range(4)]
+threads.append(threading.Thread(target=writer))
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+with seen as s:
+    # every read saw the dict before or after the write, never halfway through
+    print(len(s), sorted(set(s)) in (["fast:2"], ["fast:2", "safe:3"], ["safe:3"]))
+print(config.get(), config)
+
+
+def build() -> threading.Mutex[list[int]]:
+    items = [1, 2]
+    box = threading.Mutex(items)  # moved in: `items` can't be used again...
+    items = [3]  # ...until it's given a new value
+    box.set(items)
+    items = []
+    with box as data:
+        data.append(4)
+    return box
+
+
+print(build().get())

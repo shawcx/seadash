@@ -3,7 +3,7 @@ proves they can't race on memory.
 
 The rule: a thread may only reach
   * values it received as copies (arguments to Thread(...), items from a Queue), and
-  * thread-safe objects: Lock, RLock, Event, Queue[T], Mutex[T], Atomic, Thread,
+  * thread-safe objects: Lock, RLock, Event, Queue[T], Mutex[T], RWMutex[T], Atomic, Thread,
     and instances of threading.Synchronized classes (their methods hold a lock).
 
 Values are copied (all the way down: sd::value_copy) when they cross into a thread, so

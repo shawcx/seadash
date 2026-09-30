@@ -186,7 +186,9 @@ parallel. Anything that crosses into another thread (`Thread` arguments, `queue.
 items, `executor.submit` arguments and results, what goes into and out of a `Mutex`, and
 the variables a thread's closure uses from its enclosing function) is copied, lists and
 all, unless it's a thread-safe object (`Lock`, `queue.Queue`, `threading.Mutex[T]`,
-`threading.Atomic`, `threading.Synchronized` classes). A list the sender never uses again
+`threading.RWMutex[T]`, `threading.Atomic`, `threading.Synchronized` classes). A `Mutex`
+owns what it's given: `shared = threading.Mutex(data)` moves `data` in, and using `data`
+afterwards is an error. A list the sender never uses again
 is moved rather than copied. A thread that changes its copy and never uses it is an error
 (the change would be lost). Threads may read module globals that nothing changes; changing
 a list through another name, or passing it to a function that could change it, counts:
@@ -216,7 +218,7 @@ def work():
 | `urllib.request`, `urllib.parse`, `urllib.error` | `urlopen` (GET/POST over HTTP and HTTPS with certificate checks, redirects, timeouts), `Request`, response headers; `urlparse`/`urlsplit`, `quote`/`unquote`, `urlencode`, `urljoin`, `parse_qs`; `HTTPError` (also readable as the error page) and `URLError` |
 | `time`, `math`, `random` | the usual |
 | `socket` | TCP/UDP with Python's API and errors |
-| `threading`, `queue` | threads, locks, events, queues; plus seadash's `Mutex[T]`, `Atomic` and `Synchronized` |
+| `threading`, `queue` | threads, locks, events, queues; plus seadash's `Mutex[T]` (owns its data: `with m as data:`), `RWMutex[T]` (`with m.read()` / `m.write()`), `Atomic` and `Synchronized` |
 | `concurrent.futures` | `ThreadPoolExecutor` (`submit`, `map`, `shutdown`, `with`), `Future`, `as_completed`, `wait`; work on the pool is checked for data races like threads are |
 | `itertools` | all of it, lazily: `count`, `cycle`, `repeat`, `accumulate`, `chain`, `groupby`, `islice`, `tee`, `zip_longest`, `product`, `permutations`, `combinations`, `pairwise`, `batched`... (`permutations(xs, 2)` gives `tuple[T, T]`) |
 | `hashlib`, `hmac` | every guaranteed algorithm (md5, sha1/2/3, blake2, shake) on OpenSSL, `pbkdf2_hmac`, `file_digest`; `hmac.new`, `hmac.digest`, `compare_digest` |
