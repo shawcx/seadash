@@ -72,3 +72,36 @@ def test_local_module_shadows_builtin_like_python(tmp_path):
     })
     assert "sdm::json::fake()" in translate(main.read_text(), main).cpp
 
+
+def test_generics_across_modules(tmp_path):
+    main = write(tmp_path, {
+        "main.sd": """
+            import coll
+            from coll import Stack
+            s = Stack[int]()
+            s.push(1)
+            t: coll.Stack[str] = coll.Stack()
+            print(coll.first([1.5]), s.items, t.items)
+        """,
+        "coll.sd": """
+            def first[T](xs: list[T]) -> T?:
+                return xs[0] if xs else None
+            class Stack[T]:
+                items: list[T]
+                def __init__(self):
+                    self.items = []
+                def push(self, x: T):
+                    self.items.append(x)
+        """,
+    })
+    cpp = translate(main.read_text(), main).cpp
+    assert "struct Stack_of_int" in cpp and "struct Stack_of_str" in cpp
+    assert cpp.index("struct Stack_of_int") < cpp.index("namespace prog")  # generated inside module coll
+
+
+def test_generic_with_a_class_from_the_importing_module_is_rejected_for_now(tmp_path):
+    e = compile_error(tmp_path, {
+        "main.sd": "import coll\nclass P:\n    x: int\ny = coll.first([P(1)])\n",
+        "coll.sd": "def first[T](xs: list[T]) -> T?:\n    return xs[0] if xs else None\n",
+    })
+    assert e.message == "first (from module 'coll') can't be used with P from module '__main__' yet"

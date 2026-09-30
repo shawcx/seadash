@@ -264,6 +264,8 @@ std::string str(const T& x) {
         }
     } else if constexpr (requires { x.sd_str(); }) {
         return x.sd_str();
+    } else if constexpr (is_optional<T>::value) {
+        return x ? str(*x) : "None";  // print(maybe_name) shows the text, not its repr
     } else {
         return repr(x);
     }

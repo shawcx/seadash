@@ -433,6 +433,14 @@ class Parser:
 
     def parse_type_atom(self) -> A.TypeExpr:
         tok = self.peek()
+        if tok.kind == K.STRING:
+            # A quoted annotation (Python's forward reference): -> "Pair[B, A]"
+            self.next()
+            sub = Parser(tokenize(f"({tok.value})", Loc(tok.loc.line, tok.loc.col)))
+            sub.next()
+            t = sub.parse_type()
+            sub.expect(")", " after type")
+            return t
         if self.accept("("):
             # `(T)` groups; `(A, B) -> R` and `() -> R` are function types.
             items: list[A.TypeExpr] = []

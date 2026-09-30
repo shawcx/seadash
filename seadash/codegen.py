@@ -120,11 +120,20 @@ def ident(name: str) -> str:
     return name
 
 
+def local_name(st: StructType) -> str:
+    """A struct/class's C++ name inside its own namespace (generic instances are mangled)."""
+    return ident(st.mangled or st.name)
+
+
+def fn_name(fn: FuncInfo) -> str:
+    return ident(fn.cpp_name or fn.name)
+
+
 def class_name(st: StructType) -> str:
     """The C++ name of a struct/class; built-in exceptions live in the runtime."""
     if st.cpp_name:
         return st.cpp_name
-    return f"sd::{st.name}" if st.builtin else qualified(ident(st.name), st.module)
+    return f"sd::{st.name}" if st.builtin else qualified(local_name(st), st.module)
 
 
 def cpp_string(s: str) -> str:
@@ -268,7 +277,7 @@ class CodeGen:
         structs = self.ordered_structs()
         if structs:
             for st in structs:
-                self.line(f"struct {ident(st.name)};")
+                self.line(f"struct {local_name(st)};")
             self.line()
         if self.info.functions:
             for fn in self.info.functions:
@@ -336,7 +345,7 @@ class CodeGen:
         if st.kind == "class":
             self.class_definition(st)
             return
-        name = ident(st.name)
+        name = local_name(st)
         base = f" : std::enable_shared_from_this<{name}>" if st.kind == "class" else ""
         self.open(f"struct {name}{base}")
         for f in st.fields.values():
@@ -377,7 +386,7 @@ class CodeGen:
         """A class: shared (std::shared_ptr) and polymorphic. Methods are virtual so calls
         through a base class reach overrides; construction runs sd_init (the __init__ body,
         or field assignments), which super().__init__(...) can call directly."""
-        name = ident(st.name)
+        name = local_name(st)
         base = f" : public {class_name(st.base)}" if st.base else f" : public std::enable_shared_from_this<{name}>"
         self.open(f"struct {name}{base}")
         for f in st.fields.values():
@@ -416,7 +425,7 @@ class CodeGen:
 
     def exception_definition(self, st: StructType) -> None:
         """`class NotFound(ValueError)` derives from the runtime's sd::ValueError."""
-        name = ident(st.name)
+        name = local_name(st)
         self.open(f"struct {name} : {class_name(st.base)}")
         for f in st.fields.values():
             init = f" = {self.expr_as(f.default, f.type)}" if f.default is not None else "{}"
@@ -437,7 +446,7 @@ class CodeGen:
         self.line()
 
     def struct_members(self, st: StructType) -> None:
-        name = ident(st.name)
+        name = local_name(st)
         if st.is_exception:
             for m in st.methods.values():
                 if m.name == "__init__":
@@ -446,7 +455,7 @@ class CodeGen:
                     self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{ident(m.name)}({', '.join(self.params(m))})")
             return
         fields = list(st.all_fields().values())
-        parts = [cpp_string(f"{st.name}(")]
+        parts = [cpp_string(f"{st.origin or st.name}(")]
         for i, f in enumerate(fields):
             parts.append(cpp_string(("" if i == 0 else ", ") + f"{f.name}="))
             parts.append(f"sd::repr({ident(f.name)})")
@@ -477,7 +486,7 @@ class CodeGen:
 
     def json_members(self, st: StructType) -> None:
         """A struct/class as a JSON object: fields in declaration order, matched by name."""
-        name = ident(st.name)
+        name = local_name(st)
         fields = list(st.all_fields().values())
         if builtins.json_problem(st, decoding=False) is None:
             self.open(f"sd::json::Value {name}::sd_to_json() const")
@@ -509,7 +518,7 @@ class CodeGen:
             self.line()
 
     def signature(self, fn: FuncInfo) -> str:
-        return f"{self.cpp_type(fn.ret)} {ident(fn.name)}({', '.join(self.params(fn))})"
+        return f"{self.cpp_type(fn.ret)} {fn_name(fn)}({', '.join(self.params(fn))})"
 
     def params(self, fn: FuncInfo) -> list[str]:
         """C++ parameters. The signature depends only on the types (so an override always
@@ -1026,7 +1035,7 @@ class CodeGen:
         if isinstance(sym, Var):
             return self.var_code(sym, e.ty)
         if isinstance(sym, FuncInfo):
-            return qualified(ident(sym.name), sym.module)  # a function used as a value
+            return qualified(fn_name(sym), sym.module)  # a function used as a value
         if isinstance(sym, A.Lambda):
             return self.expr(sym)  # `key=len` was wrapped as `lambda p: len(p)`
         if isinstance(sym, builtins.Value):
@@ -1100,7 +1109,7 @@ class CodeGen:
             return self.expr(e.sym)  # `key=str.lower`
         if isinstance(e.sym, FuncInfo):
             if e.sym.owner is None:  # textutil.shout: a module's function, as a value
-                return qualified(ident(e.sym.name), e.sym.module)
+                return qualified(fn_name(e.sym), e.sym.module)
             return self.bound_method(e.value, e.sym)
         if isinstance(e.sym, Var):  # geo.ORIGIN: another module's global
             return self.var_ref(e.sym)
@@ -1256,7 +1265,7 @@ class CodeGen:
         match target.kind:
             case "func":
                 fn: FuncInfo = target.target
-                return f"{qualified(ident(fn.name), fn.module)}({self.call_args(target.args, fn)})"
+                return f"{qualified(fn_name(fn), fn.module)}({self.call_args(target.args, fn)})"
             case "method":
                 fn = target.target
                 recv = e.func.value

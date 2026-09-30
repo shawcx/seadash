@@ -1,0 +1,74 @@
+def first[T](xs: list[T]) -> T | None:
+    if not xs:
+        return None
+    return xs[0]
+
+def largest[T](xs: list[T]) -> T:
+    best = xs[0]
+    for x in xs[1:]:
+        if x > best:
+            best = x
+    return best
+
+def apply_all[T](xs: list[T], f: Callable[[T], T]) -> list[T]:
+    return [f(x) for x in xs]
+
+def pair_up[A, B](xs: list[A], ys: list[B]) -> list[tuple[A, B]]:
+    return [(x, y) for x, y in zip(xs, ys)]
+
+def count_by[T, K](xs: list[T], key: Callable[[T], K]) -> dict[K, int]:
+    counts: dict[K, int] = {}
+    for x in xs:
+        k = key(x)
+        counts[k] = counts.get(k, 0) + 1
+    return counts
+
+class Stack[T]:
+    items: list[T]
+
+    def __init__(self):
+        self.items = []
+
+    def push(self, item: T):
+        self.items.append(item)
+
+    def pop(self) -> T:
+        return self.items.pop()
+
+    def peek(self) -> T | None:
+        return self.items[-1] if self.items else None
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+class Pair[A, B]:
+    left: A
+    right: B
+
+    def __init__(self, left: A, right: B):
+        self.left = left
+        self.right = right
+
+    def swap(self) -> "Pair[B, A]":
+        return Pair(self.right, self.left)
+
+print(first([3, 1, 2]), first(["x", "y"]), first([1.5]))
+print(largest([3, 9, 2]), largest(["pear", "apple", "zoo"]), largest([(1, "b"), (1, "c")]))
+print(apply_all([1, 2, 3], lambda n: n * 10), apply_all(["a", "b"], lambda s: s.upper()))
+print(pair_up([1, 2, 3], ["one", "two"]))
+print(count_by(["apple", "avocado", "banana", "blueberry", "cherry"], lambda w: w[0]))
+print(count_by([1, 2, 3, 4, 5, 6], lambda n: n % 3 == 0))
+
+s: Stack[int] = Stack()
+for i in range(5):
+    s.push(i * i)
+print(s.pop(), s.pop(), s.peek(), s.items)
+words = Stack[str]()
+words.push("hello")
+print(words.peek(), words.items)
+
+p = Pair(1, "one")
+q = p.swap()
+print(p.left, p.right, q.left, q.right)
+nested = Pair(Pair(1, 2.5), [True])
+print(nested.left.right, nested.right)

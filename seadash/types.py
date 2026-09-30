@@ -151,6 +151,7 @@ class FuncInfo:
     locals: list[Var] = field(default_factory=list)  # every local variable, for hoisting
     var: Var | None = None  # for a nested def: the local variable holding it
     module: str = "__main__"
+    cpp_name: str | None = None  # generic instances: first[int] is first__int in C++
 
     def __str__(self) -> str:
         params = ", ".join(f"{p.name}: {p.type}" for p in self.params)
@@ -174,6 +175,10 @@ class StructType(Type):
     builtin: bool = False
     cpp_name: str | None = None  # for built-ins defined in the runtime, e.g. "sd::zlib::error"
     module: str = "__main__"  # the .sd module that defines it
+    # Generic instances (Stack[int]): the C++ name, the generic's name, and the type arguments.
+    mangled: str | None = None
+    origin: str | None = None
+    type_args: tuple = ()
 
     def __str__(self) -> str:
         return self.name

@@ -27,6 +27,8 @@ that state; reassigning it first is fine.
 from __future__ import annotations
 
 import dataclasses
+import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from . import ast as A
@@ -180,6 +182,7 @@ class ModuleInfo:
     globals: list[Var]
     main_locals: list[Var]
     imports: list[builtins.Module]
+    generics: dict = field(default_factory=dict)  # name -> GenericDef, for importers
 
 
 def check(module: A.Module, name: str = "__main__", loader=None) -> ModuleInfo:
@@ -209,6 +212,14 @@ class Checker:
         self.handler_depth = 0  # inside an `except` block (bare `raise` allowed)
         self.finally_loops: list[int] = []  # loop depth on entering each enclosing `finally`
         self.lambda_depth = 0
+        # Generics (see "Generics" below)
+        self.generics: dict[str, GenericDef] = {}
+        self.instances: dict[tuple, FuncInfo | StructType] = {}
+        self.type_env: dict[str, Type] = {}
+        self.pending: list = []  # generic instance bodies waiting to be checked
+        self.module_checked = False
+        self.out_structs: list[StructType] = []
+        self.out_functions: list[FuncInfo] = []
         # Every function body and lambda gets a frame number; a variable read from
         # a different frame than it was created in is captured by a closure.
         self.frame = 0
@@ -228,11 +239,13 @@ class Checker:
 
         for stmt in module.body:
             match stmt:
+                case A.ClassDef() | A.FunctionDef() if stmt.type_params:
+                    self.declare_generic(stmt)
                 case A.ClassDef():
                     self.declare_struct(stmt)
                     struct_nodes.append(stmt)
                 case A.FunctionDef():
-                    if stmt.name in self.functions or stmt.name in self.structs:
+                    if stmt.name in self.functions or stmt.name in self.structs or stmt.name in self.generics:
                         raise self.error(f"'{stmt.name}' is already defined", stmt)
                     func_nodes.append(stmt)
                     self.functions[stmt.name] = None  # placeholder until signatures resolve
@@ -267,13 +280,20 @@ class Checker:
 
         for info in self.all_functions():
             self.check_function_body(info)
+        self.module_checked = True
+        self.check_pending_instances()
 
+        # Generic instances created later (by modules importing this one) are appended
+        # to these same lists, so they're still generated with this module.
+        self.out_structs[:0] = list(self.structs.values())
+        self.out_functions[:0] = list(self.functions.values())
         return ModuleInfo(
-            structs=list(self.structs.values()),
-            functions=list(self.functions.values()),
+            structs=self.out_structs,
+            functions=self.out_functions,
             globals=list(self.globals.values()),
             main_locals=[v for v in main_scope.locals if v.kind != "global"],
             imports=list(self.modules.values()) + [m for m, _ in self.imported.values()],
+            generics=self.generics,
         )
 
     def all_functions(self) -> list[FuncInfo]:
@@ -283,12 +303,10 @@ class Checker:
         return infos
 
     def declare_struct(self, node: A.ClassDef) -> None:
-        if node.name in self.structs or node.name in self.functions:
+        if node.name in self.structs or node.name in self.functions or node.name in self.generics:
             raise self.error(f"'{node.name}' is already defined", node)
         if node.name in PRIMITIVES or node.name in builtins.CONTAINER_TYPES or node.name in builtins.EXCEPTIONS:
             raise self.error(f"can't define a {node.kind} named '{node.name}'; that's a built-in type", node)
-        if node.type_params:
-            raise self.error(f"generic {node.kind}s are not supported yet", node)
         if len(node.bases) > 1:
             raise self.error("multiple inheritance is not supported", node.bases[1])
         st = StructType(node.name, node.kind, node, module=self.module_name)
@@ -447,8 +465,8 @@ class Checker:
                 )
 
     def resolve_signature(self, node: A.FunctionDef, owner: StructType | None) -> FuncInfo:
-        if node.type_params:
-            raise self.error("generic functions are not supported yet", node)
+        if node.type_params and not self.type_env:
+            raise self.error("generic methods are not supported yet (make the class generic instead)", node)
         params = list(node.params)
         if owner is not None:
             if not params or params[0].name != "self":
@@ -539,6 +557,235 @@ class Checker:
                 f"(it's declared to return {info.ret})", node,
             )
 
+    # =========================================================================
+    # Generics: each distinct use is checked (and generated) separately, like a
+    # C++ template, so a generic body can do anything its type arguments support.
+    # =========================================================================
+
+    def declare_generic(self, node: A.FunctionDef | A.ClassDef) -> None:
+        if node.name in self.structs or node.name in self.functions or node.name in self.generics:
+            raise self.error(f"'{node.name}' is already defined", node)
+        if len(set(node.type_params)) != len(node.type_params):
+            raise self.error("duplicate type parameter", node)
+        kind = "func" if isinstance(node, A.FunctionDef) else "class"
+        self.generics[node.name] = GenericDef(kind, node.name, node, self)
+
+    def generic_named(self, e: A.Expr) -> GenericDef | None:
+        """The generic function/class a call's callee refers to, if any."""
+        if isinstance(e, A.Name) and e.id not in self.state.names and e.id not in self.scope.assigned:
+            if e.id in self.generics:
+                return self.generics[e.id]
+            if e.id in self.imported:
+                mod, member = self.imported[e.id]
+                m = mod.members.get(member)
+                return m if isinstance(m, GenericDef) else None
+        if isinstance(e, A.Attribute) and isinstance(e.value, A.Name) and e.value.id in self.modules:
+            m = self.modules[e.value.id].members.get(e.attr)
+            return m if isinstance(m, GenericDef) else None
+        return None
+
+    def call_generic(self, e: A.Call, gen: GenericDef, explicit: tuple | None, expected: Type | None) -> Type:
+        """first(xs) / first[int](xs) / Stack[int]() / Box(5): infer or take the type
+        arguments, instantiate, then check the call like any other."""
+        owner = gen.checker
+        tvars = gen.node.type_params
+        if explicit is not None:
+            if len(explicit) != len(tvars):
+                raise self.error(f"{gen.name} takes {plural(len(tvars), 'type argument')}, not {len(explicit)}", e.func)
+            type_args = explicit
+        else:
+            type_args = self.infer_type_args(e, gen, expected)
+        if gen.kind == "func":
+            info = owner.instantiate_function(gen, type_args, e)
+            e.sym = CallTarget("func", info, self.match_args(e, info.params, f"{gen.name}()"))
+            return info.ret
+        return self.check_constructor(e, owner.instantiate_class(gen, type_args, e))
+
+    def infer_type_args(self, e: A.Call, gen: GenericDef, expected: Type | None) -> tuple:
+        owner = gen.checker
+        tvars = set(gen.node.type_params)
+        params = generic_params(gen)
+        if expected is not None:
+            want = strip_optional(expected)
+            if gen.kind == "class" and isinstance(want, StructType) and want.origin == gen.name:
+                return want.type_args  # s: Stack[int] = Stack()
+        by_name: dict[str, A.Expr] = {}
+        for i, arg in enumerate(e.args):
+            if i < len(params):
+                by_name[params[i][0]] = arg
+        for kw in e.keywords:
+            by_name[kw.name] = kw.value
+        env: dict[str, Type] = {}
+        later = []
+        for pname, annotation in params:
+            arg = by_name.get(pname)
+            if arg is None or annotation is None:
+                continue
+            if mentions(annotation, tvars) and (isinstance(arg, A.Lambda) or needs_context(arg)):
+                later.append((annotation, arg))  # needs T first: a lambda, or [] / None
+                continue
+            hint = None if mentions(annotation, tvars) else owner.resolve_in_env(annotation, {})
+            owner.unify(annotation, self.check_expr(arg, hint), tvars, env)
+        if expected is not None and gen.kind == "func" and gen.node.returns is not None:
+            owner.unify(gen.node.returns, expected, tvars, env, only_missing=True)
+        for annotation, arg in later:
+            hint = owner.partial_type(annotation, env, tvars)
+            owner.unify(annotation, self.check_expr(arg, hint), tvars, env)
+        missing = [v for v in gen.node.type_params if v not in env]
+        if missing:
+            example = ", ".join("int" for _ in gen.node.type_params)
+            raise self.error(
+                f"can't tell what {' and '.join(missing)} should be for {gen.name}; "
+                f"write the types, e.g. {gen.name}[{example}](...)", e,
+            )
+        return tuple(env[v] for v in gen.node.type_params)
+
+    def unify(self, annotation: A.TypeExpr, actual: Type, tvars: set[str], env: dict, only_missing: bool = False) -> None:
+        """Learn type variables by matching an annotation against an actual type."""
+        match annotation:
+            case A.TypeName(name, []) if name in tvars:
+                if actual in (NONE, UNKNOWN) or contains_unknown(actual):
+                    return
+                if name not in env:
+                    env[name] = actual
+                elif not only_missing:
+                    env[name] = join(env[name], actual) or env[name]  # a mismatch is reported by the call check
+            case A.OptionalType(inner):
+                if actual != NONE:
+                    self.unify(inner, strip_optional(actual), tvars, env, only_missing)
+            case A.FuncTypeExpr(params, ret) if isinstance(actual, FuncType):
+                for p, t in zip(params, actual.params):
+                    self.unify(p, t, tvars, env, only_missing)
+                if actual.ret is not None:
+                    self.unify(ret, actual.ret, tvars, env, only_missing)
+            case A.TypeName(name, args) if args:
+                inner: tuple = ()
+                match actual:
+                    case ListType(x) | SetType(x) if name in ("list", "set", "List", "Set"):
+                        inner = (x,)
+                    case DictType(k, v) if name in ("dict", "Dict"):
+                        inner = (k, v)
+                    case TupleType(xs) if name in ("tuple", "Tuple"):
+                        inner = xs
+                    case StructType() if actual.origin == name.rpartition(".")[2]:
+                        inner = actual.type_args
+                for a, t in zip(args, inner):
+                    self.unify(a, t, tvars, env, only_missing)
+
+    def resolve_in_env(self, annotation: A.TypeExpr, env: dict) -> Type:
+        saved, self.type_env = self.type_env, env
+        try:
+            return self.resolve_type(annotation)
+        finally:
+            self.type_env = saved
+
+    def partial_type(self, annotation: A.TypeExpr, env: dict, tvars: set[str]) -> Type | None:
+        """A hint for a lambda before all type variables are known: `(T) -> U` with T known
+        is the function type (T) -> ? (the lambda's body decides U)."""
+        if not mentions(annotation, tvars - set(env)):
+            return self.resolve_in_env(annotation, env)
+        if isinstance(annotation, A.FuncTypeExpr):
+            params = [self.partial_type(p, env, tvars) for p in annotation.params]
+            if all(p is not None for p in params):
+                return FuncType(tuple(params), self.partial_type(annotation.ret, env, tvars))
+        return None
+
+    def instantiate_function(self, gen: GenericDef, type_args: tuple, node: A.Node) -> FuncInfo:
+        key = (gen.name, type_args)
+        if key in self.instances:
+            return self.instances[key]
+        self.check_instantiable(gen, type_args, node)
+        env = dict(zip(gen.node.type_params, type_args))
+        copy = deepcopy(gen.node)
+        info = self.resolve_in_context(env, lambda: self.resolve_signature(copy, owner=None))
+        display = f"{gen.name}[{', '.join(map(str, type_args))}]"
+        info.cpp_name = mangle(gen.name, type_args)
+        self.instances[key] = info
+        self.out_functions.append(info)
+        self.resolve_in_context(env, lambda: self.check_param_defaults(info))
+        self.pending.append((display, env, [info]))
+        self.check_pending_instances()
+        return info
+
+    def instantiate_class(self, gen: GenericDef, type_args: tuple, node: A.Node) -> StructType:
+        key = (gen.name, type_args)
+        if key in self.instances:
+            return self.instances[key]
+        if len(type_args) != len(gen.node.type_params):
+            raise self.error(f"{gen.name} takes {plural(len(gen.node.type_params), 'type argument')}", node)
+        self.check_instantiable(gen, type_args, node)
+        env = dict(zip(gen.node.type_params, type_args))
+        copy = deepcopy(gen.node)
+        display = f"{gen.name}[{', '.join(map(str, type_args))}]"
+        st = StructType(display, copy.kind, copy, module=self.module_name,
+                        mangled=mangle(gen.name, type_args), origin=gen.name, type_args=type_args)
+        copy.sym = st
+        self.instances[key] = st  # before resolving members: fields may mention Stack[T] itself
+        self.out_structs.append(st)
+
+        def resolve() -> None:
+            self.resolve_base(st)
+            self.resolve_struct_members(st)
+            self.check_overrides(st)
+            self.check_value_recursion(st)
+            self.check_field_defaults(st)
+            for m in st.methods.values():
+                self.check_param_defaults(m)
+
+        self.resolve_in_context(env, resolve)
+        self.pending.append((display, env, list(st.methods.values())))
+        self.check_pending_instances()
+        return st
+
+    def check_instantiable(self, gen: GenericDef, type_args: tuple, node: A.Node) -> None:
+        """For now, a generic from another module can only be used with types that module can see."""
+        allowed = self.visible_modules()
+        for t in type_args:
+            for st in structs_in(t):
+                if not st.builtin and st.module not in allowed:
+                    raise CheckError(
+                        f"{gen.name} (from module '{self.module_name}') can't be used with {st.name} "
+                        f"from module '{st.module}' yet", node.loc,
+                    )
+
+    def visible_modules(self) -> set[str]:
+        seen = {self.module_name}
+        todo = [m for m in [*self.modules.values(), *(m for m, _ in self.imported.values())]]
+        while todo:
+            m = todo.pop()
+            if isinstance(m, builtins.UserModule) and m.name not in seen:
+                seen.add(m.name)
+                if m.info is not None:
+                    todo.extend(m.info.imports)
+                todo.extend(x for x in m.members.values() if isinstance(x, builtins.UserModule))
+        return seen
+
+    def resolve_in_context(self, env: dict, action):
+        """Run `action` with type variables bound and the checker's own context saved."""
+        saved = (self.scope, self.state, self.loops, self.handler_depth, self.finally_loops,
+                 self.lambda_depth, self.frame, self.type_env)
+        self.type_env = env
+        try:
+            return action()
+        finally:
+            (self.scope, self.state, self.loops, self.handler_depth, self.finally_loops,
+             self.lambda_depth, self.frame, self.type_env) = saved
+
+    def check_pending_instances(self) -> None:
+        """Check generic instance bodies. They wait until the module's own code is checked
+        (a body may use module globals, which get their types from the top-level code)."""
+        if not self.module_checked:
+            return
+        while self.pending:
+            display, env, functions = self.pending.pop(0)
+            for info in functions:
+                try:
+                    self.resolve_in_context(env, lambda: self.check_function_body(info))
+                except CheckError as err:
+                    if not err.message.startswith("in "):
+                        err.message = f"in {display}: {err.message}"
+                    raise
+
     def check_nested_def(self, node: A.FunctionDef) -> None:
         """A def inside a function: a local variable holding a closure."""
         if node.type_params:
@@ -582,8 +829,11 @@ class Checker:
                 if resolved == NONE:
                     raise self.error("'None?' is not a meaningful type", t)
                 return resolved if isinstance(resolved, OptionalType) else OptionalType(resolved)
+            case A.UnionType(options) if len(options) == 2 and any(is_none_type(o) for o in options):
+                other = next(o for o in options if not is_none_type(o))  # `T | None` is T?
+                return self.resolve_type(A.OptionalType(other, loc=t.loc))
             case A.UnionType():
-                raise self.error("union types are not supported yet (T? for 'T or None' is)", t)
+                raise self.error("union types are not supported yet (T? or `T | None` for 'T or None' is)", t)
             case A.FuncTypeExpr(params, ret):
                 return FuncType(tuple(self.resolve_type(p) for p in params), self.resolve_type(ret))
             case A.TypeName(name, args):
@@ -591,6 +841,24 @@ class Checker:
         raise self.error("invalid type", t)
 
     def resolve_type_name(self, node: A.TypeName, name: str, args: list[A.TypeExpr]) -> Type:
+        if name in self.type_env and not args:  # T inside a generic
+            return self.type_env[name]
+        gen = self.generics.get(name)
+        if gen is None and name in self.imported:
+            mod, member = self.imported[name]
+            gen = mod.members.get(member) if isinstance(mod.members.get(member), GenericDef) else None
+        if gen is None and "." in name:
+            mod_name, _, member = name.rpartition(".")
+            mod = self.modules.get(mod_name)
+            if mod is not None and isinstance(mod.members.get(member), GenericDef):
+                gen = mod.members[member]
+        if gen is not None:
+            if gen.kind != "class":
+                raise self.error(f"'{name}' is a generic function, not a type", node)
+            if not args:
+                params = ", ".join(gen.node.type_params)
+                raise self.error(f"'{name}' needs type arguments: {name}[{params}]", node)
+            return gen.checker.instantiate_class(gen, tuple(self.resolve_type(a) for a in args), node)
         if name in ("TextIO", "BinaryIO") and not args:
             return BINARY_FILE if name == "BinaryIO" else TEXT_FILE
         if name == "Optional" and len(args) == 1:  # typing.Optional[T] is T?
@@ -1710,6 +1978,11 @@ class Checker:
 
     def check_call(self, e: A.Call, expected: Type | None) -> Type:
         func = e.func
+        if (gen := self.generic_named(func)) is not None:
+            return self.call_generic(e, gen, None, expected)
+        if isinstance(func, A.Index) and (gen := self.generic_named(func.value)) is not None:
+            explicit = tuple(self.resolve_type(expr_to_type(x)) for x in type_arg_exprs(func.index))
+            return self.call_generic(e, gen, explicit, expected)
         if self.is_builtin_name(func, "isinstance"):
             return self.check_isinstance(e)
         if isinstance(func, A.Attribute) and isinstance(func.value, A.Call) and self.is_builtin_name(func.value.func, "super"):
@@ -1856,6 +2129,8 @@ class Checker:
             raise self.error(f"module '{mod.name}' has no member '{member}'", e.func)
         if isinstance(f, StructType):
             return self.check_constructor(e, f)  # utils.Point(...), raise zlib.error("...")
+        if isinstance(f, GenericDef):  # utils.first(xs) / utils.Stack()
+            return self.call_generic(e, f, None, expected)
         if isinstance(f, FuncInfo):  # a function from another .sd module
             e.sym = CallTarget("func", f, self.match_args(e, f.params, f"{mod.name}.{member}()"))
             return f.ret
@@ -2026,6 +2301,89 @@ def attr_path(e: A.Expr) -> tuple[str, ...] | None:
             base = attr_path(value)
             return base + (attr,) if base else None
     return None
+
+
+@dataclass
+class GenericDef:
+    """A generic function or class; `checker` is the module that defines it."""
+
+    kind: str  # 'func' or 'class'
+    name: str
+    node: A.FunctionDef | A.ClassDef
+    checker: Checker
+
+
+def generic_params(gen: GenericDef) -> list[tuple[str, A.TypeExpr | None]]:
+    """The parameters inference matches arguments against: a function's parameters, or a
+    class's constructor (its __init__, or its fields in order)."""
+    if gen.kind == "func":
+        return [(p.name, p.annotation) for p in gen.node.params]
+    for stmt in gen.node.body:
+        if isinstance(stmt, A.FunctionDef) and stmt.name == "__init__":
+            return [(p.name, p.annotation) for p in stmt.params[1:]]
+    return [(s.target.id, s.annotation) for s in gen.node.body
+            if isinstance(s, A.AnnAssign) and isinstance(s.target, A.Name)]
+
+
+def mentions(annotation: A.TypeExpr | None, names: set[str]) -> bool:
+    match annotation:
+        case A.TypeName(name, args):
+            return name in names or any(mentions(a, names) for a in args)
+        case A.OptionalType(inner):
+            return mentions(inner, names)
+        case A.UnionType(options):
+            return any(mentions(o, names) for o in options)
+        case A.FuncTypeExpr(params, ret):
+            return any(mentions(p, names) for p in params) or mentions(ret, names)
+    return False
+
+
+def expr_to_type(e: A.Expr) -> A.TypeExpr:
+    """The type written as an expression in `first[int](...)` or `Stack[list[str]]()`."""
+    match e:
+        case A.Name(name):
+            return A.TypeName(name, loc=e.loc)
+        case A.NoneLit():
+            return A.TypeName("None", loc=e.loc)
+        case A.Attribute():
+            return A.TypeName(".".join(attr_path(e) or ("?",)), loc=e.loc)
+        case A.Index(value, index):
+            base = expr_to_type(value)
+            return A.TypeName(base.name, [expr_to_type(x) for x in type_arg_exprs(index)], loc=e.loc)
+    raise CheckError("expected a type here (write complex types like int? in an annotation instead)", e.loc)
+
+
+def type_arg_exprs(index: A.Expr) -> list[A.Expr]:
+    return index.elts if isinstance(index, A.TupleLit) else [index]
+
+
+def structs_in(t: Type) -> list[StructType]:
+    match t:
+        case StructType():
+            return [t, *(s for a in t.type_args for s in structs_in(a))]
+        case ListType(x) | SetType(x) | OptionalType(x):
+            return structs_in(x)
+        case DictType(k, v):
+            return structs_in(k) + structs_in(v)
+        case TupleType(xs):
+            return [s for x in xs for s in structs_in(x)]
+        case FuncType(params, ret):
+            return [s for x in (*params, ret) if x is not None for s in structs_in(x)]
+    return []
+
+
+def mangle(name: str, type_args: tuple) -> str:
+    """first[int] -> first_of_int, Stack[str?] -> Stack_of_strQ, Pair[list[int], str] ->
+    Pair_of_list_int_and_str. (No double underscores: C++ reserves those names.)"""
+    parts = []
+    for t in type_args:
+        text = str(t).replace("?", "Q")
+        parts.append(re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_"))
+    return f"{name}_of_{'_and_'.join(parts)}"
+
+
+def is_none_type(t: A.TypeExpr) -> bool:
+    return isinstance(t, A.TypeName) and t.name == "None" and not t.args
 
 
 def needs_context(e: A.Expr) -> bool:

@@ -615,8 +615,7 @@ def test_unknown_module_member():
 
 
 @pytest.mark.parametrize("src,msg", [
-    ("def f[T](x: T) -> T:\n    return x", "generic functions are not supported yet"),
-    ("x: int | str = 1", "union types are not supported yet (T? for 'T or None' is)"),
+    ("x: int | str = 1", "union types are not supported yet (T? or `T | None` for 'T or None' is)"),
     ("struct A: pass\nstruct B(A): pass", "structs can't inherit (they're values; use a class): `class B(A):`"),
     ("struct A: pass\nclass B(A): pass", "can't inherit from struct 'A'; only classes can be inherited from"),
     ("def f():\n    class C: pass", "a class can only be defined at the top level of a module"),
@@ -1085,3 +1084,69 @@ def test_isinstance_narrows(body):
 ])
 def test_inheritance_errors(src, msg):
     assert err(ANIMALS + src).message == msg
+
+
+# ---- generics -------------------------------------------------------------------
+
+
+def test_generic_function_instances():
+    info = ok("""
+        def first[T](xs: list[T]) -> T?:
+            return xs[0] if xs else None
+        a = first([1, 2])
+        b = first(["x"])
+        c = first[float]([1, 2])
+        d: str? = first([])
+    """)
+    assert variables(info) == ["a: int?", "b: str?", "c: float?", "d: str?"]
+    assert sorted(f.cpp_name for f in info.functions if f.cpp_name) == ["first_of_float", "first_of_int", "first_of_str"]
+
+
+def test_generic_class_inference_and_annotations():
+    info = ok("""
+        class Box[T]:
+            value: T
+            def get(self) -> T:
+                return self.value
+        a = Box(5)
+        b: Box[str] = Box("s")
+        c = Box[list[int]]([])
+        d = a.get() + 1
+    """)
+    assert variables(info) == ["a: Box[int]", "b: Box[str]", "c: Box[list[int]]", "d: int"]
+
+
+def test_generic_recursion_and_self_reference():
+    ok("""
+        class Node[T]:
+            value: T
+            next: Node[T]?
+        def length[T](n: Node[T]?) -> int:
+            if n is None:
+                return 0
+            return 1 + length(n.next)
+        x = length(Node(1, Node(2, None)))
+    """)
+
+
+def test_lambda_types_come_from_the_generic_signature():
+    info = ok("""
+        def mapped[T, U](xs: list[T], f: (T) -> U) -> list[U]:
+            return [f(x) for x in xs]
+        a = mapped([1, 2], lambda n: str(n))
+        b = mapped(["x"], lambda s: len(s) * 1.5)
+    """)
+    assert variables(info) == ["a: list[str]", "b: list[float]"]
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("def f[T]() -> T?:\n    return None\nx = f()", "can't tell what T should be for f; write the types, e.g. f[int](...)"),
+    ("def f[T](a: T, b: T) -> T:\n    return a\nx = f(1, 'a')", "argument 'b' of f() must be int, not str"),
+    ("def big[T](xs: list[T]) -> T:\n    return xs[0] if xs[0] > xs[1] else xs[1]\nstruct P:\n    x: int\ny = big([P(1)])",
+     "in big[P]: '>' isn't supported between P and P"),
+    ("class Box[T]:\n    v: T\nx: Box = Box(1)", "'Box' needs type arguments: Box[T]"),
+    ("class Box[T]:\n    v: T\nx = Box[int, str](1)", "Box takes 1 type argument, not 2"),
+    ("def f[T](x: T) -> T:\n    return x\ny: f = 1", "'f' is a generic function, not a type"),
+])
+def test_generic_errors(src, msg):
+    assert err(src).message == msg
