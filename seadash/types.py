@@ -35,6 +35,12 @@ UNKNOWN = Prim("?")  # only while inferring literals: the element type of an emp
 SOCKET = Prim("socket")  # socket.socket: a thread-safe handle
 PATH = Prim("Path")  # pathlib.Path: an immutable path value
 TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
+DATE = Prim("date")  # the datetime module's value types
+TIME = Prim("time")
+DATETIME = Prim("datetime")
+TIMEDELTA = Prim("timedelta")
+TIMEZONE = Prim("timezone")
+DATETIME_TYPES = (DATE, TIME, DATETIME, TIMEDELTA, TIMEZONE)
 
 PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "None": NONE}
 
@@ -363,7 +369,7 @@ def user_dunder(t: Type, name: str) -> FuncInfo | None:
 
 
 def is_hashable(t: Type) -> bool:
-    if t in (INT, FLOAT, BOOL, STR, BYTES, PATH):
+    if t in (INT, FLOAT, BOOL, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA):
         return True
     if user_dunder(t, "__hash__"):
         return True

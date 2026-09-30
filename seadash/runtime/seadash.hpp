@@ -1132,6 +1132,12 @@ auto sum(It&& it) {
     return total;
 }
 
+template <class It, class T>
+T sum(It&& it, T total) {  // sum(items, start)
+    for (auto&& v : iter(std::forward<It>(it))) total = total + v;
+    return total;
+}
+
 template <class It>
 auto min_of(It&& it) {
     auto values = to_list(std::forward<It>(it));

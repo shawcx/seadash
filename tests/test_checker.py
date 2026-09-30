@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, pathlib, queue, random, re, shutil, socket, subprocess, sys, tempfile, threading, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, datetime, functools, json, math, os, pathlib, queue, random, re, shutil, socket, subprocess, sys, tempfile, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -1451,4 +1451,24 @@ def test_shutil_tempfile_types():
     assert {"w: str?", "c: str", "u: int", "t: TemporaryDirectory", "n: str", "inside: str"} <= set(variables(info))
     assert err("import shutil\nshutil.rmtree(3)\n").message == (
         "shutil.rmtree() argument 'path' must be a str or Path, not int"
+    )
+
+
+def test_datetime_types():
+    info = ok(
+        "from datetime import date, datetime, timedelta, timezone\n"
+        "d = date(2024, 1, 1)\ngap = date(2024, 2, 1) - d\nlater = d + timedelta(days=3)\n"
+        "ratio = timedelta(hours=1) / timedelta(minutes=5)\nnow = datetime.now(timezone.utc)\n"
+        "tz = now.tzinfo\ntotal = sum([gap, gap], timedelta())\nwhen = datetime.strptime('2024', '%Y')\n"
+    )
+    assert {"d: date", "gap: timedelta", "later: date", "ratio: float", "now: datetime", "tz: timezone?",
+            "total: timedelta", "when: datetime"} <= set(variables(info))
+    assert err("from datetime import date\nx = date(2024, 1, 1) + 1\n").message == (
+        "unsupported operand types for +: date and int"
+    )
+    assert err("from datetime import timedelta\nx = sum([timedelta()])\n").message == (
+        "sum() of timedeltas needs a starting value: sum(items, timedelta())"
+    )
+    assert err("from datetime import datetime\nx = datetime.yesterday()\n").message == (
+        "type object 'datetime' has no attribute 'yesterday'"
     )

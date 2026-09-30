@@ -36,7 +36,7 @@ from . import ast as A
 from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
-    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType,
+    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
     CounterType, DefaultDictType, DequeType, DictType, MatchType, PatternType, ProcessType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
@@ -247,6 +247,8 @@ class CodeGen:
                 return "sd::pathlib::Path"
             case _ if t == TEMPDIR:
                 return "sd::tempfile::TemporaryDirectory"
+            case _ if t in DATETIME_TYPES:
+                return f"sd::datetime::{t.name}"
             case _ if t == NONE:
                 return "void"
             case ListType(elem):
@@ -1364,6 +1366,10 @@ class CodeGen:
         return f"(!{call})" if d.negate else call
 
     def binop_code(self, op: str, lc: str, lt: Type, rc: str, rt: Type, t: Type, dunder=None) -> str:
+        if lt in DATETIME_TYPES or rt in DATETIME_TYPES:  # C++ operators on the datetime values
+            if op in ("//", "%"):
+                return f"sd::datetime::{'floordiv' if op == '//' else 'mod'}({lc}, {rc})"
+            return f"({lc} {op} {rc})"
         if dunder is not None:  # a + b -> a.__add__(b), or 2 * v -> v.__rmul__(2)
             param = dunder.method.params[0].type
             if dunder.reflected:
@@ -1549,6 +1555,8 @@ class CodeGen:
             case "module_func":
                 mod, name = target.target
                 return self.module_call(mod, name, e)
+            case "class_func":  # Path.cwd(), datetime.now(tz)
+                return self.function_call(target.target, e)
         raise NotImplementedError(f"codegen for call kind {target.kind}")
 
     def collection_new(self, e: A.Call, t: Type, extra: dict) -> str:
@@ -1799,6 +1807,8 @@ class CodeGen:
                 return f"sd::range({', '.join(args)})"
             case "abs" if (m := user_dunder(e.args[0].ty, "__abs__")):
                 return self.dunder_call(Dunder(m), a, e.args[0].ty, [])
+            case "abs" if e.args[0].ty in DATETIME_TYPES:
+                return f"sd::datetime::abs({a})"
             case "abs":
                 return f"sd::abs({a})"
             case "min" | "max":
@@ -1808,6 +1818,9 @@ class CodeGen:
                     return f"sd::{name}_of({a})"
                 values = ", ".join(self.expr_as(x, e.ty) for x in e.args)
                 return f"std::{name}({{{values}}})"
+            case "sum" if len(e.args) == 2 or e.keywords:
+                start = e.args[1] if len(e.args) == 2 else self.keyword(e, "start")
+                return f"sd::sum({self.expr(e.args[0])}, {self.expr_as(start, e.ty)})"
             case "sum" | "any" | "all" | "reversed" | "zip" | "ord" | "chr":
                 return f"sd::{name}({', '.join(args)})"
             case "sorted":
@@ -1864,7 +1877,9 @@ class CodeGen:
             return f"{r}.joinpath({', '.join(args)})"
         if recv_type == PATH and name == "open":
             return self.open_call(f"{r}.str()", e.args[0] if e.args else self.keyword(e, "mode"), e)
-        if isinstance(recv_type, SyncType) or recv_type in (SOCKET, PATH, TEMPDIR):
+        if recv_type == DATETIME and name in ("date", "time"):
+            return f"{r}.to_{name}()"  # (a C++ member can't share its class's name)
+        if isinstance(recv_type, SyncType) or recv_type in (SOCKET, PATH, TEMPDIR, *DATETIME_TYPES):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):
@@ -1946,6 +1961,18 @@ class CodeGen:
                     case "issuperset":
                         return f"sd::set_issubset({args[0]}, {r})"
         raise NotImplementedError(f"codegen for {recv_type}.{name}()")
+
+    def function_call(self, member: builtins.Function, e: A.Call) -> str:
+        """A built-in function with named parameters: each from a positional argument, a
+        keyword, or its C++ default."""
+        codes = []
+        for i, (pname, ptype, *default) in enumerate(member.params or ()):
+            node = e.args[i] if i < len(e.args) else self.keyword(e, pname)
+            if node is None:
+                codes.append(default[0])
+            else:  # (a parameter taking "str or Path" converts in C++)
+                codes.append(self.expr_as(node, ptype) if isinstance(ptype, Type) else self.expr(node))
+        return f"{member.cpp}({', '.join(codes)})"
 
     def module_call(self, module: builtins.Module, name: str, e: A.Call) -> str:
         mod = module.name

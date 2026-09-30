@@ -177,10 +177,11 @@ def work():
 | `subprocess` | `run`, `check_output`, `call`, `Popen` (streaming, `communicate`, timeouts); `r.stdout` is `str` or `bytes` depending on `text=`, and reading an uncaptured stream is a compile error |
 | `pathlib` | `Path` values: `/` joins, `name`/`stem`/`suffix`/`parent`, `read_text`/`write_text`, `mkdir`, `iterdir`, `glob`/`rglob`, `resolve`...; `open()` takes a `Path` too |
 | `shutil`, `tempfile` | `copy`/`copy2`/`copytree`, `move`, `rmtree`, `which`, `disk_usage`; `TemporaryDirectory` (removes itself), `mkdtemp`, `gettempdir` |
+| `datetime` | `date`, `time`, `datetime`, `timedelta`, fixed-offset `timezone`: arithmetic, `strftime`/`strptime`, `isoformat`/`fromisoformat`, `now()`/`today()`, time zone conversion |
 | `dataclasses`, `functools` | `@dataclass`, `field()`, `@cache`, `@lru_cache` |
 | `typing` | `Callable`, `Optional`, `Iterator`... (so the same code also runs under Python) |
 
-In progress: `datetime`, `argparse`.
+In progress: `argparse`.
 
 ## Differences from Python
 

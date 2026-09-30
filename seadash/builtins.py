@@ -17,6 +17,7 @@ from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
+    DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -198,7 +199,7 @@ def sized(t: Type) -> bool:
 
 
 def ordered(t: Type) -> bool:
-    return t in (INT, FLOAT, STR, BYTES, PATH) or isinstance(t, (TupleType, ListType)) or bool(user_dunder(t, "__lt__"))
+    return t in (INT, FLOAT, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA) or isinstance(t, (TupleType, ListType)) or bool(user_dunder(t, "__lt__"))
 
 
 def bytes_like(t: Type) -> bool:
@@ -295,6 +296,8 @@ def b_abs(ctx: CallContext) -> Type:
     t = ctx.arg(0)
     if m := user_dunder(t, "__abs__"):
         return m.ret
+    if t == TIMEDELTA:
+        return t
     if not is_numeric(t):
         raise ctx.error(f"{ctx.what} argument must be a number, not {t}", ctx.args[0])
     return t
@@ -327,11 +330,23 @@ def b_min_max(ctx: CallContext) -> Type:
 
 
 def b_sum(ctx: CallContext) -> Type:
-    ctx.arity(1)
+    n = ctx.arity(1, 2, keywords=("start",))
     elem = ctx.iterable(0)
-    if not is_numeric(elem):
-        raise ctx.error(f"{ctx.what} needs numbers, not {elem}", ctx.args[0])
-    return elem
+    start = ctx.args[1] if n == 2 else ctx.keyword_arg("start")
+    if elem == TIMEDELTA and start is None:
+        raise ctx.error(f"{ctx.what} of timedeltas needs a starting value: sum(items, timedelta())", ctx.args[0])
+    if not (is_numeric(elem) or elem == TIMEDELTA):
+        raise ctx.error(f"{ctx.what} needs numbers (or timedeltas), not {elem}", ctx.args[0])
+    if start is None:
+        return elem
+    st = ctx.checker.check_expr(start, elem)
+    if elem == TIMEDELTA or st == TIMEDELTA:
+        if st != elem:
+            raise ctx.error(f"{ctx.what} can't add {elem} items to a {st} start", start)
+        return elem
+    if not is_numeric(st):
+        raise ctx.error(f"{ctx.what} start must be a number, not {st}", start)
+    return FLOAT if FLOAT in (st, elem) else INT
 
 
 def b_sorted(ctx: CallContext) -> Type:
@@ -761,6 +776,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = LIST_METHODS
         case DequeType():
             table = DEQUE_METHODS
+        case _ if t in DATETIME_METHODS:
+            return DATETIME_METHODS[t].get(name)
         case _ if t == PATH:
             return PATH_METHODS.get(name)
         case _ if t == TEMPDIR:
@@ -1592,6 +1609,8 @@ MATCH_ATTRIBUTES = {
 
 
 def type_attributes(t: Type) -> dict | None:
+    if t in DATETIME_ATTRIBUTES:
+        return DATETIME_ATTRIBUTES[t]
     if t == PATH:
         return PATH_ATTRIBUTES
     if t == TEMPDIR:
@@ -1665,8 +1684,6 @@ PATH_METHODS = {
 MODULES["pathlib"] = Module("pathlib", {
     "Path": Function("Path", path_parts, "sd::pathlib::Path", as_type=PATH),
     "PosixPath": Function("PosixPath", path_parts, "sd::pathlib::Path", as_type=PATH),
-    "Path.cwd": Function("Path.cwd", returns(PATH), "sd::pathlib::Path::cwd"),
-    "Path.home": Function("Path.home", returns(PATH), "sd::pathlib::Path::home"),
 }, "modules/pathlib.hpp")
 
 
@@ -1709,6 +1726,117 @@ MODULES["tempfile"] = module_with_params(runtime_module(
     TemporaryDirectory=(signature(TEMPDIR, *TEMP_PARAMS), "sd::tempfile::TemporaryDirectory"),
 ))
 MODULES["tempfile"].members["TemporaryDirectory"].as_type = TEMPDIR
+
+
+# ---- datetime ---------------------------------------------------------------------------
+
+def attrs(result: Type, *names: str) -> dict:
+    return {name: (lambda t, r=result: r) for name in names}
+
+
+OPT_INT, OPT_TZ = OptionalType(INT), OptionalType(TIMEZONE)
+DATE_FIELDS = (("year", OPT_INT, "std::nullopt"), ("month", OPT_INT, "std::nullopt"), ("day", OPT_INT, "std::nullopt"))
+TIME_FIELDS = (("hour", OPT_INT, "std::nullopt"), ("minute", OPT_INT, "std::nullopt"),
+               ("second", OPT_INT, "std::nullopt"), ("microsecond", OPT_INT, "std::nullopt"))
+
+DATETIME_ATTRIBUTES = {
+    DATE: attrs(INT, "year", "month", "day"),
+    TIME: {**attrs(INT, "hour", "minute", "second", "microsecond"), "tzinfo": lambda t: OPT_TZ},
+    DATETIME: {**attrs(INT, "year", "month", "day", "hour", "minute", "second", "microsecond"),
+               "tzinfo": lambda t: OPT_TZ},
+    TIMEDELTA: attrs(INT, "days", "seconds", "microseconds"),
+    TIMEZONE: {},
+}
+DATE_METHODS = {
+    "isoformat": sync_method(STR),
+    "strftime": sync_method(STR, ("format", STR)),
+    "ctime": sync_method(STR),
+    "weekday": sync_method(INT),
+    "isoweekday": sync_method(INT),
+    "toordinal": sync_method(INT),
+}
+DATETIME_METHODS = {
+    DATE: {**DATE_METHODS, "replace": sync_method(DATE, *DATE_FIELDS)},
+    TIME: {
+        "isoformat": sync_method(STR, ("timespec", STR, '"auto"s')),
+        "strftime": sync_method(STR, ("format", STR)),
+        "replace": sync_method(TIME, *TIME_FIELDS),
+    },
+    DATETIME: {
+        **DATE_METHODS,
+        "isoformat": sync_method(STR, ("sep", STR, '"T"s'), ("timespec", STR, '"auto"s')),
+        "date": sync_method(DATE),
+        "time": sync_method(TIME),
+        "timestamp": sync_method(FLOAT),
+        "utcoffset": sync_method(OptionalType(TIMEDELTA)),
+        "tzname": sync_method(OptionalType(STR)),
+        "astimezone": sync_method(DATETIME, ("tz", OPT_TZ, "std::nullopt")),
+        "replace": sync_method(DATETIME, *DATE_FIELDS, *TIME_FIELDS,
+                               ("tzinfo", OPT_TZ, "std::optional<std::optional<sd::datetime::timezone>>()")),
+    },
+    TIMEDELTA: {"total_seconds": sync_method(FLOAT)},
+    TIMEZONE: {"tzname": sync_method(STR, ("dt", OptionalType(DATETIME), "std::nullopt"))},
+}
+
+DT = "sd::datetime::"
+TIME_PARAMS = (("hour", INT, "0"), ("minute", INT, "0"), ("second", INT, "0"), ("microsecond", INT, "0"),
+               ("tzinfo", OPT_TZ, "std::nullopt"))
+DATETIME_MODULE = {
+    "date": Function("date", signature(DATE, ("year", INT), ("month", INT), ("day", INT)), DT + "date", as_type=DATE),
+    "time": Function("time", signature(TIME, *TIME_PARAMS), DT + "time", as_type=TIME),
+    "datetime": Function("datetime", signature(DATETIME, ("year", INT), ("month", INT), ("day", INT), *TIME_PARAMS),
+                         DT + "datetime", as_type=DATETIME),
+    "timedelta": Function("timedelta", signature(TIMEDELTA, *((name, FLOAT, "0.0") for name in (
+        "days", "seconds", "microseconds", "milliseconds", "minutes", "hours", "weeks"))), DT + "timedelta",
+        as_type=TIMEDELTA),
+    "timezone": Function("timezone", signature(TIMEZONE, ("offset", TIMEDELTA), ("name", OptionalType(STR), "std::nullopt")),
+                         DT + "timezone", as_type=TIMEZONE),
+    "MINYEAR": Value("MINYEAR", INT, DT + "MINYEAR"),
+    "MAXYEAR": Value("MAXYEAR", INT, DT + "MAXYEAR"),
+    "UTC": Value("UTC", TIMEZONE, DT + "timezone::utc()"),
+}
+for _f in DATETIME_MODULE.values():
+    if isinstance(_f, Function):
+        _f.params = _f.check.params
+MODULES["datetime"] = Module("datetime", DATETIME_MODULE, "modules/datetime.hpp")
+
+
+def class_function(name: str, result: Type, cpp: str, *params) -> Function:
+    return Function(name, signature(result, *params), cpp, params)
+
+
+# Members of a built-in class itself: Path.cwd(), datetime.now(), timezone.utc.
+CLASS_MEMBERS: dict[Type, dict[str, Function | Value]] = {
+    PATH: {
+        "cwd": class_function("Path.cwd", PATH, "sd::pathlib::Path::cwd"),
+        "home": class_function("Path.home", PATH, "sd::pathlib::Path::home"),
+    },
+    DATE: {
+        "today": class_function("date.today", DATE, DT + "date::today"),
+        "fromisoformat": class_function("date.fromisoformat", DATE, DT + "date::fromisoformat", ("date_string", STR)),
+        "fromordinal": class_function("date.fromordinal", DATE, DT + "date::fromordinal", ("ordinal", INT)),
+        "fromtimestamp": class_function("date.fromtimestamp", DATE, DT + "date::fromtimestamp", ("timestamp", FLOAT)),
+    },
+    TIME: {
+        "fromisoformat": class_function("time.fromisoformat", TIME, DT + "time::fromisoformat", ("time_string", STR)),
+    },
+    DATETIME: {
+        "now": class_function("datetime.now", DATETIME, DT + "datetime::now", ("tz", OPT_TZ, "std::nullopt")),
+        "today": class_function("datetime.today", DATETIME, DT + "datetime::today"),
+        "utcnow": class_function("datetime.utcnow", DATETIME, DT + "datetime::utcnow"),
+        "fromtimestamp": class_function("datetime.fromtimestamp", DATETIME, DT + "datetime::fromtimestamp",
+                                        ("timestamp", FLOAT), ("tz", OPT_TZ, "std::nullopt")),
+        "utcfromtimestamp": class_function("datetime.utcfromtimestamp", DATETIME, DT + "datetime::utcfromtimestamp",
+                                           ("timestamp", FLOAT)),
+        "fromisoformat": class_function("datetime.fromisoformat", DATETIME, DT + "datetime::fromisoformat",
+                                        ("date_string", STR)),
+        "strptime": class_function("datetime.strptime", DATETIME, DT + "datetime::strptime",
+                                   ("date_string", STR), ("format", STR)),
+        "combine": class_function("datetime.combine", DATETIME, DT + "datetime::combine",
+                                  ("date", DATE), ("time", TIME), ("tzinfo", OPT_TZ, "std::nullopt")),
+    },
+    TIMEZONE: {"utc": Value("utc", TIMEZONE, DT + "timezone::utc()")},
+}
 
 
 class AttributeUnavailable(Exception):

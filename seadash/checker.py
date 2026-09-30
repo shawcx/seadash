@@ -38,6 +38,7 @@ from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
+    DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA,
     SYNC_ARITY, ClassRefType, CounterType, MatchType, PatternType, ProcessType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
@@ -1514,7 +1515,7 @@ class Checker:
         return state
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
-        ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE, PATH) or isinstance(
+        ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE, PATH, *DATETIME_TYPES) or isinstance(
             t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType, MatchType)
         ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__"))
         if not ok:
@@ -1861,7 +1862,7 @@ class Checker:
             self.check_condition(operand)
             return BOOL
         t = self.check_expr(operand)
-        if op in ("-", "+") and is_numeric(t):
+        if op in ("-", "+") and (is_numeric(t) or t == TIMEDELTA):
             return t
         if op == "~" and t == INT:
             return INT
@@ -1887,6 +1888,10 @@ class Checker:
             return l  # Counter arithmetic keeps positive counts
         if op == "/" and PATH in (l, r) and {l, r} <= {PATH, STR}:
             return PATH  # Path("docs") / "logo.svg"
+        if l in DATETIME_TYPES or r in DATETIME_TYPES:
+            if (result := datetime_arithmetic(op, l, r)) is not None:
+                return result
+            raise self.error(f"unsupported operand types for {op}: {l} and {r}", e)
         match op:
             case "+":
                 if numeric:
@@ -1987,7 +1992,7 @@ class Checker:
     def check_comparison(self, op: str, lt: Type, rt: Type, left: A.Expr, right: A.Expr, e: A.Compare) -> None:
         if op in ("<", ">", "<=", ">="):
             ordered = (is_numeric(lt) and is_numeric(rt)) or (
-                lt == rt and (lt in (STR, BYTES, PATH) or isinstance(lt, (TupleType, ListType)))
+                lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA) or isinstance(lt, (TupleType, ListType)))
             )
             if not ordered:
                 owner = lt if isinstance(lt, StructType) else rt
@@ -2025,6 +2030,11 @@ class Checker:
                 raise self.error(f"'{op}' is for None checks and class instances; use '==' to compare values", e)
 
     def check_attribute(self, e: A.Attribute, value: A.Expr, attr: str, expected: Type | None = None) -> Type:
+        if (member := self.class_member(e)) is not None:  # timezone.utc
+            if isinstance(member, builtins.Function):
+                raise self.error(f"{member.name}() can only be called here (functions aren't values yet)", e)
+            e.sym = member
+            return member.type
         if (
             isinstance(value, A.Name)
             and value.id in ("str", "list", "dict", "set")
@@ -2206,10 +2216,11 @@ class Checker:
                 ctx = builtins.CallContext(self, e, f"{name}()", expected)
                 e.sym = CallTarget("builtin", name)
                 return builtins.FUNCTIONS[name](ctx)
-        if isinstance(func, A.Attribute) and func.attr in ("cwd", "home") and self.is_path_class(func.value):
-            mod = builtins.MODULES["pathlib"]  # Path.cwd(), pathlib.Path.home()
-            e.sym = CallTarget("module_func", (mod, f"Path.{func.attr}"))
-            return mod.members[f"Path.{func.attr}"].check(builtins.CallContext(self, e, f"Path.{func.attr}()", expected))
+        if isinstance(func, A.Attribute) and (member := self.class_member(func)) is not None:
+            if not isinstance(member, builtins.Function):
+                raise self.error(f"{member.name} isn't a function", func)
+            e.sym = CallTarget("class_func", member)  # Path.cwd(), datetime.now(), date.fromisoformat(s)
+            return member.check(builtins.CallContext(self, e, f"{member.name}()", expected))
         if isinstance(func, A.Attribute):
             if (
                 isinstance(func.value, A.Name) and func.value.id not in self.state.names
@@ -2279,15 +2290,27 @@ class Checker:
             return self.sync_kind_named(".".join(path))
         return None
 
-    def is_path_class(self, e: A.Expr) -> bool:
-        """`Path` imported from pathlib, or `pathlib.Path`."""
-        path = builtins.MODULES["pathlib"].members["Path"]
+    def builtin_class(self, e: A.Expr) -> Type | None:
+        """The built-in type a name refers to as a class: `Path`, `datetime.date`, `timezone`."""
+        f = None
         if isinstance(e, A.Name) and e.id not in self.state.names and e.id in self.imported:
             mod, member = self.imported[e.id]
-            return mod.members.get(member) is path
-        if isinstance(e, A.Attribute) and isinstance(e.value, A.Name) and e.value.id in self.modules:
-            return self.modules[e.value.id].members.get(e.attr) is path
-        return False
+            f = mod.members.get(member)
+        elif isinstance(e, A.Attribute) and isinstance(e.value, A.Name) and e.value.id in self.modules:
+            f = self.modules[e.value.id].members.get(e.attr)
+        if isinstance(f, builtins.Function) and f.as_type in builtins.CLASS_MEMBERS:
+            return f.as_type
+        return None
+
+    def class_member(self, e: A.Attribute):
+        """A member of a built-in class itself (`datetime.now`, `timezone.utc`), or None."""
+        cls = self.builtin_class(e.value)
+        if cls is None:
+            return None
+        member = builtins.CLASS_MEMBERS[cls].get(e.attr)
+        if member is None:
+            raise self.error(f"type object '{cls}' has no attribute '{e.attr}'", e)
+        return member
 
     # ---- collections ----------------------------------------------------------------
 
@@ -3122,3 +3145,24 @@ def describe_short(e: A.Expr) -> str:
         case A.Attribute(value, attr):
             return f"{describe_short(value)}.{attr}"
     return "x"
+
+
+def datetime_arithmetic(op: str, l: Type, r: Type) -> Type | None:
+    """The datetime module's operators, as Python defines them."""
+    numeric = r in (INT, FLOAT)
+    match op, l, r:
+        case "-", _, _ if l == r and l in (DATE, DATETIME):
+            return TIMEDELTA  # date - date, datetime - datetime
+        case "+" | "-", _, _ if l in (DATE, DATETIME) and r == TIMEDELTA:
+            return l
+        case "+", _, _ if l == TIMEDELTA and r in (DATE, DATETIME):
+            return r
+        case "+" | "-" | "%", _, _ if l == r == TIMEDELTA:
+            return TIMEDELTA
+        case "*", _, _ if (l == TIMEDELTA and numeric) or (r == TIMEDELTA and l in (INT, FLOAT)):
+            return TIMEDELTA
+        case "/", _, _ if l == TIMEDELTA:
+            return FLOAT if r == TIMEDELTA else TIMEDELTA if numeric else None
+        case "//", _, _ if l == TIMEDELTA:
+            return INT if r == TIMEDELTA else TIMEDELTA if r == INT else None
+    return None

@@ -27,7 +27,7 @@ import dataclasses
 from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
-    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR,
+    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, DATETIME_TYPES,
     DefaultDictType, DequeType, DictType, MatchType, PatternType, ProcessType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
@@ -50,7 +50,7 @@ def is_synchronized(st: StructType) -> bool:
 def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
     """Why a value of type `t` can't be handed to another thread, or None if it can."""
     match t:
-        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE, PATH):
+        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE, PATH, *DATETIME_TYPES):
             return None
         case SyncType():
             return None
