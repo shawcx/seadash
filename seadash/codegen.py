@@ -1720,6 +1720,76 @@ class CodeGen:
                 return f"{cpp}({self.expr(extra['items'])}, {ml})"
         raise NotImplementedError(f"codegen for {t}()")
 
+    # ---- itertools ------------------------------------------------------------------
+
+    def itertools_call(self, name: str, e: A.Call) -> str:
+        ns = "sd::itertools::"
+        info = e.itertools
+        args = info.get("args", {})
+        out = e.ty.elem if isinstance(e.ty, GeneratorType) else None
+        T = self.cpp_type(out) if out is not None else None
+        a = [self.expr(x) for x in e.args]
+        present = lambda k: k in args and not isinstance(args[k], A.NoneLit)
+        opt_int = lambda k: self.expr_as(args[k], OptionalType(INT)) if present(k) else "std::nullopt"
+        source_elem = lambda node: self.cpp_type(element_type(node.ty) if not hasattr(node, "tuple_elem") else node.tuple_elem)
+        match name:
+            case "count":
+                start = self.expr_as(args["start"], out) if "start" in args else f"{T}(0)"
+                step = self.expr_as(args["step"], out) if "step" in args else f"{T}(1)"
+                return f"{ns}count<{T}>({start}, {step})"
+            case "cycle":
+                return f"{ns}cycle<{T}>({a[0]})"
+            case "pairwise":
+                return f"{ns}pairwise<{self.cpp_type(out.elts[0])}>({a[0]})"
+            case "repeat":
+                return f"{ns}repeat<{T}>({self.expr_as(args['object'], out)}, {opt_int('times')})"
+            case "accumulate":
+                func = self.expr(args["func"]) if present("func") else "[](const auto& x, const auto& y) { return x + y; }"
+                initial = f"std::optional<{T}>({self.expr_as(args['initial'], out)})" if present("initial") else "std::nullopt"
+                return f"{ns}accumulate<{T}>({self.expr(args['iterable'])}, {func}, {initial})"
+            case "chain":
+                parts = ", ".join(f"{ns}as_generator<{T}>({x})" for x in a)
+                return f"{ns}chain<{T}>({{{parts}}})"
+            case "chain.from_iterable":
+                return f"{ns}from_iterable<{T}>({a[0]})"
+            case "compress":
+                return f"{ns}compress<{T}>({a[0]}, {a[1]})"
+            case "dropwhile" | "takewhile" | "filterfalse":
+                return f"{ns}{name}<{T}>({a[0]}, {a[1]})"
+            case "groupby":
+                key_t, item_t = out.elts[0], out.elts[1].elem
+                key = self.expr(args["key"]) if present("key") else "[](const auto& x) { return x; }"
+                return f"{ns}groupby<{self.cpp_type(key_t)}, {self.cpp_type(item_t)}>({self.expr(args['iterable'])}, {key})"
+            case "islice":
+                idx = [self.expr_as(x, OptionalType(INT)) for x in e.args[1:]]
+                start, stop, step = ("std::nullopt", idx[0], "std::nullopt") if len(idx) == 1 else (
+                    idx[0], idx[1], idx[2] if len(idx) > 2 else "std::nullopt")
+                return f"{ns}islice<{T}>({a[0]}, {start}, {stop}, {step})"
+            case "starmap":
+                return f"{ns}starmap<{T}>({a[0]}, {a[1]})"
+            case "tee":
+                return f"{ns}tee<{self.cpp_type(e.ty.elts[0].elem)}, {info['n']}>({a[0]})"
+            case "zip_longest":
+                fill = self.keyword(e, "fillvalue")
+                fill_code = self.expr(fill) if fill is not None and not isinstance(fill, A.NoneLit) else "std::nullopt"
+                gens = ", ".join(f"{ns}as_generator<{self.cpp_type(t)}>({x})" for t, x in zip(info["elems"], a))
+                return f"{ns}zip_longest<{T}>({fill_code}, {gens})"
+            case "product":
+                pools = ", ".join(f"sd::to_list({x})" for x in a)
+                repeated = ", ".join(["sd_pools..."] * info["repeat"])
+                return f"[&](auto... sd_pools) {{ return {ns}product<{T}>({repeated}); }}({pools})"
+            case "permutations":
+                items = args["iterable"]
+                return f"{ns}permutations<{T}, {source_elem(items)}>(sd::to_list({self.expr(items)}), {opt_int('r')})"
+            case "combinations" | "combinations_with_replacement":
+                items = args["iterable"]
+                repl = "true" if name == "combinations_with_replacement" else "false"
+                return (f"{ns}combinations<{T}, {source_elem(items)}>(sd::to_list({self.expr(items)}), "
+                        f"{self.expr(args['r'])}, {repl})")
+            case "batched":
+                return f"{ns}batched<{self.cpp_type(out.elem)}>({self.expr(args['iterable'])}, {self.expr(args['n'])})"
+        raise NotImplementedError(f"codegen for itertools.{name}")
+
     # ---- subprocess -----------------------------------------------------------------
 
     def process_call(self, e: A.Call) -> str:
@@ -1941,6 +2011,10 @@ class CodeGen:
                 return f"sd::range({', '.join(args)})"
             case "abs" if (m := user_dunder(e.args[0].ty, "__abs__")):
                 return self.dunder_call(Dunder(m), a, e.args[0].ty, [])
+            case "pow" if len(e.args) == 3:
+                return f"sd::powmod({', '.join(args)})"
+            case "pow":
+                return f"sd::pow({', '.join(self.expr_as(x, e.ty) for x in e.args)})"
             case "abs" if e.args[0].ty in DATETIME_TYPES:
                 return f"sd::datetime::abs({a})"
             case "abs":
@@ -2171,6 +2245,8 @@ class CodeGen:
             return self.re_call(name, e)
         if mod == "subprocess" and hasattr(e, "process"):
             return self.process_call(e)
+        if mod == "itertools":
+            return self.itertools_call(name, e)
         member = module.members[name]
         if member.cpp is not None and "{T}" in member.cpp:  # the result type picks the template: json.loads
             member = builtins.Function(member.name, member.check, member.cpp.replace("{T}", self.cpp_type(e.ty)), member.params)

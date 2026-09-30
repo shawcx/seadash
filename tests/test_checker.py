@@ -1566,3 +1566,27 @@ def test_generator_errors():
     )
     assert err("x = next([1, 2])\n").message == "next() needs an iterator (a generator, or iter(...)), not list[int]"
     assert err("yield 1\n").message == "'yield' outside a function"
+
+
+def test_itertools_types():
+    info = ok(
+        "import itertools\nfrom itertools import count, permutations, zip_longest, product, groupby, tee\n"
+        "c = count(0.5)\np2 = permutations([1, 2, 3], 2)\npn = permutations('ab')\n"
+        "z = zip_longest([1], ['a'])\nzf = zip_longest([1], [2], fillvalue=0)\npr = product('ab', repeat=2)\n"
+        "g = groupby([1, 2], key=lambda x: x > 1)\nt = tee([1], 3)\nf = itertools.chain.from_iterable([[1]])\n"
+    )
+    assert {"c: Iterator[float]", "p2: Iterator[tuple[int, int]]", "pn: Iterator[tuple[str, ...]]",
+            "z: Iterator[tuple[int?, str?]]", "zf: Iterator[tuple[int, int]]", "pr: Iterator[tuple[str, str]]",
+            "g: Iterator[tuple[bool, Iterator[int]]]", "t: tuple[Iterator[int], Iterator[int], Iterator[int]]",
+            "f: Iterator[int]"} <= set(variables(info))
+    assert err("from itertools import starmap\nx = starmap(abs, [1, 2])\n").message == (
+        "starmap() needs an iterable of tuples (the arguments), not of int"
+    )
+    assert err("from itertools import tee\nn = 2\nx = tee([1], n)\n").message == (
+        "tee()'s n must be a number written out (it decides how many you get)"
+    )
+
+
+def test_star_import():
+    info = ok("from itertools import *\nfrom math import *\nx = list(islice(count(), 2))\ny = sqrt(4.0)\n")
+    assert {"x: list[int]", "y: float"} <= set(variables(info))

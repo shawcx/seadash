@@ -968,6 +968,18 @@ inline std::int64_t pow(std::int64_t base, std::int64_t exp) {
     return static_cast<std::int64_t>(result);
 }
 inline double pow(double base, double exp) { return std::pow(base, exp); }
+// pow(base, exp, mod): exponentiation by squaring, with Python's sign rules for %.
+inline std::int64_t powmod(std::int64_t base, std::int64_t exp, std::int64_t mod) {
+    if (mod == 0) raise("ValueError", "pow() 3rd argument cannot be 0");
+    if (exp < 0) raise("ValueError", "base is not invertible for the given modulus");
+    __int128 m = mod, result = 1 % m, b = ((base % m) + m) % m;
+    for (; exp > 0; exp >>= 1) {
+        if (exp & 1) result = result * b % m;
+        b = b * b % m;
+    }
+    std::int64_t r = static_cast<std::int64_t>(result);
+    return (r != 0 && ((r < 0) != (mod < 0))) ? r + mod : r;
+}
 
 inline std::int64_t abs(std::int64_t x) { return x < 0 ? -x : x; }
 inline double abs(double x) { return std::fabs(x); }

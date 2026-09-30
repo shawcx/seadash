@@ -412,6 +412,8 @@ class Parser:
         loc = self.next().loc
         module = self.parse_dotted_name()
         self.expect("import", " in 'from' statement")
+        if star := self.accept("*"):  # from itertools import *
+            return A.ImportFrom(module, [A.Alias("*", None, loc=star.loc)], loc=loc)
         parenthesized = self.accept("(")
         names = [self.parse_alias(dotted=False)]
         while self.accept(","):

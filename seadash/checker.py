@@ -369,6 +369,11 @@ class Checker:
             for alias, sub in zip(node.names, subs):
                 self.modules[alias.asname or alias.name] = sub
             return
+        if [a.name for a in node.names] == ["*"]:  # every public name (not _private, not Class.member)
+            for member in mod.members:
+                if not member.startswith("_") and "." not in member:
+                    self.imported[member] = (mod, member)
+            return
         for alias in node.names:
             if alias.name not in mod.members and self.loader is not None and isinstance(mod, builtins.UserModule):
                 sub = self.loader(f"{node.module}.{alias.name}")
@@ -2311,6 +2316,10 @@ class Checker:
                 ctx = builtins.CallContext(self, e, f"{name}()", expected)
                 e.sym = CallTarget("builtin", name)
                 return builtins.FUNCTIONS[name](ctx)
+        if isinstance(func, A.Attribute) and func.attr == "from_iterable" and self.is_itertools_chain(func.value):
+            mod = builtins.MODULES["itertools"]  # itertools.chain.from_iterable(xss)
+            e.sym = CallTarget("module_func", (mod, "chain.from_iterable"))
+            return mod.members["chain.from_iterable"].check(builtins.CallContext(self, e, "chain.from_iterable()", expected))
         if isinstance(func, A.Attribute) and (member := self.class_member(func)) is not None:
             if not isinstance(member, builtins.Function):
                 raise self.error(f"{member.name} isn't a function", func)
@@ -2396,6 +2405,15 @@ class Checker:
         if isinstance(f, builtins.Function) and f.as_type in builtins.CLASS_MEMBERS:
             return f.as_type
         return None
+
+    def is_itertools_chain(self, e: A.Expr) -> bool:
+        chain = builtins.MODULES["itertools"].members["chain"]
+        if isinstance(e, A.Name) and e.id not in self.state.names and e.id in self.imported:
+            mod, member = self.imported[e.id]
+            return mod.members.get(member) is chain
+        if isinstance(e, A.Attribute) and isinstance(e.value, A.Name) and e.value.id in self.modules:
+            return self.modules[e.value.id].members.get(e.attr) is chain
+        return False
 
     def class_member(self, e: A.Attribute):
         """A member of a built-in class itself (`datetime.now`, `timezone.utc`), or None."""

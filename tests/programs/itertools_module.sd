@@ -1,0 +1,28 @@
+# itertools: lazy building blocks for iterators (and pow(), and star imports).
+from itertools import *
+import itertools
+
+print(list(islice(count(5, 2), 3)), list(islice(count(0.5, 0.25), 3)), list(islice(cycle("ab"), 5)), list(repeat("x", 3)))
+print(list(accumulate([1, 2, 3, 4])), list(accumulate([1, 2, 3], lambda a, b: a * b)), list(accumulate([1, 2], initial=10)), list(accumulate([0][:0])))
+print(list(chain([1, 2], (3,), range(2))), list(chain.from_iterable(["ab", "cd"])), list(compress("abcdef", [1, 0, 1, 0, 1, 1])))
+print(list(dropwhile(lambda x: x < 3, [1, 4, 1])), list(takewhile(lambda x: x < 3, [1, 2, 5, 1])), list(filterfalse(lambda x: x % 2, range(6))))
+print([(k, list(g)) for k, g in groupby("aabccc")], [(k, list(g)) for k, g in groupby([1, 3, 2, 4, 5], key=lambda x: x % 2)])
+print(list(islice("abcdefg", 2)), list(islice("abcdefg", 2, 4)), list(islice("abcdefg", 0, None, 3)), list(starmap(pow, [(2, 3), (3, 2)])))
+a, b = tee([1, 2, 3])
+print(list(a), list(b), list(zip_longest("ab", "xyz")), list(zip_longest("ab", "xyz", fillvalue="-")))
+print(list(product("ab", [1, 2])), list(product("ab", repeat=2)), list(permutations("abc", 2)), list(permutations([1, 2, 3]))[:2])
+print(list(combinations("abcd", 2)), list(combinations_with_replacement("ab", 2)), list(pairwise("abcd")), list(batched("abcdefg", 3)))
+print(list(itertools.chain.from_iterable([[1], [2, 3]])), next(itertools.count()))
+
+# laziness: infinite inputs are fine, and nothing is read before it's needed
+squares = (n * n for n in count(1))
+print(list(islice(squares, 3)), list(takewhile(lambda s: s < 60, squares)))
+print(list(islice(accumulate(count(1)), 5)), list(islice(zip(count(), cycle("xy")), 3)))
+left, right = tee(n * 10 for n in count())
+print(next(left), next(left), next(right), list(islice(left, 2)), list(islice(right, 3)))
+words = ["apple", "avocado", "banana", "blueberry", "cherry"]
+for letter, group in groupby(words, key=lambda w: w[0]):
+    print(letter, list(group))
+print([w for w, keep in zip(words, cycle([True, False])) if keep], list(zip_longest(range(2), (c for c in "abc"))))
+print(sum(1 for _ in permutations(range(5))), len(list(combinations(range(10), 3))), list(batched(range(5), 2)))
+print(pow(2, 10), pow(2, 0.5), pow(3, 200, 1000007), pow(-7, 3, 5), pow(7, 3, -5))
