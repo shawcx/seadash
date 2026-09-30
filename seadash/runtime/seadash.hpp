@@ -267,6 +267,8 @@ std::string str(const T& x) {
     } else if constexpr (is_shared<T>::value) {
         if constexpr (std::is_base_of_v<BaseException, typename T::element_type>) {
             return x ? x->message : "None";  // str(e) is the message, like Python
+        } else if constexpr (requires { x->sd_str(); }) {
+            return x ? x->sd_str() : "None";  // a class's __str__
         } else {
             return repr(x);
         }
@@ -712,7 +714,13 @@ bool truthy(const T& x) {
         return x.has_value() && truthy(*x);
     } else if constexpr (is_tuple<T>::value) {
         return std::tuple_size_v<T> != 0;
-    } else if constexpr (is_shared<T>::value || is_function<T>::value) {
+    } else if constexpr (is_shared<T>::value) {
+        if constexpr (requires { x->sd_truthy(); }) {
+            return x && x->sd_truthy();  // a class's __bool__ / __len__
+        } else {
+            return static_cast<bool>(x);
+        }
+    } else if constexpr (is_function<T>::value) {
         return static_cast<bool>(x);
     } else if constexpr (requires { x.sd_truthy(); }) {
         return x.sd_truthy();
@@ -943,6 +951,10 @@ decltype(auto) iter(T&& x) {
         return x.keys();
     } else if constexpr (requires { file_lines(x); }) {
         return file_lines(x);
+    } else if constexpr (requires { x.sd_iter(); }) {
+        return x.sd_iter();  // a struct's __iter__
+    } else if constexpr (requires { x->sd_iter(); }) {
+        return x->sd_iter();  // a class's __iter__
     } else if constexpr (std::is_lvalue_reference_v<T>) {
         return (x);
     } else {

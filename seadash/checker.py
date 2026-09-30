@@ -440,6 +440,7 @@ class Checker:
                     raise self.error(
                         f"a {st.kind} body can only contain fields (`x: int`) and methods (`def ...`)", stmt
                     )
+        self.check_dunder_signatures(st)
         if st.init is not None and st.init.ret != NONE:
             raise self.error("__init__ must not return a value", st.init.node)
 
@@ -871,6 +872,8 @@ class Checker:
             return gen.checker.instantiate_class(gen, tuple(self.resolve_type(a) for a in args), node)
         if name in ("TextIO", "BinaryIO") and not args:
             return BINARY_FILE if name == "BinaryIO" else TEXT_FILE
+        if name in ("Iterator", "Iterable") and len(args) == 1:  # typing.Iterator[T], for __iter__
+            return IterType(self.resolve_type(args[0]), "iter")
         if name == "Optional" and len(args) == 1:  # typing.Optional[T] is T?
             inner = self.resolve_type(args[0])
             return inner if isinstance(inner, OptionalType) else OptionalType(inner)
@@ -1034,6 +1037,10 @@ class Checker:
             self.bind(target, result, stmt)
         elif not assignable(result, current):
             raise self.error(f"'{op}=' would change this {current} into a {result}", stmt)
+        elif isinstance(target, A.Index) and isinstance(target.dunder, Dunder):
+            owner = target.value.ty
+            if not self.dunder(owner, "__setitem__"):
+                raise self.error(f"{owner.name} doesn't support item assignment (define __setitem__)", target)
         elif isinstance(target, A.Attribute) and isinstance(target.sym, Field):
             self.note_attr_assignment(target, target.sym.type, result)
         # For codegen: what was read (and its type there) and the operation's
@@ -1059,6 +1066,15 @@ class Checker:
                 self.note_attr_assignment(target, f.type, t)
             case A.Index(container, index):
                 ct = self.check_expr(container)
+                if m := self.dunder(ct, "__setitem__"):  # obj[k] = v -> obj.__setitem__(k, v)
+                    self.expect_type(index, m.params[0].type, f"{ct.name} index")
+                    if not assignable(t, m.params[1].type):
+                        raise self.error(f"{ct.name}.__setitem__ takes {m.params[1].type}, not {t}", value)
+                    target.dunder = Dunder(m)
+                    target.ty = m.params[1].type
+                    return
+                if isinstance(ct, StructType):
+                    raise self.error(f"{ct.name} doesn't support item assignment (define __setitem__)", target)
                 match ct:
                     case ListType(elem):
                         if isinstance(index, A.Slice):
@@ -1439,7 +1455,7 @@ class Checker:
     def check_truthy(self, t: Type, e: A.Expr) -> None:
         ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE) or isinstance(
             t, (ListType, DictType, SetType, TupleType, OptionalType, FileType)
-        )
+        ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__"))
         if not ok:
             raise self.error(f"{t} can't be used as a condition", e)
 
@@ -1790,9 +1806,22 @@ class Checker:
             return t
         if op == "~" and t == INT:
             return INT
-        raise self.error(f"bad operand type for unary {op}: {t}", e)
+        if m := self.dunder(t, UNARY_DUNDERS[op]):  # -vec -> vec.__neg__()
+            e.dunder = Dunder(m)
+            return m.ret
+        raise self.error(f"bad operand type for unary {op}: {t}{self.dunder_hint(t, UNARY_DUNDERS[op])}", e)
 
     def binop_type(self, op: str, l: Type, r: Type, e: A.Node) -> Type:
+        name = BINARY_DUNDERS.get(op)
+        if name and (isinstance(l, StructType) or isinstance(r, StructType)):
+            if (m := self.dunder(l, f"__{name}__")) and accepts(m, r):  # a + b -> a.__add__(b)
+                e.dunder = Dunder(m)
+                return m.ret
+            if (m := self.dunder(r, f"__r{name}__")) and accepts(m, l):  # 2 * v -> v.__rmul__(2)
+                e.dunder = Dunder(m, reflected=True)
+                return m.ret
+            owner = l if isinstance(l, StructType) else r
+            raise self.error(f"unsupported operand types for {op}: {l} and {r}{self.dunder_hint(owner, f'__{name}__')}", e)
         numeric = is_numeric(l) and is_numeric(r)
         widened = FLOAT if FLOAT in (l, r) else INT
         match op:
@@ -1864,11 +1893,33 @@ class Checker:
     def check_compare(self, e: A.Compare) -> Type:
         left = e.left
         lt = self.check_expr(left)
+        e.dunder = []
         for op, right in zip(e.ops, e.comparators):
             rt = self.check_expr(right)
-            self.check_comparison(op, lt, rt, left, right, e)
+            e.dunder.append(self.comparison_dunder(op, lt, rt) or self.check_comparison(op, lt, rt, left, right, e))
             left, lt = right, rt
         return BOOL
+
+    def comparison_dunder(self, op: str, lt: Type, rt: Type) -> Dunder | None:
+        """a < b -> a.__lt__(b), else the reflection b.__gt__(a); a != b -> not a.__eq__(b)
+        without __ne__; x in c -> c.__contains__(x). None: use the built-in rules."""
+        if op in ("in", "not in"):
+            if (m := self.dunder(rt, "__contains__")) and accepts(m, lt):
+                return Dunder(m, reflected=True, negate=op == "not in")
+            return None
+        if op not in COMPARE_DUNDERS:
+            return None
+        name, reflected_name = COMPARE_DUNDERS[op]
+        if (m := self.dunder(lt, name)) and accepts(m, rt):
+            return Dunder(m)
+        if (m := self.dunder(rt, reflected_name)) and accepts(m, lt):
+            return Dunder(m, reflected=True)
+        if op == "!=":
+            if (m := self.dunder(lt, "__eq__")) and accepts(m, rt):
+                return Dunder(m, negate=True)
+            if (m := self.dunder(rt, "__eq__")) and accepts(m, lt):
+                return Dunder(m, reflected=True, negate=True)
+        return None
 
     def check_comparison(self, op: str, lt: Type, rt: Type, left: A.Expr, right: A.Expr, e: A.Compare) -> None:
         if op in ("<", ">", "<=", ">="):
@@ -1876,7 +1927,9 @@ class Checker:
                 lt == rt and (lt in (STR, BYTES) or isinstance(lt, (TupleType, ListType)))
             )
             if not ordered:
-                raise self.error(f"'{op}' isn't supported between {lt} and {rt}", e)
+                owner = lt if isinstance(lt, StructType) else rt
+                hint = self.dunder_hint(owner, COMPARE_DUNDERS[op][0])
+                raise self.error(f"'{op}' isn't supported between {lt} and {rt}{hint}", e)
         elif op in ("==", "!="):
             if not (is_numeric(lt) and is_numeric(rt)) and join(lt, rt) is None:
                 raise self.error(f"comparing {lt} with {rt} using '{op}' is always {op == '!='}", e)
@@ -1977,6 +2030,10 @@ class Checker:
 
     def check_index(self, e: A.Index, value: A.Expr, index: A.Expr) -> Type:
         vt = self.check_expr(value)
+        if m := self.dunder(vt, "__getitem__"):  # obj[k] -> obj.__getitem__(k)
+            self.expect_type(index, m.params[0].type, f"{vt.name} index")
+            e.dunder = Dunder(m)
+            return m.ret
         if isinstance(index, A.Slice):
             if not (isinstance(vt, ListType) or vt in (STR, BYTES)):
                 raise self.error(f"{vt} can't be sliced", e)
@@ -2214,6 +2271,33 @@ class Checker:
             and name not in self.scope.assigned and name not in self.functions
         )
 
+    # ---- dunder methods -------------------------------------------------------
+
+    def dunder(self, t: Type, name: str) -> FuncInfo | None:
+        """A user type's __name__ method (built-in types' behaviour isn't dunder-based)."""
+        if isinstance(t, StructType) and not t.builtin:
+            return t.find_method(name)
+        return None
+
+    def dunder_hint(self, t: Type, name: str) -> str:
+        return f" (define {name} on {t.name})" if isinstance(t, StructType) and not t.builtin else ""
+
+    def check_dunder_signatures(self, st: StructType) -> None:
+        for name, m in st.methods.items():
+            spec = DUNDER_SIGNATURES.get(name)
+            if spec is None:
+                continue
+            count, ret = spec
+            if len(m.params) != count:
+                params = ", ".join(["self", *(["other"] if count == 1 else ["key", "value"] if count == 2 else [])])
+                raise self.error(f"{name} takes ({params})", m.node)
+            if ret is not None and m.ret != ret:
+                raise self.error(f"{name} must return {ret}, not {m.ret}", m.node)
+            if name == "__iter__" and element_type(m.ret) is None:
+                raise self.error(f"__iter__ must return something iterable (like a list), not {m.ret}", m.node)
+        if "__hash__" in st.methods and not st.find_method("__eq__"):
+            raise self.error("a class with __hash__ also needs __eq__ (equal objects must hash the same)", st.methods["__hash__"].node)
+
     def check_isinstance(self, e: A.Call) -> Type:
         """isinstance(x, Dog) or isinstance(x, (Dog, Cat)), for class hierarchies."""
         if len(e.args) != 2 or e.keywords:
@@ -2277,6 +2361,9 @@ class Checker:
 
     def call_value(self, e: A.Call, t: Type) -> Type:
         """Calling a function *value*: a variable, parameter, field or expression of function type."""
+        if m := self.dunder(t, "__call__"):  # obj(args) -> obj.__call__(args)
+            e.sym = CallTarget("call_dunder", m, self.match_args(e, m.params, f"{t.name}()"))
+            return m.ret
         if isinstance(t, OptionalType) and isinstance(t.inner, FuncType):
             raise self.error(f"{t} might be None; check it first", e.func)
         if not isinstance(t, FuncType):
@@ -2472,6 +2559,40 @@ def attr_path(e: A.Expr) -> tuple[str, ...] | None:
             base = attr_path(value)
             return base + (attr,) if base else None
     return None
+
+
+@dataclass(frozen=True)
+class Dunder:
+    """An operator or protocol resolved to a user type's dunder method (stored in Node.dunder)."""
+
+    method: FuncInfo
+    reflected: bool = False  # called on the right operand: 2 * v -> v.__rmul__(2), x in c -> c.__contains__(x)
+    negate: bool = False  # a != b as `not a.__eq__(b)`; `not in`
+
+
+BINARY_DUNDERS = {
+    "+": "add", "-": "sub", "*": "mul", "/": "truediv", "//": "floordiv", "%": "mod", "**": "pow",
+    "@": "matmul", "&": "and", "|": "or", "^": "xor", "<<": "lshift", ">>": "rshift",
+}
+UNARY_DUNDERS = {"-": "__neg__", "+": "__pos__", "~": "__invert__"}
+# op -> (method on the left operand, reflected method on the right operand)
+COMPARE_DUNDERS = {
+    "==": ("__eq__", "__eq__"), "!=": ("__ne__", "__ne__"),
+    "<": ("__lt__", "__gt__"), ">": ("__gt__", "__lt__"), "<=": ("__le__", "__ge__"), ">=": ("__ge__", "__le__"),
+}
+# name -> (number of parameters besides self, required return type or None)
+DUNDER_SIGNATURES = {
+    "__repr__": (0, STR), "__str__": (0, STR), "__len__": (0, INT), "__bool__": (0, BOOL), "__hash__": (0, INT),
+    "__iter__": (0, None), "__neg__": (0, None), "__pos__": (0, None), "__invert__": (0, None), "__abs__": (0, None),
+    **{name: (1, BOOL) for name in ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__", "__contains__")},
+    "__getitem__": (1, None), "__setitem__": (2, NONE),
+    **{f"__{n}__": (1, None) for n in BINARY_DUNDERS.values()},
+    **{f"__r{n}__": (1, None) for n in BINARY_DUNDERS.values()},
+}
+
+
+def accepts(m: FuncInfo, t: Type) -> bool:
+    return len(m.params) == 1 and assignable(t, m.params[0].type)
 
 
 @dataclass

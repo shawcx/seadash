@@ -16,7 +16,7 @@ from .errors import Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE,
-    DictType, Field, FileType, SyncType, FuncType, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
+    DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
 
@@ -168,11 +168,13 @@ def printable(t: Type) -> bool:
 
 
 def sized(t: Type) -> bool:
-    return t in (STR, BYTES, JSON_VALUE) or isinstance(t, (ListType, DictType, SetType, TupleType))
+    return t in (STR, BYTES, JSON_VALUE) or isinstance(t, (ListType, DictType, SetType, TupleType)) or bool(
+        user_dunder(t, "__len__")
+    )
 
 
 def ordered(t: Type) -> bool:
-    return t in (INT, FLOAT, STR, BYTES) or isinstance(t, (TupleType, ListType))
+    return t in (INT, FLOAT, STR, BYTES) or isinstance(t, (TupleType, ListType)) or bool(user_dunder(t, "__lt__"))
 
 
 def bytes_like(t: Type) -> bool:
@@ -262,7 +264,20 @@ def b_range(ctx: CallContext) -> Type:
 
 def b_abs(ctx: CallContext) -> Type:
     ctx.arity(1)
-    return ctx.need(0, is_numeric, "a number")
+    t = ctx.arg(0)
+    if m := user_dunder(t, "__abs__"):
+        return m.ret
+    if not is_numeric(t):
+        raise ctx.error(f"{ctx.what} argument must be a number, not {t}", ctx.args[0])
+    return t
+
+
+def b_hash(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    t = ctx.arg(0)
+    if not is_hashable(t):
+        raise ctx.error(f"{t} isn't hashable (define __hash__ and __eq__ on it)", ctx.args[0])
+    return INT
 
 
 def b_min_max(ctx: CallContext) -> Type:
@@ -333,6 +348,12 @@ def b_enumerate(ctx: CallContext) -> Type:
 def b_zip(ctx: CallContext) -> Type:
     n = ctx.arity(2, MANY)
     return IterType(TupleType(tuple(ctx.iterable(i) for i in range(n))), "zip")
+
+
+def b_iter(ctx: CallContext) -> Type:
+    """iter(xs): what __iter__ returns in Python code. seadash iterators are simple (eager)."""
+    ctx.arity(1)
+    return IterType(ctx.iterable(0), "iter")
 
 
 def b_list(ctx: CallContext) -> Type:
@@ -416,6 +437,7 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "bool": b_bool,
     "range": b_range,
     "abs": b_abs,
+    "hash": b_hash,
     "min": b_min_max,
     "max": b_min_max,
     "sum": b_sum,
@@ -426,6 +448,7 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "enumerate": b_enumerate,
     "zip": b_zip,
     "list": b_list,
+    "iter": b_iter,
     "set": b_set,
     "dict": b_dict,
     "any": b_any_all,
@@ -907,7 +930,7 @@ MODULES["os"] = module_with_params(runtime_module(
 MODULES["os"].members["path"] = OS_PATH
 
 MODULES["typing"] = Module("typing", {
-    name: TypeAlias(name) for name in ("Callable", "TextIO", "BinaryIO", "Optional", "List", "Dict", "Set", "Tuple")
+    name: TypeAlias(name) for name in ("Callable", "TextIO", "BinaryIO", "Optional", "List", "Dict", "Set", "Tuple", "Iterator", "Iterable")
 })
 
 

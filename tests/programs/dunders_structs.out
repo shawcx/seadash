@@ -1,0 +1,5 @@
+[Point(x=1, y=2), Point(x=1, y=5), Point(x=2, y=1)] <1,2> <3,6> <1,2> <2,1>
+2 [Point(x=0, y=0), Point(x=1, y=1)] 2 True
+shape blob 0 False falsy
+square 3x3 4 True truthy
+[Shape(name='blob'), Square(name='sq', side=3)]

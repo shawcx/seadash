@@ -1143,7 +1143,7 @@ def test_lambda_types_come_from_the_generic_signature():
     ("def f[T]() -> T?:\n    return None\nx = f()", "can't tell what T should be for f; write the types, e.g. f[int](...)"),
     ("def f[T](a: T, b: T) -> T:\n    return a\nx = f(1, 'a')", "argument 'b' of f() must be int, not str"),
     ("def big[T](xs: list[T]) -> T:\n    return xs[0] if xs[0] > xs[1] else xs[1]\nstruct P:\n    x: int\ny = big([P(1)])",
-     "in big[P]: '>' isn't supported between P and P"),
+     "in big[P]: '>' isn't supported between P and P (define __gt__ on P)"),
     ("class Box[T]:\n    v: T\nx: Box = Box(1)", "'Box' needs type arguments: Box[T]"),
     ("class Box[T]:\n    v: T\nx = Box[int, str](1)", "Box takes 1 type argument, not 2"),
     ("def f[T](x: T) -> T:\n    return x\ny: f = 1", "'f' is a generic function, not a type"),
@@ -1212,3 +1212,54 @@ def test_socket_annotations():
             with conn:
                 return conn.recv(10)
     """)
+
+
+# ---- dunder methods -------------------------------------------------------------------
+
+VEC = """
+class Vec:
+    x: float
+    def __add__(self, other: Vec) -> Vec:
+        return Vec(self.x + other.x)
+    def __rmul__(self, k: float) -> Vec:
+        return Vec(self.x * k)
+    def __lt__(self, other: Vec) -> bool:
+        return self.x < other.x
+    def __eq__(self, other: Vec) -> bool:
+        return self.x == other.x
+    def __len__(self) -> int:
+        return 1
+    def __getitem__(self, i: int) -> float:
+        return self.x
+"""
+
+
+@pytest.mark.parametrize("expr,ty", [
+    ("Vec(1) + Vec(2)", "Vec"),
+    ("2 * Vec(1)", "Vec"),
+    ("Vec(1) < Vec(2)", "bool"),
+    ("Vec(1) > Vec(2)", "bool"),
+    ("Vec(1) != Vec(2)", "bool"),
+    ("sorted([Vec(2), Vec(1)])", "list[Vec]"),
+    ("len(Vec(1))", "int"),
+    ("Vec(1)[0]", "float"),
+    ("Vec(1) if Vec(1) else Vec(2)", "Vec"),
+])
+def test_dunder_types(expr, ty):
+    info = ok(VEC + f"z = {expr}\n")
+    assert str(info.globals[-1].type) == ty
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("z = Vec(1) - Vec(2)", "unsupported operand types for -: Vec and Vec (define __sub__ on Vec)"),
+    ("z = Vec(1) <= Vec(2)", "'<=' isn't supported between Vec and Vec (define __le__ on Vec)"),
+    ("z = -Vec(1)", "bad operand type for unary -: Vec (define __neg__ on Vec)"),
+    ("v = Vec(1)\nv[0] = 2.0", "Vec doesn't support item assignment (define __setitem__)"),
+    ("class A:\n    def __len__(self) -> str:\n        return ''", "__len__ must return int, not str"),
+    ("class A:\n    def __eq__(self) -> bool:\n        return True", "__eq__ takes (self, other)"),
+    ("class A:\n    def __iter__(self) -> int:\n        return 1", "__iter__ must return something iterable (like a list), not int"),
+    ("class A:\n    def __hash__(self) -> int:\n        return 1", "a class with __hash__ also needs __eq__ (equal objects must hash the same)"),
+    ("class A:\n    x: int\nz = {A(1): 1}", "dict keys must be int, float, str, bool, or a tuple of those; not A"),
+])
+def test_dunder_errors(src, msg):
+    assert err(VEC + src).message == msg

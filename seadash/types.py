@@ -265,8 +265,14 @@ def is_numeric(t: Type) -> bool:
     return t in (INT, FLOAT)
 
 
+def user_dunder(t: Type, name: str) -> FuncInfo | None:
+    return t.find_method(name) if isinstance(t, StructType) and not t.builtin else None
+
+
 def is_hashable(t: Type) -> bool:
     if t in (INT, FLOAT, BOOL, STR, BYTES):
+        return True
+    if user_dunder(t, "__hash__"):
         return True
     if isinstance(t, TupleType):
         return all(is_hashable(e) for e in t.elts)
@@ -336,6 +342,8 @@ def element_type(t: Type) -> Type | None:
             return JSON_VALUE  # iterating a JSON array
         case FileType(binary):
             return BYTES if binary else STR  # a file iterates over its lines
+        case StructType() if (m := user_dunder(t, "__iter__")):
+            return element_type(m.ret)  # for x in obj -> obj.__iter__()
     return None
 
 

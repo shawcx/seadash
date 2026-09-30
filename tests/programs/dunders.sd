@@ -1,0 +1,110 @@
+from typing import Iterator
+import math
+
+class Vec:
+    x: float
+    y: float
+
+    def __init__(self, x: float, y: float):
+        self.x = x
+        self.y = y
+
+    def __repr__(self) -> str:
+        return f"Vec({self.x}, {self.y})"
+
+    def __add__(self, other: "Vec") -> "Vec":
+        return Vec(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other: "Vec") -> "Vec":
+        return Vec(self.x - other.x, self.y - other.y)
+
+    def __mul__(self, k: float) -> "Vec":
+        return Vec(self.x * k, self.y * k)
+
+    def __rmul__(self, k: float) -> "Vec":
+        return Vec(self.x * k, self.y * k)
+
+    def __neg__(self) -> "Vec":
+        return Vec(-self.x, -self.y)
+
+    def __abs__(self) -> float:
+        return math.hypot(self.x, self.y)
+
+    def __eq__(self, other: "Vec") -> bool:
+        return self.x == other.x and self.y == other.y
+
+    def __lt__(self, other: "Vec") -> bool:
+        return abs(self) < abs(other)
+
+    def __hash__(self) -> int:
+        return hash((self.x, self.y))
+
+    def __bool__(self) -> bool:
+        return self.x != 0 or self.y != 0
+
+a = Vec(1.0, 2.0)
+b = Vec(3.0, 4.0)
+print(a + b, b - a, a * 2, 3 * a, -a, abs(b))
+print(a == Vec(1.0, 2.0), a != b, a < b, b > a, sorted([b, a, Vec(0.0, 1.0)]))
+print(max([a, b]), min([a, b], key=lambda v: v.y), Vec(1.0, 2.0) in [b, a], a is Vec(1.0, 2.0))
+print(bool(Vec(0.0, 0.0)), bool(a), "nonzero" if a else "zero", [str(v) for v in [a, b]])
+seen = {a: "first", b: "second"}
+print(seen[Vec(1.0, 2.0)], len(seen), Vec(3.0, 4.0) in seen)
+total = Vec(0.0, 0.0)
+for v in [a, b, a]:
+    total += v
+print(total)
+
+class Grid:
+    cells: dict[tuple[int, int], str]
+    width: int
+
+    def __init__(self, width: int):
+        self.cells = {}
+        self.width = width
+
+    def __getitem__(self, pos: tuple[int, int]) -> str:
+        return self.cells.get(pos, ".")
+
+    def __setitem__(self, pos: tuple[int, int], value: str):
+        self.cells[pos] = value
+
+    def __contains__(self, pos: tuple[int, int]) -> bool:
+        return pos in self.cells
+
+    def __len__(self) -> int:
+        return len(self.cells)
+
+    def __iter__(self) -> Iterator[tuple[int, int]]:
+        return iter(sorted(self.cells.keys()))
+
+    def __str__(self) -> str:
+        return f"Grid({self.width}, {len(self)} filled)"
+
+    def __call__(self, row: int) -> str:
+        return "".join(self[(row, c)] for c in range(self.width))
+
+g = Grid(4)
+g[(0, 1)] = "#"
+g[(1, 3)] = "@"
+g[(0, 1)] += "!"
+print(g[(0, 1)], g[(2, 2)], (1, 3) in g, (5, 5) in g, len(g), bool(g), bool(Grid(2)))
+print(g, str(g), [p for p in g], list(g), g(0), g(1))
+print(f"formatted: {g} and {a}")
+
+class Money:
+    cents: int
+
+    def __init__(self, cents: int):
+        self.cents = cents
+
+    def __repr__(self) -> str:
+        return f"${self.cents // 100}.{self.cents % 100:02d}"
+
+    def __add__(self, other: "Money") -> "Money":
+        return Money(self.cents + other.cents)
+
+    def __radd__(self, other: int) -> "Money":
+        return Money(self.cents + other)
+
+print(Money(150) + Money(275), 0 + Money(99))

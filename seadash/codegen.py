@@ -34,11 +34,11 @@ from dataclasses import dataclass
 
 from . import ast as A
 from . import builtins
-from .checker import CallTarget, ModuleInfo
+from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, SyncType,
     DictType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
-    TupleType, Type, Var, element_type, is_numeric,
+    TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
 
 CPP_KEYWORDS = frozenset(
@@ -298,6 +298,17 @@ class CodeGen:
             self.line()
         for st in structs:
             self.struct_definition(st)
+        hashed = [st for st in structs if st.find_method("__hash__")]
+        if hashed:  # std::hash specializations must be declared in namespace std
+            self.line(f"}}  // namespace {self.namespace}")
+            for st in hashed:
+                full = f"{self.namespace}::{local_name(st)}"
+                key = f"std::shared_ptr<{full}>" if st.kind == "class" else full
+                call = "x->sd_op_hash()" if st.kind == "class" else f"const_cast<{full}&>(x).sd_op_hash()"
+                self.line(f"template <> struct std::hash<{key}> {{ std::size_t operator()(const {key}& x) const "
+                          f"{{ return static_cast<std::size_t>({call}); }} }};")
+            self.line(f"namespace {self.namespace} {{")
+            self.line()
         if self.info.globals:
             for var in self.info.globals:
                 self.line(f"{self.cpp_type(var.type)} {ident(var.cpp_name)}{{}};")
@@ -378,8 +389,14 @@ class CodeGen:
             if m.name != "__init__":
                 self.line(f"{self.cpp_type(m.ret)} {ident(m.name)}({', '.join(self.params(m))});")
         self.line("std::string sd_repr() const;")
+        self.protocol_members(st, name)
         if st.kind == "struct":
-            self.line(f"bool operator==(const {name}&) const = default;")
+            if st.find_method("__eq__"):
+                self.line(f"bool operator==(const {name}& o) const {{ return const_cast<{name}*>(this)->sd_op_eq(o); }}")
+            else:
+                self.line(f"bool operator==(const {name}&) const = default;")
+            if st.find_method("__lt__"):
+                self.line(f"bool operator<(const {name}& o) const {{ return const_cast<{name}*>(this)->sd_op_lt(o); }}")
         if self.json_hooks(st):
             self.line("sd::json::Value sd_to_json() const;")
             self.line(f"static {self.cpp_type(st)} sd_from_json(const sd::json::Value& v, const std::string& path);")
@@ -428,13 +445,45 @@ class CodeGen:
             decl = f"{self.cpp_type(m.ret)} {ident(m.name)}({', '.join(self.params(m))})"
             self.line(f"{decl} override;" if overrides else f"virtual {decl};")
         self.line("std::string sd_repr() const override;" if st.base else "virtual std::string sd_repr() const;")
+        self.protocol_members(st, name)
         if self.json_hooks(st):
             virtual = "" if st.base and self.json_hooks(st.base) else "virtual "
             suffix = " override" if st.base and self.json_hooks(st.base) else ""
             self.line(f"{virtual}sd::json::Value sd_to_json() const{suffix};")
             self.line(f"static {self.cpp_type(st)} sd_from_json(const sd::json::Value& v, const std::string& path);")
         self.close(";")
+        # Containers and algorithms (std::find, std::sort, dict keys) compare through these.
+        ptr = f"std::shared_ptr<{name}>"
+        if "__eq__" in st.methods:
+            self.line(f"inline bool operator==(const {ptr}& a, const {ptr}& b) {{ return a->sd_op_eq(b); }}")
+        if "__lt__" in st.methods:
+            self.line(f"inline bool operator<(const {ptr}& a, const {ptr}& b) {{ return a->sd_op_lt(b); }}")
         self.line()
+
+    def protocol_members(self, st: StructType, name: str) -> None:
+        """Hooks the runtime uses for str(), truthiness and iteration, from __str__,
+        __bool__/__len__ and __iter__. Classes make them virtual, so a subclass's
+        dunder methods are found through a base-class reference."""
+        self_ = f"const_cast<{name}*>(this)"
+        is_class = st.kind == "class"
+        root = is_class and st.base is None
+        if "__str__" in st.methods or root:
+            body = f"{self_}->sd_op_str()" if "__str__" in st.methods else "sd_repr()"
+            prefix = "virtual " if root else ""
+            suffix = " override" if is_class and not root else ""
+            self.line(f"{prefix}std::string sd_str() const{suffix} {{ return {body}; }}")
+        if "__bool__" in st.methods or "__len__" in st.methods or root:
+            if "__bool__" in st.methods:
+                body = f"{self_}->sd_op_bool()"
+            elif "__len__" in st.methods:
+                body = f"{self_}->sd_op_len() != 0"
+            else:
+                body = "true"
+            prefix = "virtual " if root else ""
+            suffix = " override" if is_class and not root else ""
+            self.line(f"{prefix}bool sd_truthy() const{suffix} {{ return {body}; }}")
+        if "__iter__" in st.methods:
+            self.line(f"auto sd_iter() const {{ return sd::iter({self_}->sd_op_iter()); }}")
 
     def exception_definition(self, st: StructType) -> None:
         """`class NotFound(ValueError)` derives from the runtime's sd::ValueError."""
@@ -474,7 +523,10 @@ class CodeGen:
             parts.append(f"sd::repr({ident(f.name)})")
         parts.append(cpp_string(")"))
         lock = "std::lock_guard<std::recursive_mutex> sd_lock(this->sd_mutex); " if is_synchronized(st) else ""
-        self.line(f"std::string {name}::sd_repr() const {{ {lock}return {' + '.join(parts)}; }}")
+        body = " + ".join(parts)
+        if st.find_method("__repr__"):  # the user's own repr
+            body = f"const_cast<{name}*>(this)->sd_op_repr()"
+        self.line(f"std::string {name}::sd_repr() const {{ {lock}return {body}; }}")
         self.line()
         if self.json_hooks(st):
             self.json_members(st)
@@ -895,6 +947,11 @@ class CodeGen:
                 self.line(f"{self.attribute(target)} = {self.coerce(code, ty, target.ty)};")
             case A.Index(container, index):
                 c = self.expr(container)
+                if target.dunder is not None:  # obj[k] = v -> obj.__setitem__(k, v)
+                    m = target.dunder.method
+                    args = [self.expr_as(index, m.params[0].type), self.coerce(code, ty, m.params[1].type)]
+                    self.line(f"{self.dunder_call(target.dunder, c, container.ty, args)};")
+                    return
                 if isinstance(container.ty, DictType):
                     key = self.expr_as(index, container.ty.key)
                     self.line(f"{c}[{key}] = {self.coerce(code, ty, target.ty)};")
@@ -910,6 +967,20 @@ class CodeGen:
 
     def aug_assign(self, s: A.AugAssign, target: A.Expr, op: str, value: A.Expr) -> None:
         read_var, read_type, result = s.sym
+        if isinstance(target, A.Index) and target.dunder is not None:
+            # obj[k] += v -> obj.__setitem__(k, obj.__getitem__(k) + v), evaluating obj and k once
+            owner = target.value.ty
+            getter = target.dunder
+            setter = Dunder(owner.find_method("__setitem__"))
+            obj, key = self.fresh("obj"), self.fresh("key")
+            self.open("")
+            self.line(f"auto&& {obj} = {self.expr(target.value)};")
+            self.line(f"auto {key} = {self.expr_as(target.index, getter.method.params[0].type)};")
+            current = self.dunder_call(getter, obj, owner, [key])
+            new = self.binop_code(op, current, read_type, self.expr(value), value.ty, result, s.dunder)
+            self.line(f"{self.dunder_call(setter, obj, owner, [key, self.coerce(new, result, setter.method.params[1].type)])};")
+            self.close()
+            return
         if isinstance(target, A.Name):
             write: Var = target.sym
             if op == "+" and isinstance(read_type, ListType) and write is read_var:
@@ -921,14 +992,14 @@ class CodeGen:
             ):
                 self.line(f"{self.var_ref(write)} {op}= {self.expr(value)};")  # the readable form
                 return
-            new = self.binop_code(op, current, read_type, self.expr(value), value.ty, result)
+            new = self.binop_code(op, current, read_type, self.expr(value), value.ty, result, s.dunder)
             self.line(f"{self.var_ref(write)} = {self.coerce(new, result, write.type)};")
             return
         ref = self.fresh("ref")
         lvalue = self.attribute(target) if isinstance(target, A.Attribute) else self.index(target)
         self.open("")
         self.line(f"auto& {ref} = {lvalue};")
-        new = self.binop_code(op, ref, read_type, self.expr(value), value.ty, result)
+        new = self.binop_code(op, ref, read_type, self.expr(value), value.ty, result, s.dunder)
         self.line(f"{ref} = {self.coerce(new, result, read_type)};")
         self.close()
 
@@ -1008,12 +1079,14 @@ class CodeGen:
                 return self.comprehension(e)
             case A.UnaryOp("not", operand):
                 return f"(!{self.cond(operand)})"
+            case A.UnaryOp(op, operand) if e.dunder is not None:  # -vec -> vec.__neg__()
+                return self.dunder_call(e.dunder, self.expr(operand), operand.ty, [])
             case A.UnaryOp(op, operand):
                 return f"({op}{self.expr(operand)})"
             case A.BinOp(op, left, right):
                 return self.in_order(
                     [left, right],
-                    lambda: self.binop_code(op, self.expr(left), left.ty, self.expr(right), right.ty, e.ty),
+                    lambda: self.binop_code(op, self.expr(left), left.ty, self.expr(right), right.ty, e.ty, e.dunder),
                 )
             case A.BoolOp():
                 return self.boolop(e)
@@ -1164,6 +1237,8 @@ class CodeGen:
 
     def index(self, e: A.Index) -> str:
         v = self.expr(e.value)
+        if e.dunder is not None:  # obj[k] -> obj.__getitem__(k)
+            return self.dunder_call(e.dunder, v, e.value.ty, [self.expr_as(e.index, e.dunder.method.params[0].type)])
         idx = e.index
         if isinstance(idx, A.Slice):
             parts = [self.expr(p) if p is not None else "std::nullopt" for p in (idx.lower, idx.upper, idx.step)]
@@ -1178,7 +1253,18 @@ class CodeGen:
             return f"sd::index({v}, {self.expr_as(idx, vt.key)})"
         return f"sd::index({v}, {self.expr(idx)})"
 
-    def binop_code(self, op: str, lc: str, lt: Type, rc: str, rt: Type, t: Type) -> str:
+    def dunder_call(self, d, recv: str, recv_type: Type, args: list[str]) -> str:
+        """A call to a user type's dunder method; `not` it for != / not in derived from == / in."""
+        arrow = "->" if isinstance(recv_type, StructType) and recv_type.kind == "class" else "."
+        call = f"{recv}{arrow}{ident(d.method.name)}({', '.join(args)})"
+        return f"(!{call})" if d.negate else call
+
+    def binop_code(self, op: str, lc: str, lt: Type, rc: str, rt: Type, t: Type, dunder=None) -> str:
+        if dunder is not None:  # a + b -> a.__add__(b), or 2 * v -> v.__rmul__(2)
+            param = dunder.method.params[0].type
+            if dunder.reflected:
+                return self.dunder_call(dunder, rc, rt, [self.coerce(lc, lt, param)])
+            return self.dunder_call(dunder, lc, lt, [self.coerce(rc, rt, param)])
         if is_numeric(lt) and is_numeric(rt):
             if op == "/":
                 return f"sd::truediv({self.coerce(lc, lt, FLOAT)}, {self.coerce(rc, rt, FLOAT)})"
@@ -1221,12 +1307,13 @@ class CodeGen:
 
     def compare(self, e: A.Compare) -> str:
         operands = [e.left, *e.comparators]
+        dunders = e.dunder or [None] * len(e.ops)
         if len(e.ops) == 1:
-            return self.in_order(operands, lambda: self.comparison(e.ops[0], self.expr(e.left), e.left, self.expr(e.comparators[0]), e.comparators[0]))
+            return self.in_order(operands, lambda: self.comparison(e.ops[0], self.expr(e.left), e.left, self.expr(e.comparators[0]), e.comparators[0], dunders[0]))
         if all(is_simple(x) for x in operands[1:-1]):
             parts = [
-                self.comparison(op, self.expr(l), l, self.expr(r), r)
-                for op, l, r in zip(e.ops, operands, operands[1:])
+                self.comparison(op, self.expr(l), l, self.expr(r), r, d)
+                for op, l, r, d in zip(e.ops, operands, operands[1:], dunders)
             ]
             return parts[0] if len(parts) == 1 else "(" + " && ".join(parts) + ")"
         # a < f() < c: evaluate each middle operand once, and stop early like Python.
@@ -1234,11 +1321,16 @@ class CodeGen:
         body = [f"auto {temps[0]} = {self.expr(operands[0])};"]
         for i, op in enumerate(e.ops):
             body.append(f"auto {temps[i + 1]} = {self.expr(operands[i + 1])};")
-            test = self.comparison(op, temps[i], operands[i], temps[i + 1], operands[i + 1])
+            test = self.comparison(op, temps[i], operands[i], temps[i + 1], operands[i + 1], dunders[i])
             body.append(f"if (!{test}) return false;")
         return "[&]() -> bool { " + " ".join(body) + " return true; }()"
 
-    def comparison(self, op: str, lc: str, left: A.Expr, rc: str, right: A.Expr) -> str:
+    def comparison(self, op: str, lc: str, left: A.Expr, rc: str, right: A.Expr, dunder=None) -> str:
+        if dunder is not None:  # a < b -> a.__lt__(b); x in c -> c.__contains__(x)
+            param = dunder.method.params[0].type
+            if dunder.reflected:
+                return self.dunder_call(dunder, rc, right.ty, [self.coerce(lc, left.ty, param)])
+            return self.dunder_call(dunder, lc, left.ty, [self.coerce(rc, right.ty, param)])
         if isinstance(right, A.NoneLit) or isinstance(left, A.NoneLit):
             subject = lc if isinstance(right, A.NoneLit) else rc
             is_none = op in ("is", "==")
@@ -1249,9 +1341,9 @@ class CodeGen:
             case "not in":
                 return f"(!sd::contains({rc}, {lc}))"
             case "is":
-                return f"({lc} == {rc})"
+                return f"({lc}.get() == {rc}.get())"  # identity, whatever __eq__ says
             case "is not":
-                return f"({lc} != {rc})"
+                return f"({lc}.get() != {rc}.get())"
         return f"({lc} {op} {rc})"
 
     def comprehension(self, e: A.Expr) -> str:
@@ -1316,6 +1408,9 @@ class CodeGen:
                 if st.kind == "class":
                     return f"std::make_shared<{class_name(st)}>({', '.join(args)})"
                 return f"{class_name(st)}({', '.join(args)})"
+            case "call_dunder":  # obj(args) -> obj.__call__(args)
+                m = target.target
+                return self.dunder_call(Dunder(m), self.expr(e.func), e.func.ty, self.slot_codes(target.args, m.params))
             case "super_method":
                 fn = target.target
                 prefix = self.self_prefix(self.func.owner)
@@ -1409,8 +1504,12 @@ class CodeGen:
                     return f"sd::open_binary({a}, {mode_code})"
                 encoding = self.keyword(e, "encoding")
                 return f"sd::open_text({', '.join([a, mode_code, *([self.expr(encoding)] if encoding else [])])})"
+            case "len" if (m := user_dunder(e.args[0].ty, "__len__")):
+                return self.dunder_call(Dunder(m), a, e.args[0].ty, [])
             case "len":
                 return f"sd::len({a})"
+            case "hash":
+                return f"static_cast<std::int64_t>(sd::Hash{{}}({a}))"
             case "str":
                 return f"sd::str({a})" if a else '""s'
             case "repr":
@@ -1423,6 +1522,8 @@ class CodeGen:
                 return self.cond(e.args[0]) if a else "false"
             case "range":
                 return f"sd::range({', '.join(args)})"
+            case "abs" if (m := user_dunder(e.args[0].ty, "__abs__")):
+                return self.dunder_call(Dunder(m), a, e.args[0].ty, [])
             case "abs":
                 return f"sd::abs({a})"
             case "min" | "max":
@@ -1446,6 +1547,8 @@ class CodeGen:
                 return f"sd::enumerate({', '.join(args)})"
             case "list":
                 return f"sd::to_list({a})" if a else f"{self.cpp_type(e.ty)}{{}}"
+            case "iter":
+                return f"sd::to_list({a})"
             case "set":
                 return f"sd::to_set({a})" if a else f"{self.cpp_type(e.ty)}{{}}"
             case "dict":

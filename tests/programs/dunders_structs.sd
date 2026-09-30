@@ -1,0 +1,46 @@
+# dunder methods on structs (values) and through base classes
+struct Point:
+    x: int
+    y: int
+
+    def __add__(self, other: Point) -> Point:
+        return Point(self.x + other.x, self.y + other.y)
+
+    def __lt__(self, other: Point) -> bool:
+        return (self.x, self.y) < (other.x, other.y)
+
+    def __hash__(self) -> int:
+        return self.x * 31 + self.y
+
+    def __eq__(self, other: Point) -> bool:
+        return self.x == other.x and self.y == other.y
+
+    def __str__(self) -> str:
+        return f"<{self.x},{self.y}>"
+
+pts = [Point(2, 1), Point(1, 5), Point(1, 2)]
+print(sorted(pts), min(pts), pts[0] + pts[1], str(pts[2]), f"{pts[0]}")
+visited = {Point(0, 0), Point(1, 1), Point(0, 0)}
+counts: dict[Point, int] = {}
+for p in [Point(1, 1), Point(2, 2), Point(1, 1)]:
+    counts[p] = counts.get(p, 0) + 1
+print(len(visited), sorted(visited), counts[Point(1, 1)], Point(2, 2) in counts)
+
+class Shape:
+    name: str
+    def __str__(self) -> str:
+        return f"shape {self.name}"
+    def __len__(self) -> int:
+        return 0
+
+class Square(Shape):
+    side: int
+    def __str__(self) -> str:
+        return f"square {self.side}x{self.side}"
+    def __len__(self) -> int:
+        return 4
+
+shapes: list[Shape] = [Shape("blob"), Square("sq", 3)]
+for s in shapes:
+    print(str(s), len(s), bool(s), "truthy" if s else "falsy")
+print(shapes)
