@@ -150,6 +150,14 @@ class Module:
     libs: tuple[str, ...] = ()  # libraries to link, e.g. ("z",) for -lz
 
 
+@dataclass
+class UserModule(Module):
+    """A module compiled from a .sd file: members are FuncInfo, StructType and global Var."""
+
+    namespace: str = ""  # C++ namespace, e.g. "sdm::geometry::shapes"
+    info: object = None  # its checker.ModuleInfo
+
+
 # ---- predicates -------------------------------------------------------------
 
 
@@ -959,3 +967,6 @@ MODULES["json"] = module_with_params(runtime_module(
     JSONDecodeError=exception_class("JSONDecodeError", "sd::json::JSONDecodeError", "ValueError"),
 ))
 MODULES["json"].members["Value"] = NamedType("Value", JSON_VALUE)
+
+MODULES["__future__"] = Module("__future__", {"annotations": TypeAlias("annotations")})  # accepted, no effect
+

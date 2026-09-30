@@ -1,0 +1,9 @@
+from sdlib.geometry import Point
+
+def shout(s: str) -> str:
+    return s.upper() + "!"
+
+def describe(p: Point) -> str:
+    return f"Point({p.x}, {p.y}) with norm {p.norm()}"
+
+print("textutil loaded")

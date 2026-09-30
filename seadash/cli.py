@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .astdump import dump
 from .checker import check
-from .driver import BuildError, BuildOptions, Translation, compile_cpp, translate
+from .driver import BuildError, BuildOptions, Program, Translation, compile_cpp, translate
 from .errors import CompileError
 from .lexer import TokenKind, tokenize
 from .parser import parse
@@ -52,7 +52,7 @@ def cmd_ast(path: str) -> int:
 def cmd_check(path: str) -> int:
     source = read_source(path)
     try:
-        info = check(parse(source))
+        info = check(parse(source), "__main__", Program(Path(path).parent).load)
     except CompileError as e:
         print(e.render(source, path), file=sys.stderr)
         return 1
@@ -84,7 +84,7 @@ def translate_file(path: str) -> Translation | None:
     """seadash source -> C++, printing any compile error. None on failure."""
     source = read_source(path)
     try:
-        return translate(source)
+        return translate(source, Path(path))
     except CompileError as e:
         print(e.render(source, path), file=sys.stderr)
         return None

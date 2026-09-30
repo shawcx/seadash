@@ -182,12 +182,21 @@ class ModuleInfo:
     imports: list[builtins.Module]
 
 
-def check(module: A.Module) -> ModuleInfo:
-    return Checker().check_module(module)
+def check(module: A.Module, name: str = "__main__", loader=None) -> ModuleInfo:
+    return Checker(name, loader).check_module(module)
+
+
+class ImportCycle(Exception):
+    def __init__(self, chain: list[str]):
+        super().__init__(" -> ".join(chain))
+        self.chain = chain
 
 
 class Checker:
-    def __init__(self) -> None:
+    def __init__(self, module_name: str = "__main__", loader=None) -> None:
+        self.module_name = module_name
+        # loader(dotted_name) -> builtins.UserModule | None: finds and checks another .sd file.
+        self.loader = loader
         self.structs: dict[str, StructType] = {}
         self.functions: dict[str, FuncInfo] = {}
         self.modules: dict[str, builtins.Module] = {}  # `import math` / `import math as m`
@@ -282,7 +291,7 @@ class Checker:
             raise self.error(f"generic {node.kind}s are not supported yet", node)
         if len(node.bases) > 1:
             raise self.error("multiple inheritance is not supported", node.bases[1])
-        st = StructType(node.name, node.kind, node)
+        st = StructType(node.name, node.kind, node, module=self.module_name)
         node.sym = st
         self.structs[node.name] = st
 
@@ -292,17 +301,47 @@ class Checker:
                 mod = self.find_module(alias.name, alias)
                 if alias.asname or "." not in alias.name:
                     self.modules[alias.asname or alias.name] = mod
+                elif isinstance(mod, builtins.UserModule):  # `import geometry.shapes` binds `geometry`
+                    parts = alias.name.split(".")
+                    pkg = self.modules.get(parts[0])
+                    if not isinstance(pkg, builtins.UserModule):
+                        pkg = builtins.UserModule(parts[0], {})
+                        self.modules[parts[0]] = pkg
+                    for part in parts[1:-1]:
+                        pkg = pkg.members.setdefault(part, builtins.UserModule(part, {}))
+                    pkg.members[parts[-1]] = mod
                 else:  # `import os.path` binds `os`, like Python
                     top = alias.name.split(".")[0]
                     self.modules[top] = self.find_module(top, alias)
             return
-        mod = self.find_module(node.module, node)
+        try:
+            mod = self.find_module(node.module, node)
+        except CheckError:
+            # `from pkg import textutil`: pkg is a folder, and the names are its modules.
+            subs = [self.loader(f"{node.module}.{a.name}") if self.loader else None for a in node.names]
+            if not all(subs):
+                raise
+            for alias, sub in zip(node.names, subs):
+                self.modules[alias.asname or alias.name] = sub
+            return
         for alias in node.names:
+            if alias.name not in mod.members and self.loader is not None and isinstance(mod, builtins.UserModule):
+                sub = self.loader(f"{node.module}.{alias.name}")
+                if sub is not None:
+                    self.modules[alias.asname or alias.name] = sub
+                    continue
             if alias.name not in mod.members:
                 raise self.error(f"module '{mod.name}' has no member '{alias.name}'", alias)
             self.imported[alias.asname or alias.name] = (mod, alias.name)
 
     def find_module(self, name: str, node: A.Node) -> builtins.Module:
+        if self.loader is not None:
+            try:
+                user = self.loader(name)
+            except ImportCycle as cycle:
+                raise self.error(f"circular import: {cycle}", node) from None
+            if user is not None:  # a local .sd file wins, like Python's search path
+                return user
         first, *rest = name.split(".")
         mod = builtins.MODULES.get(first)
         for part in rest:
@@ -310,7 +349,9 @@ class Checker:
             if not isinstance(mod, builtins.Module):
                 mod = None
         if mod is None:
-            raise self.error(f"no module named '{name}' (available: {', '.join(sorted(builtins.MODULES))})", node)
+            available = ", ".join(sorted(m for m in builtins.MODULES if not m.startswith("_")))
+            local = f"no {name.replace('.', '/')}.sd next to this file, and " if self.loader else ""
+            raise self.error(f"no module named '{name}' ({local}built-in modules are: {available})", node)
         return mod
 
     def lookup_struct(self, name: str) -> StructType | None:
@@ -423,7 +464,7 @@ class Checker:
                 )
             resolved.append(Param(p.name, self.resolve_type(p.annotation), p.default, p.loc))
         ret = self.resolve_type(node.returns) if node.returns else NONE
-        info = FuncInfo(node.name, resolved, ret, node, owner)
+        info = FuncInfo(node.name, resolved, ret, node, owner, module=self.module_name)
         node.sym = info
         return info
 
@@ -819,7 +860,7 @@ class Checker:
         kind = "local"
         if scope.is_module and self.module_assign_counts.get(name) == 1:
             kind = "global"
-        var = Var(name, cpp_name, t, kind, loc, frame=self.frame)
+        var = Var(name, cpp_name, t, kind, loc, frame=self.frame, module=self.module_name)
         scope.vars[key] = var
         scope.cpp_names.add(cpp_name)
         scope.locals.append(var)
@@ -1604,6 +1645,12 @@ class Checker:
         if isinstance(m, builtins.Module):
             e.sym = m
             return ModuleType(m.name)
+        if isinstance(m, FuncInfo):  # utils.helper as a value
+            e.sym = m
+            return FuncType(tuple(p.type for p in m.params), m.ret)
+        if isinstance(m, Var):  # utils.LIMIT
+            e.sym = m
+            return m.type
         if isinstance(m, (builtins.TypeAlias, builtins.NamedType)):
             raise self.error(f"'{member}' is a type; it can only be used in annotations", e)
         e.sym = m
@@ -1808,7 +1855,10 @@ class Checker:
         if f is None:
             raise self.error(f"module '{mod.name}' has no member '{member}'", e.func)
         if isinstance(f, StructType):
-            return self.check_constructor(e, f)  # raise zlib.error("...")
+            return self.check_constructor(e, f)  # utils.Point(...), raise zlib.error("...")
+        if isinstance(f, FuncInfo):  # a function from another .sd module
+            e.sym = CallTarget("func", f, self.match_args(e, f.params, f"{mod.name}.{member}()"))
+            return f.ret
         if not isinstance(f, builtins.Function):
             raise self.error(f"'{mod.name}.{member}' is not a function", e.func)
         e.sym = CallTarget("module_func", (mod, member))

@@ -28,7 +28,8 @@ def binaries(tmp_path_factory) -> dict[str, Path | str]:
 
     def build(name: str) -> Path | str:
         try:
-            result = translate((PROGRAMS / f"{name}.sd").read_text())
+            path = PROGRAMS / f"{name}.sd"
+            result = translate(path.read_text(), path)
         except Exception as e:  # compile errors are test failures, with the message shown
             return f"seadash failed: {e}"
         cpp_path = out_dir / f"{name}.cpp"

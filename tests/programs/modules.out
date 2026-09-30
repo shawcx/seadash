@@ -1,0 +1,7 @@
+geometry loaded, __name__ = sdlib.geometry
+textutil loaded
+main starts, __name__ = __main__
+(0.0, 0.0) 5.0 5.0
+HI! Point(3.0, 4.0) with norm 5.0
+AGAIN!
+VALUE! ['A!', 'B!']

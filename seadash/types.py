@@ -150,6 +150,7 @@ class FuncInfo:
     owner: StructType | None = None
     locals: list[Var] = field(default_factory=list)  # every local variable, for hoisting
     var: Var | None = None  # for a nested def: the local variable holding it
+    module: str = "__main__"
 
     def __str__(self) -> str:
         params = ", ".join(f"{p.name}: {p.type}" for p in self.params)
@@ -172,6 +173,7 @@ class StructType(Type):
     base: StructType | None = None
     builtin: bool = False
     cpp_name: str | None = None  # for built-ins defined in the runtime, e.g. "sd::zlib::error"
+    module: str = "__main__"  # the .sd module that defines it
 
     def __str__(self) -> str:
         return self.name
@@ -224,6 +226,7 @@ class Var:
     loc: Loc
     frame: int = 0  # which function/lambda body created it
     captured: bool = False  # read or written by a closure: stored in a shared cell
+    module: str = "__main__"  # for globals: the module that owns it
 
     def __repr__(self) -> str:
         return f"Var({self.cpp_name}: {self.type})"

@@ -6,8 +6,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import codegen
-from .checker import check
+from . import builtins, codegen
+from .checker import ImportCycle, check
+from .errors import CompileError
 from .parser import parse
 
 RUNTIME_DIR = Path(__file__).parent / "runtime"
@@ -26,12 +27,58 @@ class Translation:
     libs: list[str]  # libraries the program must link with, e.g. ["z"]
 
 
-def translate(source: str) -> Translation:
-    """Compile seadash source to C++ source. Raises CompileError on bad input."""
+class Program:
+    """Finds, parses and checks the .sd modules a program imports.
+
+    `import geometry.shapes` means geometry/shapes.sd, next to the main file. Each module
+    is checked once; `units` ends up in dependency order (a module after everything it imports).
+    """
+
+    def __init__(self, base_dir: Path):
+        self.base_dir = base_dir
+        self.loaded: dict[str, builtins.UserModule | None] = {}
+        self.loading: list[str] = []
+        self.units: list[codegen.ModuleUnit] = []
+
+    def load(self, name: str) -> builtins.UserModule | None:
+        if name in self.loading:
+            raise ImportCycle([*self.loading[self.loading.index(name):], name])
+        if name in self.loaded:
+            return self.loaded[name]
+        path = self.base_dir.joinpath(*name.split(".")).with_suffix(".sd")
+        if not path.is_file():
+            self.loaded[name] = None
+            return None
+        source = path.read_text(encoding="utf-8")
+        self.loading.append(name)
+        try:
+            module = parse(source)
+            info = check(module, name, self.load)
+        except CompileError as e:
+            if e.file is None:  # the error is in this module (not one it imports)
+                e.file, e.source = str(path), source
+            raise
+        finally:
+            self.loading.pop()
+        namespace = "sdm::" + "::".join(codegen.ident(part) for part in name.split("."))
+        members = {**{f.name: f for f in info.functions},
+                   **{st.name: st for st in info.structs},
+                   **{v.name: v for v in info.globals}}
+        user = builtins.UserModule(name, members, namespace=namespace, info=info)
+        self.loaded[name] = user
+        self.units.append(codegen.ModuleUnit(module, info, name, namespace))
+        return user
+
+
+def translate(source: str, path: Path | None = None) -> Translation:
+    """Compile a seadash program (and the modules it imports) to one C++ file.
+    `path` is where the source lives; imports are found next to it. Raises CompileError."""
+    program = Program(path.parent if path is not None else Path.cwd())
     module = parse(source)
-    info = check(module)
-    libs = list(dict.fromkeys(lib for m in info.imports for lib in m.libs))
-    return Translation(codegen.generate(module, info), libs)
+    info = check(module, "__main__", program.load)
+    units = [*program.units, codegen.ModuleUnit(module, info)]
+    libs = list(dict.fromkeys(lib for u in units for m in u.info.imports for lib in m.libs))
+    return Translation(codegen.generate_program(units), libs)
 
 
 def to_cpp(source: str) -> str:

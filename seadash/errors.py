@@ -25,8 +25,13 @@ class CompileError(Exception):
         super().__init__(message)
         self.message = message
         self.loc = loc
+        # Set when the error is in an imported module rather than the file being compiled.
+        self.file: str | None = None
+        self.source: str | None = None
 
     def render(self, source: str, filename: str = "<input>") -> str:
+        if self.file is not None:
+            source, filename = self.source, self.file
         header = f"{filename}:{self.loc}: error: {self.message}"
         lines = source.splitlines()
         if not 1 <= self.loc.line <= len(lines):

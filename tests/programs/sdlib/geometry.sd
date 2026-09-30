@@ -1,0 +1,22 @@
+import math
+
+ORIGIN = (0.0, 0.0)
+
+class Point:
+    x: float
+    y: float
+
+    def __init__(self, x: float, y: float):
+        self.x = x
+        self.y = y
+
+    def norm(self) -> float:
+        return math.hypot(self.x, self.y)
+
+def distance(a: Point, b: Point) -> float:
+    return math.hypot(a.x - b.x, a.y - b.y)
+
+print("geometry loaded, __name__ =", __name__)
+
+if __name__ == "__main__":
+    print("not printed when imported")

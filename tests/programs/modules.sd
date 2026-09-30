@@ -1,0 +1,12 @@
+import sdlib.geometry as geo
+from sdlib.geometry import Point, distance
+from sdlib import textutil
+import sdlib.textutil
+
+print("main starts, __name__ =", __name__)
+p = Point(3, 4)
+print(geo.ORIGIN, distance(p, geo.Point(0, 0)), p.norm())
+print(textutil.shout("hi"), textutil.describe(p))
+print(sdlib.textutil.shout("again"))
+f = textutil.shout
+print(f("value"), [textutil.shout(w) for w in ["a", "b"]])
