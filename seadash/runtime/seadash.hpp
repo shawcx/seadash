@@ -1704,22 +1704,29 @@ inline std::vector<std::string>& argv() {
     return args;
 }
 
+// Run when the main program finishes, however it finishes (threading joins its threads here).
+inline std::vector<std::function<void()>>& exit_hooks() {
+    static std::vector<std::function<void()>> hooks;
+    return hooks;
+}
+
 inline int run_main(int argc, char** argv_, void (*module_main)()) {
     for (int i = 0; i < argc; ++i) argv().emplace_back(argv_[i]);
+    int code = 0;
     try {
         module_main();
     } catch (const Exit& e) {
-        std::fflush(stdout);
-        return e.code;
+        code = e.code;
     } catch (const Thrown& t) {
         std::fflush(stdout);
         std::string type = t.exc->sd_type();
         const std::string& msg = t.exc->message;
         std::fprintf(stderr, "%s%s%s\n", type.c_str(), msg.empty() ? "" : ": ", msg.c_str());
-        return 1;
+        code = 1;
     }
+    for (auto& hook : exit_hooks()) hook();
     std::fflush(stdout);
-    return 0;
+    return code;
 }
 
 }  // namespace sd

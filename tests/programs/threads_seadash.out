@@ -1,0 +1,3 @@
+8000 {'even': 4000, 'odd': 4000} 8000 items, max 7999 Stats(count=8000, biggest=7999)
+True 1 0 False Atomic(0)
+main continues after Thread-9 (boom)

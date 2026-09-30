@@ -1,0 +1,82 @@
+import threading
+import queue
+
+def producer(q: queue.Queue[int], n: int):
+    for i in range(n):
+        q.put(i)
+    q.put(-1)
+
+def consumer(q: queue.Queue[int], out: queue.Queue[int]):
+    total = 0
+    while True:
+        item = q.get()
+        if item < 0:
+            break
+        total += item * item
+    out.put(total)
+
+jobs: queue.Queue[int] = queue.Queue(maxsize=5)
+results: queue.Queue[int] = queue.Queue()
+p = threading.Thread(target=producer, args=(jobs, 100))
+c = threading.Thread(target=consumer, args=(jobs, results))
+p.start()
+c.start()
+p.join()
+c.join()
+print(results.get(), jobs.empty(), p.is_alive())
+
+work: queue.Queue[int] = queue.Queue()
+done: queue.Queue[tuple[int, int]] = queue.Queue()
+
+def worker():
+    while True:
+        try:
+            n = work.get(timeout=0.5)
+        except queue.Empty:
+            return
+        done.put((n, sum(range(n))))
+        work.task_done()
+
+for n in range(20):
+    work.put(n)
+workers = [threading.Thread(target=worker) for _ in range(4)]
+for w in workers:
+    w.start()
+work.join()
+for w in workers:
+    w.join()
+pairs = sorted(done.get() for _ in range(20))
+print(pairs[:3], pairs[-1], done.empty())
+
+lock = threading.Lock()
+print(lock.locked(), lock.acquire(), lock.locked(), lock.acquire(blocking=False))
+lock.release()
+with lock:
+    print("inside", lock.locked())
+print(lock.locked())
+
+ev = threading.Event()
+
+def setter():
+    ev.set()
+
+t = threading.Thread(target=setter)
+t.start()
+print(ev.wait(timeout=5), ev.is_set())
+t.join()
+named = threading.Thread(target=setter, name="custom")
+print(named.name, named.daemon)
+try:
+    named.join()
+except RuntimeError as e:
+    print("RuntimeError:", e)
+named.start()
+named.join()
+try:
+    named.start()
+except RuntimeError as e:
+    print("RuntimeError:", e)
+try:
+    lock.release()
+except RuntimeError as e:
+    print("RuntimeError:", e)

@@ -1,0 +1,305 @@
+// The `threading` module: real OS threads (no global lock). The checker makes this
+// safe: threads only share values that are copied, or the thread-safe types below.
+// All of them are handles: copying one shares the same underlying lock/queue/etc.
+#pragma once
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
+namespace sd::threading {
+
+// Python's Lock: may be released by a different thread than the one that acquired it
+// (undefined behaviour for std::mutex), so it's a flag guarded by a mutex + condition.
+class Lock {
+    struct State {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool held = false;
+    };
+    std::shared_ptr<State> s_ = std::make_shared<State>();
+
+public:
+    bool acquire(bool blocking = true, double timeout = -1) {
+        std::unique_lock lk(s_->mu);
+        if (!s_->held) return s_->held = true;
+        if (!blocking) return false;
+        if (timeout < 0) {
+            s_->cv.wait(lk, [&] { return !s_->held; });
+        } else if (!s_->cv.wait_for(lk, std::chrono::duration<double>(timeout), [&] { return !s_->held; })) {
+            return false;
+        }
+        return s_->held = true;
+    }
+    void release() {
+        {
+            std::lock_guard lk(s_->mu);
+            if (!s_->held) raise("RuntimeError", "release unlocked lock");
+            s_->held = false;
+        }
+        s_->cv.notify_one();
+    }
+    bool locked() const {
+        std::lock_guard lk(s_->mu);
+        return s_->held;
+    }
+    std::string sd_repr() const { return locked() ? "<locked Lock>" : "<unlocked Lock>"; }
+};
+
+// A re-entrant lock: the owning thread may acquire it again.
+class RLock {
+    struct State {
+        std::mutex mu;
+        std::condition_variable cv;
+        std::thread::id owner;
+        std::int64_t count = 0;
+    };
+    std::shared_ptr<State> s_ = std::make_shared<State>();
+
+public:
+    bool acquire(bool blocking = true, double timeout = -1) {
+        auto me = std::this_thread::get_id();
+        std::unique_lock lk(s_->mu);
+        auto free = [&] { return s_->count == 0 || s_->owner == me; };
+        if (!free()) {
+            if (!blocking) return false;
+            if (timeout < 0) {
+                s_->cv.wait(lk, free);
+            } else if (!s_->cv.wait_for(lk, std::chrono::duration<double>(timeout), free)) {
+                return false;
+            }
+        }
+        s_->owner = me;
+        ++s_->count;
+        return true;
+    }
+    void release() {
+        {
+            std::lock_guard lk(s_->mu);
+            if (s_->count == 0 || s_->owner != std::this_thread::get_id())
+                raise("RuntimeError", "cannot release un-acquired lock");
+            --s_->count;
+        }
+        s_->cv.notify_one();
+    }
+    std::string sd_repr() const { return "<RLock>"; }
+};
+
+// `with lock:` acquires, and releases on every way out of the block (RAII).
+template <class L>
+struct Held {
+    L lock;
+    explicit Held(L l) : lock(std::move(l)) { lock.acquire(); }
+    Held(const Held&) = delete;
+    ~Held() { lock.release(); }
+};
+
+class Event {
+    struct State {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool flag = false;
+    };
+    std::shared_ptr<State> s_ = std::make_shared<State>();
+
+public:
+    void set() {
+        {
+            std::lock_guard lk(s_->mu);
+            s_->flag = true;
+        }
+        s_->cv.notify_all();
+    }
+    void clear() {
+        std::lock_guard lk(s_->mu);
+        s_->flag = false;
+    }
+    bool is_set() const {
+        std::lock_guard lk(s_->mu);
+        return s_->flag;
+    }
+    bool wait(std::optional<double> timeout = std::nullopt) {
+        std::unique_lock lk(s_->mu);
+        if (!timeout) {
+            s_->cv.wait(lk, [&] { return s_->flag; });
+            return true;
+        }
+        return s_->cv.wait_for(lk, std::chrono::duration<double>(*timeout), [&] { return s_->flag; });
+    }
+    std::string sd_repr() const { return is_set() ? "<Event set>" : "<Event unset>"; }
+};
+
+// seadash: an int that any thread may update (lock-free).
+class Atomic {
+    std::shared_ptr<std::atomic<std::int64_t>> v_;
+
+public:
+    explicit Atomic(std::int64_t value = 0) : v_(std::make_shared<std::atomic<std::int64_t>>(value)) {}
+    std::int64_t get() const { return v_->load(); }
+    void set(std::int64_t value) { v_->store(value); }
+    std::int64_t add(std::int64_t n = 1) { return v_->fetch_add(n) + n; }  // returns the new value
+    std::int64_t sub(std::int64_t n = 1) { return v_->fetch_sub(n) - n; }
+    bool compare_and_set(std::int64_t expected, std::int64_t value) { return v_->compare_exchange_strong(expected, value); }
+    std::string sd_repr() const { return "Atomic(" + std::to_string(get()) + ")"; }
+};
+
+// seadash: a value only reachable while holding its lock: `with m as data:`.
+template <class T>
+class Mutex {
+    struct State {
+        std::mutex mu;
+        T value;
+    };
+    std::shared_ptr<State> s_;
+
+public:
+    Mutex() : s_(std::make_shared<State>()) {}
+    explicit Mutex(T value) : s_(std::make_shared<State>()) { s_->value = std::move(value); }
+    struct Guard {
+        std::unique_lock<std::mutex> lk;
+        T* v;
+        T& value() { return *v; }
+    };
+    Guard lock() { return Guard{std::unique_lock(s_->mu), &s_->value}; }
+    T get() const {
+        std::lock_guard lk(s_->mu);
+        return s_->value;
+    }
+    void set(T value) {
+        std::lock_guard lk(s_->mu);
+        s_->value = std::move(value);
+    }
+    std::string sd_repr() const { return "Mutex(" + repr(get()) + ")"; }
+};
+
+// Base class for `class Account(threading.Synchronized)`: every method holds this lock,
+// so one instance can be shared between threads safely.
+struct Synchronized : std::enable_shared_from_this<Synchronized> {
+    mutable std::recursive_mutex sd_mutex;
+    virtual ~Synchronized() = default;
+    virtual std::string sd_repr() const { return "<Synchronized>"; }
+};
+
+// ---- threads -------------------------------------------------------------------
+
+struct ThreadState {
+    std::function<void()> fn;
+    std::string name;
+    bool daemon = false;
+    std::thread thread;
+    std::mutex mu;
+    std::condition_variable cv;
+    bool started = false, done = false, joined = false;
+};
+
+inline std::mutex& registry_mutex() {
+    static std::mutex m;
+    return m;
+}
+inline std::vector<std::shared_ptr<ThreadState>>& registry() {
+    static std::vector<std::shared_ptr<ThreadState>> threads;
+    return threads;
+}
+
+inline void finish(const std::shared_ptr<ThreadState>& s) {
+    // Called by whoever joins; exactly one caller does the OS-level join.
+    std::unique_lock lk(s->mu);
+    s->cv.wait(lk, [&] { return s->done; });
+    if (!s->joined && !s->daemon) {
+        s->joined = true;
+        lk.unlock();
+        s->thread.join();
+    }
+}
+
+inline void join_all_threads() {
+    // The program ends only when every non-daemon thread has finished, like Python.
+    while (true) {
+        std::vector<std::shared_ptr<ThreadState>> pending;
+        {
+            std::lock_guard lk(registry_mutex());
+            pending.swap(registry());
+        }
+        if (pending.empty()) return;
+        for (auto& s : pending) finish(s);
+    }
+}
+
+inline void run_thread(const std::shared_ptr<ThreadState>& s) {
+    try {
+        s->fn();
+    } catch (const Thrown& t) {
+        // Like Python: report it and end this thread; the rest of the program carries on.
+        std::string msg = t.exc->message;
+        std::string text = "Exception in thread " + s->name + ":\n" + t.exc->sd_type() + (msg.empty() ? "" : ": " + msg) + "\n";
+        std::fwrite(text.data(), 1, text.size(), stderr);
+    } catch (const Exit&) {
+        // sys.exit() in a thread just ends the thread
+    }
+    {
+        std::lock_guard lk(s->mu);
+        s->done = true;
+    }
+    s->cv.notify_all();
+}
+
+class Thread {
+    std::shared_ptr<ThreadState> s_;
+
+    ThreadState& state() const {
+        if (!s_) raise("RuntimeError", "thread was not created with threading.Thread(...)");
+        return *s_;
+    }
+
+public:
+    Thread() = default;
+    Thread(std::function<void()> fn, std::optional<std::string> name, const std::string& target_name, bool daemon)
+        : s_(std::make_shared<ThreadState>()) {
+        static std::atomic<std::int64_t> counter{0};
+        s_->fn = std::move(fn);
+        s_->daemon = daemon;
+        s_->name = name ? *name : "Thread-" + std::to_string(++counter) + " (" + target_name + ")";
+    }
+    void start() {
+        ThreadState& s = state();
+        {
+            std::lock_guard lk(s.mu);
+            if (s.started) raise("RuntimeError", "threads can only be started once");
+            s.started = true;
+        }
+        auto shared = s_;
+        s.thread = std::thread([shared] { run_thread(shared); });
+        if (s.daemon) {
+            s.thread.detach();
+        } else {
+            std::lock_guard lk(registry_mutex());
+            registry().push_back(s_);
+        }
+    }
+    void join(std::optional<double> timeout = std::nullopt) {
+        ThreadState& s = state();
+        if (!s.started) raise("RuntimeError", "cannot join thread before it is started");
+        if (s.thread.get_id() == std::this_thread::get_id()) raise("RuntimeError", "cannot join current thread");
+        if (timeout) {
+            std::unique_lock lk(s.mu);
+            if (!s.cv.wait_for(lk, std::chrono::duration<double>(*timeout), [&] { return s.done; })) return;
+        }
+        finish(s_);
+    }
+    bool is_alive() const {
+        ThreadState& s = state();
+        std::lock_guard lk(s.mu);
+        return s.started && !s.done;
+    }
+    std::string name() const { return state().name; }
+    bool daemon() const { return state().daemon; }
+    std::string sd_repr() const { return "<Thread(" + name() + ", " + (is_alive() ? "started" : "stopped") + ")>"; }
+};
+
+inline const bool registered = [] {
+    exit_hooks().push_back(join_all_threads);
+    return true;
+}();
+
+}  // namespace sd::threading

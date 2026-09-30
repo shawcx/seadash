@@ -1,0 +1,10 @@
+328350 True False
+[(0, 0), (1, 0), (2, 1)] (19, 171) True
+False True True False
+inside True
+False
+True True
+custom False
+RuntimeError: cannot join thread before it is started
+RuntimeError: threads can only be started once
+RuntimeError: release unlocked lock

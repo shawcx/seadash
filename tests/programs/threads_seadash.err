@@ -1,0 +1,2 @@
+Exception in thread Thread-9 (boom):
+ValueError: inside thread

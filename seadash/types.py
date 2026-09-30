@@ -116,6 +116,26 @@ BINARY_FILE = FileType(True)
 
 
 @dataclass(frozen=True)
+class SyncType(Type):
+    """A thread-safe handle from `threading`/`queue`: Lock, RLock, Event, Thread, Atomic,
+    Mutex[T] or Queue[T]. Copies share the same underlying object."""
+
+    kind: str
+    args: tuple = ()
+
+    def __str__(self) -> str:
+        return f"{self.kind}[{', '.join(map(str, self.args))}]" if self.args else self.kind
+
+
+SYNC_CPP = {
+    "Lock": "sd::threading::Lock", "RLock": "sd::threading::RLock", "Event": "sd::threading::Event",
+    "Thread": "sd::threading::Thread", "Atomic": "sd::threading::Atomic",
+    "Mutex": "sd::threading::Mutex", "Queue": "sd::queue::Queue",
+}
+SYNC_ARITY = {"Lock": 0, "RLock": 0, "Event": 0, "Thread": 0, "Atomic": 0, "Mutex": 1, "Queue": 1}
+
+
+@dataclass(frozen=True)
 class ModuleType(Type):
     name: str
 

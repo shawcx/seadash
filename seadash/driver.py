@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import builtins, codegen
+from . import builtins, codegen, threads
 from .checker import ImportCycle, check
 from .errors import CompileError
 from .parser import parse
@@ -39,6 +39,8 @@ class Program:
         self.loaded: dict[str, builtins.UserModule | None] = {}
         self.loading: list[str] = []
         self.units: list[codegen.ModuleUnit] = []
+        self.paths: dict[str, str] = {}
+        self.sources: dict[str, str] = {}
 
     def load(self, name: str) -> builtins.UserModule | None:
         if name in self.loading:
@@ -50,6 +52,7 @@ class Program:
             self.loaded[name] = None
             return None
         source = path.read_text(encoding="utf-8")
+        self.paths[name], self.sources[name] = str(path), source
         self.loading.append(name)
         try:
             module = parse(source)
@@ -70,13 +73,26 @@ class Program:
         return user
 
 
-def translate(source: str, path: Path | None = None) -> Translation:
-    """Compile a seadash program (and the modules it imports) to one C++ file.
-    `path` is where the source lives; imports are found next to it. Raises CompileError."""
+def check_program(source: str, path: Path | None = None) -> list[codegen.ModuleUnit]:
+    """Parse and check a program and everything it imports, including thread safety.
+    Returns the modules in dependency order (the main program last). Raises CompileError."""
     program = Program(path.parent if path is not None else Path.cwd())
     module = parse(source)
     info = check(module, "__main__", program.load)
     units = [*program.units, codegen.ModuleUnit(module, info)]
+    try:
+        threads.verify([(u.module, u.info, u.name) for u in units])
+    except threads.ThreadSafetyError as e:
+        if e.module != "__main__":
+            e.file, e.source = program.paths[e.module], program.sources[e.module]
+        raise
+    return units
+
+
+def translate(source: str, path: Path | None = None) -> Translation:
+    """Compile a seadash program (and the modules it imports) to one C++ file.
+    `path` is where the source lives; imports are found next to it. Raises CompileError."""
+    units = check_program(source, path)
     libs = list(dict.fromkeys(lib for u in units for m in u.info.imports for lib in m.libs))
     return Translation(codegen.generate_program(units), libs)
 

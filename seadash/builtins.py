@@ -16,7 +16,7 @@ from .errors import Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, STR,
     BINARY_FILE, TEXT_FILE,
-    DictType, Field, FileType, FuncType, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
+    DictType, Field, FileType, SyncType, FuncType, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
 
@@ -618,6 +618,8 @@ JSON_VALUE_METHODS = {
 
 
 def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
+    if isinstance(t, SyncType):
+        return SYNC_METHODS[t.kind].get(name)
     match t:
         case _ if t == JSON_VALUE:
             return JSON_VALUE_METHODS.get(name)
@@ -1076,3 +1078,114 @@ MODULES["random"] = module_with_params(runtime_module(
     sample=(random_sample, "sd::random::sample"),
 ))
 MODULES["random"].members["shuffle"].mutates_first_arg = True
+
+
+# ---- threading and queue ----------------------------------------------------------
+
+
+@dataclass
+class SyncTypeDef:
+    """threading.Lock, queue.Queue, ...: callable to construct one, and usable as a type."""
+
+    kind: str  # a key of types.SYNC_CPP
+
+
+def sync_method(result, *params):
+    """A method on a threading/queue type. Types (and the result) may depend on the receiver,
+    e.g. Queue[T].put takes a T. Keyword arguments work; codegen fills parameters in order."""
+
+    def resolve(t, receiver):
+        return t(receiver) if callable(t) else t
+
+    def handler(ctx: CallContext) -> Type:
+        names = [p[0] for p in params]
+        if len(ctx.args) > len(params):
+            raise ctx.error(f"{ctx.what} takes at most {plural_args(len(params))} ({len(ctx.args)} given)")
+        for kw in ctx.call.keywords:
+            if kw.name not in names:
+                raise ctx.error(f"{ctx.what} got an unexpected keyword argument '{kw.name}'", kw)
+        for i, p in enumerate(params):
+            node = ctx.args[i] if i < len(ctx.args) else ctx.keyword_arg(p[0])
+            if node is None:
+                if len(p) < 3:
+                    raise ctx.error(f"{ctx.what} is missing argument '{p[0]}'")
+                continue
+            want = resolve(p[1], ctx.receiver)
+            actual = ctx.checker.check_expr(node, want)
+            if not assignable(actual, want):
+                raise ctx.error(f"{ctx.what} argument '{p[0]}' must be {want}, not {actual}", node)
+        return resolve(result, ctx.receiver)
+
+    handler.params = params
+    handler.resolve = resolve
+    return handler
+
+
+def plural_args(n: int) -> str:
+    return "1 argument" if n == 1 else f"{n} arguments"
+
+
+def elem0(t) -> Type:
+    return t.args[0]
+
+
+OPT_FLOAT = OptionalType(FLOAT)
+
+SYNC_METHODS: dict[str, dict] = {
+    "Lock": {
+        "acquire": sync_method(BOOL, ("blocking", BOOL, "true"), ("timeout", FLOAT, "-1.0")),
+        "release": sync_method(NONE),
+        "locked": sync_method(BOOL),
+    },
+    "RLock": {
+        "acquire": sync_method(BOOL, ("blocking", BOOL, "true"), ("timeout", FLOAT, "-1.0")),
+        "release": sync_method(NONE),
+    },
+    "Event": {
+        "set": sync_method(NONE),
+        "clear": sync_method(NONE),
+        "is_set": sync_method(BOOL),
+        "wait": sync_method(BOOL, ("timeout", OPT_FLOAT, "std::nullopt")),
+    },
+    "Atomic": {
+        "get": sync_method(INT),
+        "set": sync_method(NONE, ("value", INT)),
+        "add": sync_method(INT, ("n", INT, "1_i")),
+        "sub": sync_method(INT, ("n", INT, "1_i")),
+        "compare_and_set": sync_method(BOOL, ("expected", INT), ("value", INT)),
+    },
+    "Mutex": {
+        "get": sync_method(elem0),
+        "set": sync_method(NONE, ("value", elem0)),
+    },
+    "Queue": {
+        "put": sync_method(NONE, ("item", elem0), ("block", BOOL, "true"), ("timeout", OPT_FLOAT, "std::nullopt")),
+        "get": sync_method(elem0, ("block", BOOL, "true"), ("timeout", OPT_FLOAT, "std::nullopt")),
+        "put_nowait": sync_method(NONE, ("item", elem0)),
+        "get_nowait": sync_method(elem0),
+        "empty": sync_method(BOOL),
+        "full": sync_method(BOOL),
+        "qsize": sync_method(INT),
+        "task_done": sync_method(NONE),
+        "join": sync_method(NONE),
+    },
+    "Thread": {
+        "start": sync_method(NONE),
+        "join": sync_method(NONE, ("timeout", OPT_FLOAT, "std::nullopt")),
+        "is_alive": sync_method(BOOL),
+    },
+}
+THREAD_ATTRIBUTES = {"name": STR, "daemon": BOOL}
+
+SYNCHRONIZED = StructType("Synchronized", "class", None, builtin=True, cpp_name="sd::threading::Synchronized")
+
+MODULES["threading"] = Module("threading", {
+    **{kind: SyncTypeDef(kind) for kind in ("Thread", "Lock", "RLock", "Event", "Atomic", "Mutex")},
+    "Synchronized": SYNCHRONIZED,
+}, "modules/threading.hpp", ("pthread",))
+
+MODULES["queue"] = Module("queue", {
+    "Queue": SyncTypeDef("Queue"),
+    "Empty": exception_class("Empty", "sd::queue::Empty"),
+    "Full": exception_class("Full", "sd::queue::Full"),
+}, "modules/queue.hpp")

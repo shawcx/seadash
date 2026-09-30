@@ -32,11 +32,11 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 
 from . import ast as A
-from . import builtins
+from . import builtins, threads
 from .errors import CheckError, Loc
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PRIMITIVES, STR, TEXT_FILE,
-    DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param,
+    SYNC_ARITY, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
@@ -183,6 +183,7 @@ class ModuleInfo:
     main_locals: list[Var]
     imports: list[builtins.Module]
     generics: dict = field(default_factory=dict)  # name -> GenericDef, for importers
+    spawns: list = field(default_factory=list)  # threading.Thread(...) calls, for threads.verify
 
 
 def check(module: A.Module, name: str = "__main__", loader=None) -> ModuleInfo:
@@ -217,6 +218,7 @@ class Checker:
         self.instances: dict[tuple, FuncInfo | StructType] = {}
         self.type_env: dict[str, Type] = {}
         self.pending: list = []  # generic instance bodies waiting to be checked
+        self.spawns: list = []  # threading.Thread(...) calls, verified once the program is checked
         self.module_checked = False
         self.out_structs: list[StructType] = []
         self.out_functions: list[FuncInfo] = []
@@ -294,6 +296,7 @@ class Checker:
             main_locals=[v for v in main_scope.locals if v.kind != "global"],
             imports=list(self.modules.values()) + [m for m, _ in self.imported.values()],
             generics=self.generics,
+            spawns=self.spawns,
         )
 
     def all_functions(self) -> list[FuncInfo]:
@@ -843,6 +846,13 @@ class Checker:
     def resolve_type_name(self, node: A.TypeName, name: str, args: list[A.TypeExpr]) -> Type:
         if name in self.type_env and not args:  # T inside a generic
             return self.type_env[name]
+        if (kind := self.sync_kind_named(name)) is not None:  # threading.Lock, Queue[int]
+            if len(args) != SYNC_ARITY[kind]:
+                want = f"{kind}[T]" if SYNC_ARITY[kind] else kind
+                raise self.error(f"{kind} takes {plural(SYNC_ARITY[kind], 'type argument')}: write {want}", node)
+            t = SyncType(kind, tuple(self.resolve_type(a) for a in args))
+            self.check_sync_contents(t, node)
+            return t
         gen = self.generics.get(name)
         if gen is None and name in self.imported:
             mod, member = self.imported[name]
@@ -1035,6 +1045,7 @@ class Checker:
                 f = owner.find_field(attr)
                 if f is None:
                     raise self.error(f"{owner.name} has no field '{attr}'", target)
+                self.check_synchronized_access(owner, obj, attr, target)
                 if not assignable(t, f.type):
                     raise self.error(f"field '{attr}' is {f.type}, can't assign {t}", value)
                 target.ty = f.type
@@ -1231,10 +1242,22 @@ class Checker:
                 if info.enter_type == NONE:
                     raise self.error("__enter__ doesn't return anything, so there's nothing to bind with 'as'", item.target)
                 self.assign(item.target, info.enter_type, item.context)
+        for item in stmt.items:
+            if item.sym.kind == "mutex" and not isinstance(item.target, (A.Name, type(None))):
+                raise self.error("`with mutex as name:` needs a plain name (it's a reference to the protected value)", item.target)
         snapshots = [self.state.copy()]
         for s in stmt.body:
             self.check_stmt(s)
             snapshots.append(self.state.copy())
+        for item in stmt.items:
+            if item.sym.kind == "mutex" and isinstance(item.target, A.Name):
+                var = item.target.sym
+                if var.captured:
+                    raise self.error(
+                        f"'{item.target.id}' is only valid while the mutex is held, so a closure can't use it", item.target
+                    )
+                if not self.state.dead:
+                    self.state.names[item.target.id] = MaybeUnbound()  # gone once the lock is released
         if can_suppress:
             raised = merge(snapshots)
             raised.dead = False
@@ -1243,6 +1266,10 @@ class Checker:
     def context_manager(self, t: Type, node: A.Expr) -> WithInfo:
         if isinstance(t, FileType):
             return WithInfo("file", t, None, False)
+        if isinstance(t, SyncType) and t.kind in ("Lock", "RLock"):
+            return WithInfo("lock", BOOL, None, False)
+        if isinstance(t, SyncType) and t.kind == "Mutex":
+            return WithInfo("mutex", t.args[0], None, False)
         if isinstance(t, StructType):
             enter = t.find_method("__enter__")
             exit_ = t.find_method("__exit__")
@@ -1888,6 +1915,7 @@ class Checker:
             return self.module_member(e, value.sym, attr)
         if isinstance(vt, StructType):
             if f := vt.find_field(attr):
+                self.check_synchronized_access(vt, value, attr, e)
                 e.sym = f
                 if (path := attr_path(e)) in self.state.attrs:
                     return self.state.attrs[path]  # narrowed: `if u.address is not None:`, isinstance()
@@ -1896,11 +1924,26 @@ class Checker:
                 e.sym = method  # a bound method: remembers its object
                 return FuncType(tuple(p.type for p in method.params), method.ret)
             raise self.error(f"{vt.name} has no field '{attr}'", e)
+        if isinstance(vt, SyncType) and vt.kind == "Thread" and attr in builtins.THREAD_ATTRIBUTES:
+            e.sym = ("thread_attr", attr)
+            return builtins.THREAD_ATTRIBUTES[attr]
         if isinstance(vt, OptionalType):
             raise self.error(
                 f"{vt} might be None; check it first, e.g. `if {describe_short(value)} is not None:`", value
             )
         raise self.error(f"{vt} has no attribute '{attr}'", e)
+
+    def check_synchronized_access(self, owner: StructType, obj: A.Expr, attr: str, node: A.Node) -> None:
+        """A Synchronized object's fields are only reachable inside its own methods (which hold
+        its lock), through `self`: `other.balance` could race with another thread."""
+        if not threads.is_synchronized(owner):
+            return
+        if isinstance(obj, A.Name) and isinstance(obj.sym, Var) and obj.sym.name == "self" and obj.sym.kind == "param":
+            return
+        raise self.error(
+            f"{owner.name} is Synchronized, so its fields can only be used inside its methods (through self); "
+            f"add a method that reads or updates '{attr}'", node,
+        )
 
     def module_member(self, e: A.Expr, mod: builtins.Module, member: str) -> Type:
         m = mod.members.get(member)
@@ -1978,6 +2021,9 @@ class Checker:
 
     def check_call(self, e: A.Call, expected: Type | None) -> Type:
         func = e.func
+        if isinstance(func, A.Index) and (kind := self.sync_kind_of(func.value)) is not None:
+            explicit = tuple(self.resolve_type(expr_to_type(x)) for x in type_arg_exprs(func.index))
+            return self.construct_sync(e, kind, explicit, expected)  # queue.Queue[int]()
         if (gen := self.generic_named(func)) is not None:
             return self.call_generic(e, gen, None, expected)
         if isinstance(func, A.Index) and (gen := self.generic_named(func.value)) is not None:
@@ -2038,6 +2084,121 @@ class Checker:
             e.sym = CallTarget("builtin_method", (owner, func.attr))
             return handler(ctx)
         return self.call_value(e, self.check_expr(func))
+
+    # ---- threading / queue ----------------------------------------------------
+
+    def sync_kind_named(self, name: str) -> str | None:
+        """`Lock` (imported from threading) or `queue.Queue` as a type name."""
+        if "." in name:
+            mod_name, _, member = name.rpartition(".")
+            mod = self.modules.get(mod_name)
+            m = mod.members.get(member) if mod is not None else None
+        elif name in self.imported:
+            mod, member = self.imported[name]
+            m = mod.members.get(member)
+        else:
+            return None
+        return m.kind if isinstance(m, builtins.SyncTypeDef) else None
+
+    def sync_kind_of(self, e: A.Expr) -> str | None:
+        if isinstance(e, A.Name) and e.id not in self.state.names:
+            return self.sync_kind_named(e.id)
+        if isinstance(e, A.Attribute) and (path := attr_path(e)):
+            return self.sync_kind_named(".".join(path))
+        return None
+
+    def construct_sync(self, e: A.Call, kind: str, explicit: tuple | None, expected: Type | None) -> Type:
+        """Lock(), Atomic(0), Mutex(value), Queue[int](maxsize=10), Thread(target=f, args=(...))."""
+        want = strip_optional(expected) if expected is not None else None
+        type_args = explicit
+        if type_args is None and isinstance(want, SyncType) and want.kind == kind:
+            type_args = want.args
+        if type_args is not None and len(type_args) != SYNC_ARITY[kind]:
+            raise self.error(f"{kind} takes {plural(SYNC_ARITY[kind], 'type argument')}", e.func)
+        kw = {k.name: k.value for k in e.keywords}
+        extra: dict = {}
+
+        def take(position: int, name: str) -> A.Expr | None:
+            return e.args[position] if position < len(e.args) else kw.get(name)
+
+        def only(allowed: tuple[str, ...], positional: int) -> None:
+            if len(e.args) > positional:
+                raise self.error(f"{kind}() takes at most {plural(positional, 'positional argument')}", e)
+            for name in kw:
+                if name not in allowed:
+                    raise self.error(f"{kind}() got an unexpected keyword argument '{name}'", e)
+
+        if kind in ("Lock", "RLock", "Event"):
+            only((), 0)
+            t = SyncType(kind)
+        elif kind == "Atomic":
+            only(("value",), 1)
+            if (v := take(0, "value")) is not None:
+                self.expect_type(v, INT, "Atomic value")
+            extra["value"] = v
+            t = SyncType(kind)
+        elif kind == "Mutex":
+            only(("value",), 1)
+            v = take(0, "value")
+            if v is None and type_args is None:
+                raise self.error("Mutex needs a starting value, or a type: `Mutex[list[int]]()`", e)
+            if v is not None:
+                vt = self.check_expr(v, type_args[0] if type_args else None)
+                if type_args is None:
+                    type_args = (vt,)
+                elif not assignable(vt, type_args[0]):
+                    raise self.error(f"this Mutex holds {type_args[0]}, not {vt}", v)
+            extra["value"] = v
+            t = SyncType(kind, type_args)
+        elif kind == "Queue":
+            only(("maxsize",), 1)
+            if type_args is None:
+                raise self.error(
+                    "a Queue needs to know what it holds: `queue.Queue[int]()`, or annotate the variable "
+                    "(`q: Queue[int] = Queue()`)", e,
+                )
+            if (m := take(0, "maxsize")) is not None:
+                self.expect_type(m, INT, "Queue maxsize")
+            extra["maxsize"] = m
+            t = SyncType(kind, type_args)
+        else:  # Thread
+            if e.args:
+                raise self.error("pass the function as a keyword: threading.Thread(target=worker, args=(...))", e.args[0])
+            only(("target", "args", "name", "daemon"), 0)
+            target = kw.get("target")
+            if target is None:
+                raise self.error("threading.Thread() needs target=<function to run>", e)
+            args_node = kw.get("args")
+            arg_types: tuple = ()
+            if args_node is not None:
+                at = self.check_expr(args_node)
+                if not isinstance(at, TupleType):
+                    raise self.error(f"args must be a tuple, like args=(x,) or args=(a, b), not {at}", args_node)
+                arg_types = at.elts
+            tt = self.check_expr(target, FuncType(arg_types, None))
+            if not isinstance(tt, FuncType):
+                raise self.error(f"target must be a function, not {tt}", target)
+            if len(tt.params) != len(arg_types) or not all(assignable(a, p) for a, p in zip(arg_types, tt.params)):
+                params = ", ".join(map(str, tt.params)) or "no arguments"
+                given = ", ".join(map(str, arg_types)) or "none"
+                raise self.error(f"target takes ({params}), but args gives ({given})", args_node or target)
+            if (name := kw.get("name")) is not None:
+                self.expect_type(name, STR, "thread name")
+            if (daemon := kw.get("daemon")) is not None:
+                self.expect_type(daemon, BOOL, "daemon")
+            target_name = target.id if isinstance(target, A.Name) else target.attr if isinstance(target, A.Attribute) else "<lambda>"
+            extra = {"target": target, "args": args_node, "name": name, "daemon": daemon,
+                     "target_name": target_name, "target_type": tt}
+            t = SyncType(kind)
+            self.spawns.append((e, self.scope, self.module_name))
+        self.check_sync_contents(t, e)
+        e.sym = CallTarget("sync_new", (t, extra))
+        return t
+
+    def check_sync_contents(self, t: SyncType, node: A.Node) -> None:
+        for arg in t.args:
+            if reason := threads.unsendable(arg):
+                raise self.error(f"a {t.kind} can only hold values that can be copied between threads: {reason}", node)
 
     def is_builtin_name(self, e: A.Expr, name: str) -> bool:
         return (
@@ -2129,6 +2290,8 @@ class Checker:
             raise self.error(f"module '{mod.name}' has no member '{member}'", e.func)
         if isinstance(f, StructType):
             return self.check_constructor(e, f)  # utils.Point(...), raise zlib.error("...")
+        if isinstance(f, builtins.SyncTypeDef):  # threading.Lock(), queue.Queue(...)
+            return self.construct_sync(e, f.kind, None, expected)
         if isinstance(f, GenericDef):  # utils.first(xs) / utils.Stack()
             return self.call_generic(e, f, None, expected)
         if isinstance(f, FuncInfo):  # a function from another .sd module

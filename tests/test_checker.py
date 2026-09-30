@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, json, math, os, random, sys, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, json, math, os, queue, random, sys, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():

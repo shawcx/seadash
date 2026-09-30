@@ -4,6 +4,7 @@
 // random.seed(42) gives the same numbers in seadash as in Python.
 #pragma once
 
+#include <mutex>
 #include <random>
 
 namespace sd::random {
@@ -74,6 +75,7 @@ public:
 struct State {
     MT19937 mt;
     std::optional<double> gauss_next;
+    std::recursive_mutex mu;  // one generator shared by all threads, like Python's
 };
 
 inline void seed_state(State& s, std::optional<std::int64_t> a) {
@@ -94,18 +96,23 @@ inline void seed_state(State& s, std::optional<std::int64_t> a) {
 }
 
 inline State& state() {
-    static State s = [] {
-        State fresh;
-        seed_state(fresh, std::nullopt);
-        return fresh;
-    }();
+    static State s;
+    static const bool seeded = (seed_state(s, std::nullopt), true);  // thread-safe one-time init
+    (void)seeded;
     return s;
 }
 
-inline void seed(std::optional<std::int64_t> a = std::nullopt) { seed_state(state(), a); }
+// Every function that touches the shared generator holds its lock for the whole call.
+#define SD_RANDOM_LOCK std::lock_guard<std::recursive_mutex> sd_random_lock(state().mu)
+
+inline void seed(std::optional<std::int64_t> a = std::nullopt) {
+    SD_RANDOM_LOCK;
+    seed_state(state(), a);
+}
 
 // A float in [0, 1) with 53 random bits, exactly as CPython builds it.
 inline double random() {
+    SD_RANDOM_LOCK;
     std::uint32_t a = state().mt.next() >> 5, b = state().mt.next() >> 6;
     return (a * 67108864.0 + b) * (1.0 / 9007199254740992.0);
 }
@@ -114,6 +121,7 @@ inline std::int64_t getrandbits(std::int64_t k) {
     if (k < 0) raise("ValueError", "number of bits must be non-negative");
     if (k > 63) raise("ValueError", "getrandbits() in seadash returns an int, so k must be at most 63");
     if (k == 0) return 0;
+    SD_RANDOM_LOCK;
     if (k <= 32) return state().mt.next() >> (32 - k);
     std::uint64_t low = state().mt.next();
     std::uint64_t high = state().mt.next() >> (64 - k);
@@ -131,6 +139,7 @@ inline std::int64_t bit_length(std::uint64_t n) {
 
 // A uniform int in [0, n): rejection sampling on getrandbits, like CPython's _randbelow.
 inline std::int64_t randbelow(std::int64_t n) {
+    SD_RANDOM_LOCK;
     std::int64_t k = bit_length(static_cast<std::uint64_t>(n));
     std::int64_t r = getrandbits(k);
     while (r >= n) r = getrandbits(k);
@@ -158,6 +167,7 @@ inline std::int64_t randint(std::int64_t a, std::int64_t b) { return randrange(a
 inline double uniform(double a, double b) { return a + (b - a) * random(); }
 
 inline double gauss(double mu = 0.0, double sigma = 1.0) {
+    SD_RANDOM_LOCK;
     State& s = state();
     double z;
     if (s.gauss_next) {
@@ -199,6 +209,7 @@ auto choice(const Seq& population) {
 
 template <class T>
 void shuffle(std::vector<T>& x) {
+    SD_RANDOM_LOCK;
     for (std::size_t i = x.size(); i-- > 1;) {
         std::size_t j = static_cast<std::size_t>(randbelow(static_cast<std::int64_t>(i) + 1));
         std::swap(x[i], x[j]);
@@ -207,6 +218,7 @@ void shuffle(std::vector<T>& x) {
 
 template <class Seq>
 auto sample(const Seq& population, std::int64_t k) {
+    SD_RANDOM_LOCK;
     auto&& seq = as_sequence(population);
     std::int64_t n = static_cast<std::int64_t>(seq.size());
     if (k < 0 || k > n) raise("ValueError", "Sample larger than population or is negative");
@@ -239,6 +251,7 @@ auto sample(const Seq& population, std::int64_t k) {
 template <class Seq>
 auto choices(const Seq& population, std::optional<std::vector<double>> weights = std::nullopt,
              std::optional<std::vector<double>> cum_weights = std::nullopt, std::int64_t k = 1) {
+    SD_RANDOM_LOCK;
     auto&& seq = as_sequence(population);
     std::int64_t n = static_cast<std::int64_t>(seq.size());
     std::vector<decltype(pick(seq, 0))> out;
@@ -267,6 +280,7 @@ auto choices(const Seq& population, std::optional<std::vector<double>> weights =
 
 inline bytes randbytes(std::int64_t n) {
     if (n < 0) raise("ValueError", "negative argument not allowed");
+    SD_RANDOM_LOCK;
     // CPython: getrandbits(n * 8) as little-endian bytes, generated a 32-bit word at a time.
     std::string out;
     std::int64_t bits = n * 8;
@@ -278,5 +292,7 @@ inline bytes randbytes(std::int64_t n) {
     }
     return bytes(out);
 }
+
+#undef SD_RANDOM_LOCK
 
 }  // namespace sd::random

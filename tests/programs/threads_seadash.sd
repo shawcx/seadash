@@ -1,0 +1,41 @@
+# seadash's thread-safe sharing: Atomic, Mutex[T], and Synchronized classes
+import threading
+
+counter = threading.Atomic()
+tally = threading.Mutex({"even": 0, "odd": 0})
+
+class Stats(threading.Synchronized):
+    count: int
+    biggest: int
+
+    def add(self, n: int):
+        self.count += 1
+        if n > self.biggest:
+            self.biggest = n
+
+    def summary(self) -> str:
+        return f"{self.count} items, max {self.biggest}"
+
+def work(start: int, stats: Stats):
+    for n in range(start, start + 1000):
+        counter.add(1)
+        with tally as t:
+            t["even" if n % 2 == 0 else "odd"] += 1
+        stats.add(n)
+
+stats = Stats(0, 0)
+threads = [threading.Thread(target=work, args=(i * 1000, stats)) for i in range(8)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+print(counter.get(), tally.get(), stats.summary(), stats)
+print(counter.compare_and_set(8000, 1), counter.get(), counter.sub(), counter.compare_and_set(99, 5), counter)
+
+def boom():
+    raise ValueError("inside thread")
+
+b = threading.Thread(target=boom)
+b.start()
+b.join()
+print("main continues after", b.name)

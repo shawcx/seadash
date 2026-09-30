@@ -36,7 +36,7 @@ from . import ast as A
 from . import builtins
 from .checker import CallTarget, ModuleInfo
 from .types import (
-    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, STR,
+    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, STR, SyncType,
     DictType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric,
 )
@@ -257,6 +257,9 @@ class CodeGen:
                 return f"sd::list<{self.cpp_type(elem)}>"
             case FuncType(params, ret):
                 return f"std::function<{self.cpp_type(ret)}({', '.join(self.cpp_type(p) for p in params)})>"
+            case SyncType(kind, args):
+                inner = f"<{', '.join(self.cpp_type(a) for a in args)}>" if args else ""
+                return SYNC_CPP[kind] + inner
             case FileType(binary):
                 return f"std::shared_ptr<sd::{'BinaryFile' if binary else 'TextFile'}>"
         raise NotImplementedError(f"no C++ type for {t}")
@@ -466,7 +469,8 @@ class CodeGen:
             parts.append(cpp_string(("" if i == 0 else ", ") + f"{f.name}="))
             parts.append(f"sd::repr({ident(f.name)})")
         parts.append(cpp_string(")"))
-        self.line(f"std::string {name}::sd_repr() const {{ return {' + '.join(parts)}; }}")
+        lock = "std::lock_guard<std::recursive_mutex> sd_lock(this->sd_mutex); " if is_synchronized(st) else ""
+        self.line(f"std::string {name}::sd_repr() const {{ {lock}return {' + '.join(parts)}; }}")
         self.line()
         if self.json_hooks(st):
             self.json_members(st)
@@ -548,6 +552,8 @@ class CodeGen:
     def function_body(self, fn: FuncInfo, header: str) -> None:
         self.func = fn
         self.open(header)
+        if fn.owner is not None and fn.name != "__init__" and is_synchronized(fn.owner):
+            self.line("std::lock_guard<std::recursive_mutex> sd_lock(this->sd_mutex);  // Synchronized")
         self.hoist(fn.locals)
         self.cell_params(fn)
         self.block(fn.node.body)
@@ -744,6 +750,20 @@ class CodeGen:
         item = items[0]
         info = item.sym
         ctx = self.fresh("ctx")
+        if info.kind in ("lock", "mutex"):
+            self.open("")
+            if info.kind == "lock":  # held for the block, released on every way out (RAII)
+                self.line(f"sd::threading::Held<{self.cpp_type(item.context.ty)}> {ctx}({self.expr(item.context)});")
+                if item.target is not None:
+                    self.assign(item.target, "true", BOOL)
+            else:  # `with m as data:`: data is a reference into the protected value while locked
+                self.line(f"auto {ctx} = {self.expr(item.context)}.lock();")
+                if item.target is not None:
+                    var: Var = item.target.sym
+                    self.line(f"{self.cpp_type(var.type)}& {ident(var.cpp_name)} = {ctx}.value();")
+            self.with_stmt(items[1:], body)
+            self.close()
+            return
         self.open("")
         self.line(f"auto {ctx} = {self.expr(item.context)};")
         exit_param = None
@@ -1113,6 +1133,8 @@ class CodeGen:
             return self.module_value(e.sym)
         if isinstance(e.sym, A.Lambda):
             return self.expr(e.sym)  # `key=str.lower`
+        if isinstance(e.sym, tuple) and e.sym[0] == "thread_attr":
+            return f"{self.expr(e.value)}.{e.sym[1]}()"
         if isinstance(e.sym, FuncInfo):
             if e.sym.owner is None:  # textutil.shout: a module's function, as a value
                 return qualified(fn_name(e.sym), e.sym.module)
@@ -1300,6 +1322,8 @@ class CodeGen:
             case "isinstance":
                 tests = " || ".join(f"sd::isinstance_of<{class_name(c)}>(sd_obj)" for c in target.target)
                 return f"[&](const auto& sd_obj) {{ return {tests}; }}({self.expr(e.args[0])})"
+            case "sync_new":
+                return self.sync_new(e, *target.target)
             case "self_call":
                 fn: FuncInfo = target.target
                 rec = next(r for info, r in reversed(self.recursion) if info is fn)
@@ -1319,6 +1343,30 @@ class CodeGen:
                 mod, name = target.target
                 return self.module_call(mod, name, e)
         raise NotImplementedError(f"codegen for call kind {target.kind}")
+
+    def sync_new(self, e: A.Call, t: SyncType, extra: dict) -> str:
+        cpp = self.cpp_type(t)
+        if t.kind in ("Atomic", "Mutex", "Queue"):
+            node = extra.get("value") or extra.get("maxsize")
+            if node is None:
+                return f"{cpp}()"
+            want = t.args[0] if t.kind == "Mutex" else INT
+            return f"{cpp}({self.expr_as(node, want)})"
+        if t.kind != "Thread":
+            return f"{cpp}()"
+        # The thread gets its own copies of the target and its arguments.
+        ft: FuncType = extra["target_type"]
+        args = extra["args"]
+        if isinstance(args, A.TupleLit):
+            packed = f"std::make_tuple({', '.join(self.expr_as(a, p) for a, p in zip(args.elts, ft.params))})"
+        elif args is not None:
+            packed = self.coerce(self.expr(args), args.ty, TupleType(ft.params))
+        else:
+            packed = "std::make_tuple()"
+        name = self.expr(extra["name"]) if extra["name"] is not None else "std::nullopt"
+        daemon = self.expr(extra["daemon"]) if extra["daemon"] is not None else "false"
+        body = f"[sd_f = {self.expr(extra['target'])}, sd_a = {packed}]() mutable {{ std::apply(sd_f, sd_a); }}"
+        return f"sd::threading::Thread({body}, {name}, {cpp_string(extra['target_name'])}, {daemon})"
 
     def call_args(self, slots: list[A.Expr | None], fn: FuncInfo) -> str:
         return ", ".join(self.slot_codes(slots, fn.params))
@@ -1416,6 +1464,13 @@ class CodeGen:
             return f"{r}->{name}({', '.join(args)})"
         if recv_type == JSON_VALUE:
             return f"{r}.{name}({', '.join(args)})"
+        if isinstance(recv_type, SyncType):
+            handler = builtins.method_for(recv_type, name)
+            codes = []
+            for i, (pname, ptype, *default) in enumerate(handler.params):
+                node = e.args[i] if i < len(e.args) else self.keyword(e, pname)
+                codes.append(self.expr_as(node, handler.resolve(ptype, recv_type)) if node is not None else default[0])
+            return f"{r}.{name}({', '.join(codes)})"
         match recv_type:
             case ListType():
                 match name:
@@ -1513,9 +1568,13 @@ def constant_int(e: A.Expr) -> int | None:
     return None
 
 
+def is_synchronized(st: StructType) -> bool:
+    return any(t.builtin and t.name == "Synchronized" for t in st.ancestors())
+
+
 def by_value(t: Type) -> bool:
     """Passed by value: small scalars, and classes (a shared pointer)."""
-    return t in (INT, FLOAT, BOOL) or isinstance(t, (FuncType,)) or (isinstance(t, StructType) and t.kind == "class")
+    return t in (INT, FLOAT, BOOL) or isinstance(t, (FuncType, SyncType)) or (isinstance(t, StructType) and t.kind == "class")
 
 
 def attr_chain(e: A.Expr) -> list[str]:
