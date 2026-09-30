@@ -1765,7 +1765,7 @@ def test_match_exhaustive_assigns():
     ('f"{n!r:d}"', "bad format spec ':d' for a str: Unknown format code 'd' for object of type 'str'"),
     ('f"{x:x}"', "bad format spec ':x' for a float: Unknown format code 'x' for object of type 'float'"),
     ('f"{x:10.}"', "bad format spec ':10.' for a float: Format specifier missing precision"),
-    ('f"{xs:>10}"', "a format spec needs an int, float, str or date, not a list[int]; convert it first, e.g. `{str(x):>10}`"),
+    ('f"{xs:>10}"', "a format spec needs an int, float, str or date, not a list[int]; convert it first, e.g. with str()"),
     ('f"{xs:{n}}"', "a format spec needs an int, float, str or date, not a list[int]"),
     ('f"{m:>5}"', "int? might be None; check it first, e.g. `if m is not None:`"),
 ])
@@ -1787,4 +1787,38 @@ def test_format_specs_that_are_fine():
         n = 5
         w = 3
         print(f"{n:,} {n:_x} {2.5:z.1%} {'s':^{w}} {n:{w}.{w}} {date.today():%Y} {n:} {[1]:} {n!r:>5}")
+    """)
+
+
+@pytest.mark.parametrize("line,msg", [
+    ('"{} {}".format(1)', "the format string needs at least 2 arguments, but 1 was given"),
+    ('"{2}".format(1, 2)', "the format string needs at least 3 arguments, but 2 were given"),
+    ('"{name}".format(1)', "the format string uses {name}, but there's no keyword argument 'name'"),
+    ('"{}{0}".format(1)', "bad format string: cannot switch from automatic field numbering to manual field specification"),
+    ('"{0}{}".format(1)', "bad format string: cannot switch from manual field specification to automatic field numbering"),
+    ('"{".format(1)', "bad format string: Single '{' encountered in format string"),
+    ('"{!x}".format(1)', "bad format string: Unknown conversion specifier x"),
+    ('"{:,x}".format(1)', "bad format spec ':,x' for an int: Cannot specify ',' with 'x'."),
+    ('"{:>5}".format(xs)', "a format spec needs an int, float, str or date, not a list[int]"),
+    ('"{0.nope}".format(xs)', "list[int] has no attribute 'nope'"),
+    ('"{0[k]}".format(xs)', "list index must be int"),
+    ('format(xs, ">5")', "a format spec needs an int, float, str or date, not a list[int]"),
+    ('format(1, ".2")', "bad format spec ':.2' for an int: Precision not allowed in integer format specifier"),
+    ('format(1, 2)', "format() argument must be str, not int"),
+    ('format(m, "5")', "int? might be None; check it first"),
+])
+def test_str_format_errors(line, msg):
+    e = err(f"""
+        xs = [1]
+        def f(m: int | None):
+            print({line})
+    """)
+    assert msg in e.message
+
+
+def test_str_format_that_is_fine():
+    ok("""
+        xs = [1]
+        fmt = "{}"
+        print("{0} {x!r:>5} {0[0]:{w}}".format(xs, x="a", w=3), fmt.format(xs, 2), format(xs), format(xs, ""))
     """)

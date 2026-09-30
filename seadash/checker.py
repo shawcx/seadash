@@ -1961,6 +1961,8 @@ class Checker:
                 return BOOL
             case A.NoneLit():
                 return NONE
+            case A.FormatArg():
+                return e.ty  # set when the format string was compiled (builtins.str_format)
             case A.FString(parts):
                 for part in parts:
                     if isinstance(part, A.FormattedValue):
@@ -2160,23 +2162,12 @@ class Checker:
             return  # {x:} is str(x)
         if part.conversion:
             t = STR
-        if t in (DATE, DATETIME, TIME):
-            return  # a strftime format
-        sample = {INT: 0, FLOAT: 0.0, BOOL: False, STR: ""}.get(t)
-        if sample is None:
-            if isinstance(t, OptionalType) and strip_optional(t) in (INT, FLOAT, BOOL, STR, DATE, DATETIME, TIME):
-                raise self.error(
-                    f"{t} might be None; check it first, e.g. `if {describe_short(part.value)} is not None:`", part.value
-                )
+        if isinstance(t, OptionalType) and builtins.format_spec_error(strip_optional(t), None) is None:
             raise self.error(
-                f"a format spec needs an int, float, str or date, not {with_article(t)}; "
-                f"convert it first, e.g. `{{str(x):>10}}`", part.value,
+                f"{t} might be None; check it first, e.g. `if {describe_short(part.value)} is not None:`", part.value
             )
-        if isinstance(spec, str):
-            try:
-                format(sample, spec)
-            except ValueError as err:
-                raise self.error(f"bad format spec ':{spec}' for {with_article(t)}: {err}", part)
+        if message := builtins.format_spec_error(t, spec if isinstance(spec, str) else None):
+            raise self.error(message, part.value if message.startswith("a format spec") else part)
 
     def check_sequence_literal(self, e, elts, expected, ctor, word: str) -> Type:
         hint = expected.elem if isinstance(expected, ctor) else None

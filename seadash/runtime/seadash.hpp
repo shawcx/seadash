@@ -1994,6 +1994,161 @@ inline std::string format_value(bool b, std::string_view spec) {
     return format_int(b, spec, "bool");
 }
 
+// format(x, spec) and f"{x:spec}" for any value: the overloads above, or a date's
+// (found by argument-dependent lookup). Other values only take an empty spec.
+template <class T>
+std::string format_any(const T& x, std::string_view spec, std::string_view type_name = "object") {
+    if constexpr (requires { format_value(x, spec); }) {
+        return format_value(x, spec);
+    } else if constexpr (is_optional<T>::value) {
+        if (x) return format_any(*x, spec, type_name);
+        return format_any(std::nullopt, spec, "NoneType");
+    } else {
+        if (!spec.empty())
+            raise("TypeError", "unsupported format string passed to " + std::string(type_name) + ".__format__");
+        return str(x);
+    }
+}
+
+// str.format() with a format string only known at run time. (A literal format
+// string is compiled like an f-string instead.)
+struct FormatArg {
+    std::string (*format)(const void* p, char conversion, std::string_view spec, std::string_view type_name);
+    const void* p;
+    std::string_view type_name;
+};
+
+template <class T>
+std::string format_arg(const void* p, char conversion, std::string_view spec, std::string_view type_name) {
+    const T& x = *static_cast<const T*>(p);
+    switch (conversion) {
+        case 'r': return format_value(repr(x), spec);
+        case 's': return format_value(str(x), spec);
+        case 'a': return format_value(ascii(repr(x)), spec);
+        default: return format_any(x, spec, type_name);
+    }
+}
+
+struct StrFormatter {
+    const std::vector<FormatArg>& args;
+    std::size_t positional;               // args[0, positional) are positional, the rest keywords
+    const std::vector<std::string_view>& names;  // the keywords' names
+    std::int64_t next_auto = 0;           // -1 once a field is numbered by hand
+
+    const FormatArg& field(std::string_view name) {
+        std::size_t end = name.find_first_of(".[");
+        std::string_view first = name.substr(0, end);
+        const FormatArg& arg = argument(first);
+        if (end != std::string_view::npos)
+            raise("ValueError", "seadash can't look up '" + std::string(name.substr(end)) +
+                                    "' in a format string made at run time (use a literal format string)");
+        return arg;
+    }
+
+    const FormatArg& argument(std::string_view first) {
+        auto index = [&](std::size_t i) -> const FormatArg& {
+            if (i >= positional)
+                raise("IndexError", "Replacement index " + std::to_string(i) + " out of range for positional args tuple");
+            return args[i];
+        };
+        if (first.empty()) {
+            if (next_auto < 0)
+                raise("ValueError", "cannot switch from manual field specification to automatic field numbering");
+            return index(static_cast<std::size_t>(next_auto++));
+        }
+        if (std::all_of(first.begin(), first.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+            if (next_auto > 0)
+                raise("ValueError", "cannot switch from automatic field numbering to manual field specification");
+            next_auto = -1;
+            std::size_t i = 0;
+            for (char c : first) i = std::min<std::size_t>(i * 10 + (c - '0'), std::numeric_limits<std::int32_t>::max());
+            return index(i);
+        }
+        for (std::size_t i = 0; i < names.size(); ++i)
+            if (names[i] == first) return args[positional + i];
+        raise("KeyError", repr_str(std::string(first)));
+    }
+
+    std::string run(std::string_view fmt, int depth) {
+        if (depth <= 0) raise("ValueError", "Max string recursion exceeded");
+        std::string out;
+        std::size_t i = 0;
+        while (i < fmt.size()) {
+            char c = fmt[i];
+            if (c == '}') {
+                if (i + 1 < fmt.size() && fmt[i + 1] == '}') {
+                    out += '}', i += 2;
+                    continue;
+                }
+                raise("ValueError", "Single '}' encountered in format string");
+            }
+            if (c != '{') {
+                out += c, ++i;
+                continue;
+            }
+            if (i + 1 < fmt.size() && fmt[i + 1] == '{') {
+                out += '{', i += 2;
+                continue;
+            }
+            if (i + 1 == fmt.size()) raise("ValueError", "Single '{' encountered in format string");
+            // name[!conversion][:spec]}, where brackets in the name may hold anything but ']'.
+            std::size_t start = ++i;
+            auto unterminated = [] { raise("ValueError", "expected '}' before end of string"); };
+            while (i < fmt.size() && fmt[i] != '}' && fmt[i] != ':' && fmt[i] != '!') {
+                if (fmt[i] == '{') raise("ValueError", "unexpected '{' in field name");
+                if (fmt[i] == '[') {
+                    i = fmt.find(']', i);
+                    if (i == std::string_view::npos) unterminated();
+                }
+                ++i;
+            }
+            if (i == fmt.size()) unterminated();
+            std::string_view name = fmt.substr(start, i - start);
+            char conversion = 0;
+            if (fmt[i] == '!') {
+                if (i + 1 == fmt.size()) raise("ValueError", "end of string while looking for conversion specifier");
+                conversion = fmt[i + 1];
+                i += 2;
+                if (i < fmt.size() && fmt[i] != ':' && fmt[i] != '}')
+                    raise("ValueError", "expected ':' after conversion specifier");
+            }
+            std::string_view spec;
+            if (i < fmt.size() && fmt[i] == ':') {
+                std::size_t spec_start = ++i;
+                for (int nesting = 1; i < fmt.size(); ++i) {
+                    if (fmt[i] == '{') ++nesting;
+                    if (fmt[i] == '}' && --nesting == 0) break;
+                }
+                spec = fmt.substr(spec_start, i - spec_start);
+            }
+            if (i >= fmt.size()) raise("ValueError", "unmatched '{' in format spec");
+            ++i;  // the closing '}'
+            const FormatArg& arg = field(name);
+            if (conversion && conversion != 'r' && conversion != 's' && conversion != 'a')
+                raise("ValueError", std::string("Unknown conversion specifier ") + conversion);
+            std::string expanded;
+            if (spec.find('{') != std::string_view::npos) {
+                expanded = run(spec, depth - 1);
+                spec = expanded;
+            }
+            out += arg.format(arg.p, conversion, spec, arg.type_name);
+        }
+        return out;
+    }
+};
+
+// str_format(fmt, {"list", "int"...}, {"key"...}, positional..., keywords...)
+template <class... Ts>
+std::string str_format(std::string_view fmt, std::initializer_list<std::string_view> types,
+                       std::initializer_list<std::string_view> keywords, const Ts&... values) {
+    std::vector<FormatArg> args;
+    auto type = types.begin();
+    (args.push_back(FormatArg{&format_arg<Ts>, &values, *type++}), ...);
+    std::vector<std::string_view> names(keywords);
+    StrFormatter f{args, args.size() - names.size(), names};
+    return f.run(fmt, 2);
+}
+
 // ---- bytes <-> str ----------------------------------------------------------
 
 inline void check_encoding(const std::string& encoding) {

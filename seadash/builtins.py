@@ -7,6 +7,7 @@ a built-in is one function here plus (later) one line of code generation.
 
 from __future__ import annotations
 
+import _string  # Python's own format-string parser, for str.format()
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -267,6 +268,40 @@ def b_str(ctx: CallContext) -> Type:
 def b_repr(ctx: CallContext) -> Type:
     ctx.arity(1)
     ctx.need(0, printable, "something printable")
+    return STR
+
+
+FORMAT_SAMPLES = {INT: 0, FLOAT: 0.0, BOOL: False, STR: ""}
+
+
+def format_spec_error(t: Type, spec: str | None) -> str | None:
+    """Why a `t` can't be formatted with `spec` (None: a spec computed at run time), if it can't.
+    A constant spec is checked by Python's own rules, so the message is Python's."""
+    if t in (DATE, DATETIME, TIME):
+        return None  # a strftime format
+    article = ("an " if str(t)[:1].lower() in "aeiou" else "a ") + str(t)
+    if t not in FORMAT_SAMPLES:
+        return f"a format spec needs an int, float, str or date, not {article}; convert it first, e.g. with str()"
+    if spec is not None:
+        try:
+            format(FORMAT_SAMPLES[t], spec)
+        except ValueError as err:
+            return f"bad format spec ':{spec}' for {article}: {err}"
+    return None
+
+
+def b_format(ctx: CallContext) -> Type:
+    """format(x, spec): like f"{x:spec}"."""
+    n = ctx.arity(1, 2)
+    t = ctx.need(0, printable, "something printable")
+    if n == 2:
+        ctx.expect(1, STR)
+        spec = ctx.args[1]
+        if not (isinstance(spec, A.StrLit) and not spec.value):
+            if isinstance(t, OptionalType) and format_spec_error(strip_optional_type(t), None) is None:
+                raise ctx.error(f"{t} might be None; check it first", ctx.args[0])
+            if message := format_spec_error(t, spec.value if isinstance(spec, A.StrLit) else None):
+                raise ctx.error(message, ctx.args[0] if message.startswith("a format spec") else spec)
     return STR
 
 
@@ -533,6 +568,7 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "str": b_str,
     "repr": b_repr,
     "ascii": b_repr,
+    "format": b_format,
     "int": b_int,
     "float": b_float,
     "bool": b_bool,
@@ -610,6 +646,81 @@ def str_join(ctx: CallContext) -> Type:
     return STR
 
 
+def str_format(ctx: CallContext) -> Type:
+    """"...".format(...): a literal format string is compiled into an f-string over the
+    arguments (A.FormatArg), so its fields are checked here; any other is parsed at run time."""
+    values = list(ctx.args) + [kw.value for kw in ctx.call.keywords]
+    types = [ctx.checker.check_expr(v) for v in values]
+    for v, t in zip(values, types):
+        if not printable(t):
+            raise ctx.error(f"{t} can't be converted to a string", v)
+    fmt = ctx.call.func.value
+    if isinstance(fmt, A.StrLit):
+        fstring = compile_format(ctx, fmt.value, types)
+        ctx.checker.check_expr(fstring)
+        ctx.call.format_fstring = fstring
+    return STR
+
+
+def compile_format(ctx: CallContext, fmt: str, types: list[Type]) -> A.FString:
+    loc = ctx.call.loc
+    positional = len(ctx.args)
+    keywords = [kw.name for kw in ctx.call.keywords]
+    numbering = {"next": 0, "manual": False}
+
+    def argument(first: int | str) -> A.Expr:
+        if first == "":
+            if numbering["manual"]:
+                raise ValueError("cannot switch from manual field specification to automatic field numbering")
+            first = numbering["next"]
+            numbering["next"] += 1
+        elif isinstance(first, int):
+            if numbering["next"]:
+                raise ValueError("cannot switch from automatic field numbering to manual field specification")
+            numbering["manual"] = True
+        if isinstance(first, int):
+            if first >= positional:
+                given = f"{positional} {'was' if positional == 1 else 'were'} given"
+                raise ctx.error(f"the format string needs at least {plural_args(first + 1)}, but {given}")
+            index = first
+        elif first in keywords:
+            index = positional + keywords.index(first)
+        else:
+            raise ctx.error(f"the format string uses {{{first}}}, but there's no keyword argument '{first}'")
+        node = A.FormatArg(index, loc=loc)
+        node.ty = types[index]
+        return node
+
+    def parts(text: str, depth: int) -> list:
+        if depth == 0:
+            raise ValueError("Max string recursion exceeded")
+        out: list = []
+        for literal, name, spec, conversion in _string.formatter_parser(text):
+            if literal:
+                out.append(literal)
+            if name is None:
+                continue
+            first, rest = _string.formatter_field_name_split(name)
+            value = argument(first)
+            for is_attribute, key in rest:  # {0.name}, {0[1]}, {0[key]}
+                if is_attribute:
+                    value = A.Attribute(value, key, loc=loc)
+                else:
+                    index = A.IntLit(key, loc=loc) if isinstance(key, int) else A.StrLit(key, loc=loc)
+                    value = A.Index(value, index, loc=loc)
+            if conversion not in (None, "r", "s", "a"):
+                raise ValueError(f"Unknown conversion specifier {conversion}")
+            if "{" in spec:
+                spec = A.FString(parts(spec, depth - 1), loc=loc)
+            out.append(A.FormattedValue(value, spec or None, conversion, loc=loc))
+        return out
+
+    try:
+        return A.FString(parts(fmt, 2), loc=loc)
+    except ValueError as err:
+        raise ctx.error(f"bad format string: {err}", ctx.call.func.value) from None
+
+
 def list_extend(ctx: CallContext) -> Type:
     ctx.arity(1)
     elem = ctx.iterable(0)
@@ -655,6 +766,7 @@ STR_METHODS = {
     **{name: returns(TupleType((STR, STR, STR)), args=(STR,)) for name in ("partition", "rpartition")},
     "replace": returns(STR, args=(STR, STR)),
     "join": str_join,
+    "format": str_format,
     "encode": returns(BYTES, 0, 1, (STR,)),
 }
 

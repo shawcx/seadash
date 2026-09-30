@@ -136,6 +136,13 @@ class FString(Expr):
 
 
 @dataclass
+class FormatArg(Expr):
+    """An argument of `"...".format(...)`, in the f-string a literal format string becomes."""
+
+    index: int  # into the call's positional arguments, then its keyword arguments
+
+
+@dataclass
 class Name(Expr):
     id: str
 

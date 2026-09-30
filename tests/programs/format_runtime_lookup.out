@@ -1,0 +1,2 @@
+ValueError: seadash can't look up '.real' in a format string made at run time (use a literal format string)
+ValueError: seadash can't look up '[0]' in a format string made at run time (use a literal format string)

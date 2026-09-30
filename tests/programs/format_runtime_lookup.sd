@@ -1,0 +1,12 @@
+# seadash-only: a format string made at run time can't look up attributes or items
+# (a literal one can: "{0.name}".format(p)).
+fmt = "{0.real}"
+try:
+    print(fmt.format(5))
+except ValueError as e:
+    print("ValueError:", e)
+fmt = "{[0]}"
+try:
+    print(fmt.format([1]))
+except ValueError as e:
+    print("ValueError:", e)

@@ -1,0 +1,37 @@
+a and 2.5!
+eval 1
+eval 2
+212
+   bob|1,234,567|'s'
+ann 5 9    4
+    3.14|2024
+{} ff
+1,234.5 7 [1, 2] 5 1
+      hi|
+[1, 2] is   3.5 'z' {x} ab  
+ValueError Single '{' encountered in format string
+ValueError Single '}' encountered in format string
+ValueError cannot switch from manual field specification to automatic field numbering
+ValueError cannot switch from automatic field numbering to manual field specification
+IndexError Replacement index 5 out of range for positional args tuple
+KeyError 'x'
+ValueError Unknown format code 'd' for object of type 'str'
+ValueError Unknown conversion specifier q
+ValueError unmatched '{' in format spec
+ValueError expected ':' after conversion specifier
+IndexError Replacement index 1 out of range for positional args tuple
+TypeError unsupported format string passed to list.__format__
+eval 3
+eval 4
+33
+[   mid   ] [True**] ['\xe9']
+----x|
+123,456
+1_e240
+12345600.0%
+123456
+0.0 A   é  | 02/01
+C(1) {'a': 1} b'hi' None (1, 'x') 3
+unsupported format string passed to bytes.__format__
+    3|
+unsupported format string passed to NoneType.__format__

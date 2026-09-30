@@ -209,6 +209,7 @@ class CodeGen:
         self.recursion: list[tuple[FuncInfo, str]] = []
         # Expressions already evaluated into temporaries (see `in_order`).
         self.precomputed: dict[int, str] = {}
+        self.format_args: list[str] = []  # str.format() arguments, while building its f-string
         self.module_values = {
             id(v): (mod.name, name)
             for mod in builtins.MODULES.values()
@@ -1401,7 +1402,7 @@ class CodeGen:
         for x in operands:
             tmp = self.fresh("a")
             # A value, not auto&&: the expression may return a reference into a temporary.
-            decls.append(f"auto {tmp} = {self.expr(x)};")
+            decls.append(f"[[maybe_unused]] auto {tmp} = {self.expr(x)};")  # (str.format may not use it)
             self.precomputed[id(x)] = tmp
         try:
             inner = build()
@@ -1441,6 +1442,8 @@ class CodeGen:
                 return "true" if v else "false"
             case A.NoneLit():
                 return "std::nullopt"
+            case A.FormatArg(index):
+                return self.format_args[index]
             case A.FString(parts):
                 values = fstring_values(parts)
                 return self.in_order(values, lambda: self.fstring(parts))
@@ -1605,9 +1608,9 @@ class CodeGen:
                 elif p.conversion == "s":
                     value = f"sd::str({value})"
                 if isinstance(p.spec, A.FString):  # {x:{width}}: the spec is built at run time
-                    value = f"sd::format_value({value}, {self.fstring(p.spec.parts)})"
+                    value = f"sd::format_any({value}, {self.fstring(p.spec.parts)})"
                 elif p.spec:
-                    value = f"sd::format_value({value}, {cpp_string(p.spec)[:-1]}sv)"
+                    value = f"sd::format_any({value}, {cpp_string(p.spec)[:-1]}sv)"
                 pieces.append(value)
         return f"sd::fstr({', '.join(pieces)})"
 
@@ -2304,6 +2307,12 @@ class CodeGen:
                 return f"sd::str({a})" if a else '""s'
             case "repr":
                 return f"sd::repr({a})"
+            case "format" if len(e.args) == 1 or (isinstance(e.args[1], A.StrLit) and not e.args[1].value):
+                return f"sd::str({a})"
+            case "format" if isinstance(e.args[1], A.StrLit):
+                return f"sd::format_any({a}, {cpp_string(e.args[1].value)[:-1]}sv)"
+            case "format":
+                return f"sd::format_any({', '.join(args)})"
             case "ascii":
                 return f"sd::ascii(sd::repr({a}))"
             case "int":
@@ -2417,10 +2426,38 @@ class CodeGen:
                 lines.append(f"s.{name} = {self.expr(kw[name])};")
         return f"[&] {{ sd::argparse::Spec s; {' '.join(lines)} return s; }}()"
 
+    def str_format(self, e: A.Call) -> str:
+        """"...".format(...). A literal format string was compiled into an f-string over the
+        arguments: evaluate each once (self.call did them in order if that matters), then build
+        that. Any other is parsed at run time."""
+        values = e.args + [kw.value for kw in e.keywords]
+        fstring = getattr(e, "format_fstring", None)
+        if fstring is None:
+            fmt = e.func.value
+            types = ", ".join(cpp_string(str(strip_optional(v.ty)).split("[")[0])[:-1] for v in values)
+            names = ", ".join(cpp_string(kw.name)[:-1] for kw in e.keywords)
+            return f"sd::str_format({self.expr(fmt)}, {{{types}}}, {{{names}}}{''.join(', ' + self.expr(v) for v in values)})"
+        decls, args = [], []
+        for v in values:
+            if is_simple(v) or id(v) in self.precomputed:
+                args.append(self.expr(v))
+            else:  # (an argument the format string doesn't use is still evaluated)
+                tmp = self.fresh("a")
+                decls.append(f"[[maybe_unused]] auto {tmp} = {self.expr(v)};")
+                args.append(tmp)
+        saved, self.format_args = self.format_args, args
+        try:
+            body = self.expr(fstring)
+        finally:
+            self.format_args = saved
+        return f"[&] {{ {' '.join(decls)} return {body}; }}()" if decls else body
+
     def method_call(self, recv_type: Type, name: str, e: A.Call) -> str:
         r = self.expr(e.func.value)
         args = [self.expr(a) for a in e.args]
         rest = "".join(", " + a for a in args)
+        if recv_type == STR and name == "format":
+            return self.str_format(e)
         if recv_type == STR:
             return f"sd::str_{name}({r}{rest})"
         if recv_type == BYTES:

@@ -1,0 +1,78 @@
+# str.format() and format(): literal format strings are compiled like f-strings, others parsed at run time.
+from dataclasses import dataclass
+from datetime import date
+
+
+@dataclass
+class P:
+    name: str
+    xs: list[int]
+
+
+def f(n: int) -> int:
+    print("eval", n)
+    return n
+
+
+p = P("ann", [4, 5])
+print("{} and {}!".format("a", 2.5))
+print("{1}{0}{1}".format(f(1), f(2)))
+print("{name:>6}|{n:,}|{0!r}".format("s", name="bob", n=1234567))
+print("{0.name} {0.xs[1]} {d[k]} {0.xs[0]:>{w}}".format(p, d={"k": 9}, w=4))
+print("{:{}.{}f}|{:%Y}".format(3.14159, 8, 2, date(2024, 1, 2)))
+print("{{}} {:x}".format(255))
+print(format(1234.5, ",.1f"), format(7), format([1, 2]), format(5, ""), format(True, "d"))
+spec = ">8"
+print(format("hi", spec) + "|")
+fmt = "{} is {:>5} {name!r} {{x}} {:{}}"
+print(fmt.format([1, 2], 3.5, "ab", 4, name="z"))
+for bad in ["{", "}", "{0}{}", "{}{0}", "{5}", "{x}", "{:d}", "{!q}", "{0!}", "{0!rx}", "{:{:{}}}"]:
+    try:
+        print(bad.format("s"))
+    except ValueError as e:
+        print("ValueError", e)
+    except IndexError as e:
+        print("IndexError", e)
+    except KeyError as e:
+        print("KeyError", e)
+try:
+    print(fmt.replace("{}", "{:>3}").format([1], 1, 2, 3, name=""))
+except TypeError as e:
+    print("TypeError", e)
+
+# every argument is evaluated once, in order, even if unused or used twice
+print("{0}{0}".format(f(3), f(4)))
+print("[{:^9}] [{!s:*<6}] [{!a}]".format("mid", True, "é"))
+print("{0:{fill}{align}{width}}|".format("x", fill="-", align=">", width=5))
+templates = ["{:,}", "{:_x}", "{:.1%}", "{!r}"]
+for t in templates:
+    print(t.format(123456))
+print(format(-0.0, "z.1f"), format(65, "c"), format("é", "^5") + "|", format(date(2024, 1, 2), "%d/%m"))
+
+
+# format strings made at run time take any value; only numbers, strings and dates take a spec
+class C:
+    n: int
+
+    def __init__(self, n: int):
+        self.n = n
+
+    def __repr__(self) -> str:
+        return f"C({self.n})"
+
+
+def g(x: int | None) -> int | None:
+    return x
+
+
+fmt = "{} {} {} {} {} {!r}"
+print(fmt.format(C(1), {"a": 1}, b"hi", g(None), (1, "x"), g(3)))
+try:
+    print("{:>4}".replace(">", ">") .format(b"x"))
+except TypeError as e:
+    print(e)
+print("{:>4}|".replace("4", "5").format(g(3)))
+try:
+    print("{:>5}".replace("5", "6").format(g(None)))
+except TypeError as e:
+    print(e)
