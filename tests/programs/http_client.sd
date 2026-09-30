@@ -1,0 +1,133 @@
+# http.client against a small server on a socket: keep-alive, chunked bodies, reading in
+# pieces, reconnecting after the server closes, the connection's state errors, and exactly
+# what goes over the wire. (valid Python: the same output)
+import http.client
+import queue
+import socket
+import threading
+
+srv = socket.socket()
+srv.bind(("127.0.0.1", 0))
+srv.listen()
+port = srv.getsockname()[1]
+seen: queue.Queue[tuple[list[str], bytes]] = queue.Queue()
+
+
+def serve(srv: socket.socket, seen: queue.Queue[tuple[list[str], bytes]]) -> None:
+    while True:
+        c, _ = srv.accept()
+        buf = b""
+        while True:
+            while b"\r\n\r\n" not in buf:
+                d = c.recv(4096)
+                if not d:
+                    break
+                buf += d
+            if b"\r\n\r\n" not in buf:
+                break
+            end = buf.index(b"\r\n\r\n")
+            head, buf = buf[:end], buf[end + 4:]
+            lines = head.decode().split("\r\n")
+            n = 0
+            for line in lines[1:]:
+                if line.lower().startswith("content-length:"):
+                    n = int(line.split(":")[1])
+            while len(buf) < n:
+                buf += c.recv(4096)
+            body, buf = buf[:n], buf[n:]
+            seen.put((lines, body))
+            path = lines[0].split()[1]
+            if path == "/close":
+                c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nbye")
+                break
+            elif path == "/short":
+                c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc")
+                break
+            elif path == "/chunked":
+                c.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n")
+            elif path == "/lines":
+                c.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 11\r\n\r\none\ntwo\nend")
+            else:
+                c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-A: 1\r\nX-A: 2\r\n\r\nhello")
+        c.close()
+
+
+threading.Thread(target=serve, args=(srv, seen), daemon=True).start()
+
+conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+print(conn.host == "127.0.0.1", conn.port == port, conn.timeout)
+conn.request("GET", "/a")
+r = conn.getresponse()
+print(r.status, r.reason, r.version, r.getheader("x-a"), r.getheader("missing"), r.getheader("missing", "-"))
+print(r.getheaders(), r.headers["Content-Length"], r.msg.get("X-A"), "x-a" in r.headers)
+print(r.read(2), r.read(), r.read(), r.isclosed(), r.closed)
+
+conn.request("POST", "/b", body="héllo wörld".encode(), headers={"X-Test": "1"})
+r = conn.getresponse()
+print(r.read())
+conn.request("POST", "/c", body="é")  # str bodies are sent as Latin-1
+print(conn.getresponse().read())
+try:
+    http.client.HTTPConnection("127.0.0.1", port).request("POST", "/c2", body="€")
+except UnicodeEncodeError as e:
+    print("UnicodeEncodeError:", e)
+conn.close()
+
+conn.request("PUT", "/d")  # (reconnects)
+r = conn.getresponse()
+print(r.read())
+
+conn.request("GET", "/e")
+try:
+    conn.request("GET", "/f")
+except http.client.CannotSendRequest as e:
+    print("CannotSendRequest:", repr(str(e)))
+r = conn.getresponse()
+try:
+    conn.getresponse()
+except http.client.ResponseNotReady as e:
+    print("ResponseNotReady:", repr(str(e)))
+print(r.read())
+
+conn.request("GET", "/close")
+r = conn.getresponse()
+print(r.read(), r.isclosed())
+conn.request("GET", "/after-close")
+print(conn.getresponse().read())
+
+conn.request("GET", "/chunked")
+r = conn.getresponse()
+print(r.read(1), r.read(3), r.read())
+
+conn.request("GET", "/lines")
+r = conn.getresponse()
+print(r.status, r.reason, r.readline(), r.readlines())
+
+conn.request("GET", "/short")
+r = conn.getresponse()
+try:
+    r.read()
+except http.client.IncompleteRead as e:
+    print("IncompleteRead:", e, repr(e), e.partial, e.expected)
+conn.close()
+
+while not seen.empty():
+    lines, body = seen.get()
+    print([line.replace(str(port), "PORT") for line in lines], body)
+
+print(http.client.responses[404], http.client.responses[418], http.client.NOT_FOUND, http.client.OK,
+      http.client.HTTP_PORT, http.client.HTTPS_PORT)
+c2 = http.client.HTTPConnection("example.com:8080")
+print(c2.host, c2.port)
+c3 = http.client.HTTPSConnection("example.com")
+print(c3.host, c3.port)
+c4 = http.client.HTTPConnection("[::1]:81")
+print(c4.host, c4.port)
+try:
+    http.client.HTTPConnection("127.0.0.1", 1).request("GET", "/")
+except ConnectionRefusedError:
+    print("ConnectionRefusedError")
+try:
+    http.client.HTTPConnection("example.com:x")
+except http.client.InvalidURL as e:
+    print("InvalidURL:", e)

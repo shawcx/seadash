@@ -112,6 +112,7 @@ SD_EXCEPTION(ConnectionRefusedError, ConnectionError)
 SD_EXCEPTION(ConnectionResetError, ConnectionError)
 SD_EXCEPTION(UnicodeError, ValueError)
 SD_EXCEPTION(UnicodeDecodeError, UnicodeError)
+SD_EXCEPTION(UnicodeEncodeError, UnicodeError)
 SD_EXCEPTION(StopIteration, Exception)
 #undef SD_EXCEPTION
 
@@ -146,6 +147,7 @@ template <class E>
     if (kind == "OverflowError") raise<OverflowError>(msg);
     if (kind == "OSError") raise<OSError>(msg);
     if (kind == "UnicodeDecodeError") raise<UnicodeDecodeError>(msg);
+    if (kind == "UnicodeEncodeError") raise<UnicodeEncodeError>(msg);
     if (kind == "UnicodeError") raise<UnicodeError>(msg);
     raise<RuntimeError>(msg);
 }
@@ -3291,19 +3293,19 @@ inline const std::string& raw(const std::string& s) { return s; }
 [[noreturn]] inline void raise_os(int err, const std::optional<std::string>& path) {
     std::string what = std::strerror(err);
     std::string msg = "[Errno " + std::to_string(err) + "] " + what + (path ? ": " + repr_str(*path) : "");
-    auto with = [&]<class E>() -> void { throw Thrown{std::make_shared<E>(msg, err, what, path)}; };
+    auto with = [&]<class E>() { return Thrown{std::make_shared<E>(msg, err, what, path)}; };
     switch (err) {
-        case ECONNREFUSED: with.template operator()<ConnectionRefusedError>();
-        case ECONNRESET: with.template operator()<ConnectionResetError>();
-        case ECONNABORTED: with.template operator()<ConnectionAbortedError>();
-        case EPIPE: with.template operator()<BrokenPipeError>();
-        case ETIMEDOUT: with.template operator()<TimeoutError>();
-        case ENOENT: with.template operator()<FileNotFoundError>();
-        case EEXIST: with.template operator()<FileExistsError>();
+        case ECONNREFUSED: throw with.template operator()<ConnectionRefusedError>();
+        case ECONNRESET: throw with.template operator()<ConnectionResetError>();
+        case ECONNABORTED: throw with.template operator()<ConnectionAbortedError>();
+        case EPIPE: throw with.template operator()<BrokenPipeError>();
+        case ETIMEDOUT: throw with.template operator()<TimeoutError>();
+        case ENOENT: throw with.template operator()<FileNotFoundError>();
+        case EEXIST: throw with.template operator()<FileExistsError>();
         case EACCES:
-        case EPERM: with.template operator()<PermissionError>();
-        case EISDIR: with.template operator()<IsADirectoryError>();
-        case ENOTDIR: with.template operator()<NotADirectoryError>();
+        case EPERM: throw with.template operator()<PermissionError>();
+        case EISDIR: throw with.template operator()<IsADirectoryError>();
+        case ENOTDIR: throw with.template operator()<NotADirectoryError>();
     }
     throw Thrown{std::make_shared<OSError>(msg, err, what, path)};
 }

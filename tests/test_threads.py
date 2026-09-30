@@ -297,6 +297,12 @@ UNSAFE = [
             print(c)
         threading.Thread(target=work, args=(Config("x"),)).start()
      """, "can't pass this to a thread: a Config is a class instance, shared by reference"),
+    ("""
+        import http.client
+        def work(c: http.client.HTTPConnection):
+            c.close()
+        threading.Thread(target=work, args=(http.client.HTTPConnection("h"),)).start()
+     """, "can't pass this to a thread: an HTTP connection (give each thread its own)"),
     # a thread's arguments are copies: changing one and never using it is lost work
     ("""
         results: list[int] = []

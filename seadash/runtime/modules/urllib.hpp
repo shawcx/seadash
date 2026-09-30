@@ -1,13 +1,9 @@
-// The `urllib` package: urllib.parse (ports of CPython's functions) and urllib.request,
-// an HTTP/1.1 client with HTTPS (OpenSSL, certificates and host names verified), redirects,
-// chunked bodies and urllib.error's exceptions.
+// The `urllib` package: urllib.parse (ports of CPython's functions), urllib.request (on
+// http.client: HTTPS with certificates and host names verified, redirects) and
+// urllib.error's exceptions.
 #pragma once
 
-#include <openssl/err.h>
-#include <openssl/ssl.h>
-#include <openssl/x509v3.h>
-
-#include "socket.hpp"
+#include "httpclient.hpp"
 
 namespace sd::urlparse {
 
@@ -298,70 +294,8 @@ struct URLError : OSError {
 
 namespace sd::urlrequest {
 
-// A response's (or error's) headers: case-insensitive, in order, repeats kept.
-class Headers {
-    std::vector<std::pair<std::string, std::string>> items_;
-
-public:
-    void add(std::string k, std::string v) { items_.emplace_back(std::move(k), std::move(v)); }
-    std::optional<std::string> get(const std::string& name, std::optional<std::string> fallback = std::nullopt) const {
-        for (const auto& [k, v] : items_)
-            if (urlparse::lower(k) == urlparse::lower(name)) return v;
-        return fallback;
-    }
-    std::optional<list<std::string>> get_all(const std::string& name) const {
-        list<std::string> out;
-        for (const auto& [k, v] : items_)
-            if (urlparse::lower(k) == urlparse::lower(name)) out.push_back(v);
-        if (out.empty()) return std::nullopt;
-        return out;
-    }
-    bool has(const std::string& name) const { return get(name).has_value(); }
-    list<std::tuple<std::string, std::string>> items() const {
-        list<std::tuple<std::string, std::string>> out;
-        for (const auto& [k, v] : items_) out.emplace_back(k, v);
-        return out;
-    }
-    list<std::string> keys() const {
-        list<std::string> out;
-        for (const auto& [k, v] : items_) out.push_back(k);
-        return out;
-    }
-    list<std::string> values() const {
-        list<std::string> out;
-        for (const auto& [k, v] : items_) out.push_back(v);
-        return out;
-    }
-    std::string get_content_type() const {
-        std::string t = urlparse::lower(get("Content-Type").value_or("text/plain"));
-        return t.substr(0, t.find(';'));
-    }
-    std::optional<std::string> get_content_charset() const {
-        std::string t = get("Content-Type").value_or("");
-        auto at = urlparse::lower(t).find("charset=");
-        if (at == std::string::npos) return std::nullopt;
-        std::string cs = t.substr(at + 8);
-        cs = cs.substr(0, cs.find(';'));
-        if (!cs.empty() && cs.front() == '"') cs = cs.substr(1, cs.size() - 2);
-        return urlparse::lower(cs);
-    }
-    std::size_t size() const { return items_.size(); }
-    auto begin() const { return keys_cache().begin(); }
-    auto end() const { return keys_cache().end(); }
-    const list<std::string>& keys_cache() const {
-        cache_ = keys();
-        return cache_;
-    }
-    std::string sd_str() const {
-        std::string out;
-        for (const auto& [k, v] : items_) out += k + ": " + v + "\n";
-        return out + "\n";
-    }
-    std::string sd_repr() const { return "<http.client.HTTPMessage object>"; }
-
-private:
-    mutable list<std::string> cache_;
-};
+using Headers = httpclient::HTTPMessage;
+using Response = httpclient::HTTPResponse;
 
 inline std::string capitalized(std::string k) {  // Python's Request normalizes header names: X-A -> X-a
     for (auto& c : k) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -419,156 +353,6 @@ public:
     std::string sd_repr() const { return "<urllib.request.Request object>"; }
 };
 
-// ---- the connection: plain TCP, or TLS on top of it --------------------------------------
-
-class Connection {
-    socket::Socket sock_;
-    SSL* ssl_ = nullptr;
-
-    static SSL_CTX* tls_context() {
-        static SSL_CTX* ctx = [] {
-            SSL_CTX* c = SSL_CTX_new(TLS_client_method());
-            SSL_CTX_set_default_verify_paths(c);
-            SSL_CTX_set_verify(c, SSL_VERIFY_PEER, nullptr);
-            SSL_CTX_set_min_proto_version(c, TLS1_2_VERSION);
-            return c;
-        }();
-        return ctx;
-    }
-    [[noreturn]] static void tls_failed(const std::string& what) {
-        unsigned long code = ERR_get_error();
-        char buf[256] = "unknown error";
-        if (code) ERR_error_string_n(code, buf, sizeof buf);
-        throw Thrown{std::make_shared<urlerror::URLError>("[SSL] " + what + ": " + buf)};
-    }
-
-public:
-    Connection(const std::string& host, std::int64_t port, bool tls, std::optional<double> timeout) {
-        try {
-            sock_ = socket::create_connection({host, port}, timeout);
-        } catch (const Thrown& t) {
-            std::string msg = t.exc->message;
-            if (dynamic_cast<TimeoutError*>(t.exc.get())) msg = "timed out";
-            throw Thrown{std::make_shared<urlerror::URLError>(msg)};
-        }
-        if (timeout) {  // (TLS reads the socket directly, so the timeout goes on the socket)
-            timeval tv{static_cast<time_t>(*timeout), static_cast<suseconds_t>((*timeout - static_cast<std::int64_t>(*timeout)) * 1e6)};
-            ::setsockopt(static_cast<int>(sock_.fileno()), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-            ::setsockopt(static_cast<int>(sock_.fileno()), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-        }
-        if (!tls) return;
-        ssl_ = SSL_new(tls_context());
-        SSL_set_fd(ssl_, static_cast<int>(sock_.fileno()));
-        SSL_set_tlsext_host_name(ssl_, host.c_str());  // SNI
-        SSL_set1_host(ssl_, host.c_str());             // the certificate must be for this host
-        if (SSL_connect(ssl_) != 1) {
-            long verify = SSL_get_verify_result(ssl_);
-            if (verify != X509_V_OK)
-                throw Thrown{std::make_shared<urlerror::URLError>(
-                    std::string("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: ") +
-                    X509_verify_cert_error_string(verify))};
-            tls_failed("handshake failed");
-        }
-    }
-    Connection(const Connection&) = delete;
-    ~Connection() {
-        if (ssl_) {
-            SSL_shutdown(ssl_);
-            SSL_free(ssl_);
-        }
-        sock_.close();
-    }
-    void send_all(const std::string& data) {
-        if (!ssl_) {
-            sock_.sendall(bytes(data));
-            return;
-        }
-        for (std::size_t sent = 0; sent < data.size();) {
-            int n = SSL_write(ssl_, data.data() + sent, static_cast<int>(data.size() - sent));
-            if (n <= 0) tls_failed("write failed");
-            sent += static_cast<std::size_t>(n);
-        }
-    }
-    std::string recv_some() {  // "" at the end
-        if (!ssl_) return sock_.recv(65536).data;
-        char buf[65536];
-        int n = SSL_read(ssl_, buf, sizeof buf);
-        if (n > 0) return std::string(buf, static_cast<std::size_t>(n));
-        int err = SSL_get_error(ssl_, n);
-        if (err == SSL_ERROR_ZERO_RETURN || err == SSL_ERROR_SYSCALL) return "";
-        if (errno == EAGAIN || errno == EWOULDBLOCK) throw Thrown{std::make_shared<TimeoutError>("The read operation timed out")};
-        tls_failed("read failed");
-    }
-};
-
-// ---- responses --------------------------------------------------------------------
-
-class Response {
-    struct State {
-        std::int64_t status = 0;
-        std::string reason, url, body;
-        Headers headers;
-        std::size_t pos = 0;
-        bool closed = false;
-    };
-    std::shared_ptr<State> s_;
-
-public:
-    Response() : s_(std::make_shared<State>()) {}
-    explicit Response(std::shared_ptr<State> s) : s_(std::move(s)) {}
-    Response(std::int64_t status, std::string reason, Headers headers, std::string body, std::string url)
-        : s_(std::make_shared<State>()) {
-        s_->status = status, s_->reason = std::move(reason), s_->headers = std::move(headers);
-        s_->body = std::move(body), s_->url = std::move(url);
-    }
-    bytes read(std::optional<std::int64_t> amt = std::nullopt) {
-        std::size_t left = s_->body.size() - s_->pos;
-        std::size_t n = amt && *amt >= 0 ? std::min<std::size_t>(left, static_cast<std::size_t>(*amt)) : left;
-        std::string out = s_->body.substr(s_->pos, n);
-        s_->pos += n;
-        return bytes(out);
-    }
-    bytes readline() {
-        std::size_t nl = s_->body.find('\n', s_->pos);
-        std::size_t end = nl == std::string::npos ? s_->body.size() : nl + 1;
-        std::string out = s_->body.substr(s_->pos, end - s_->pos);
-        s_->pos = end;
-        return bytes(out);
-    }
-    list<bytes> readlines() {
-        list<bytes> out;
-        for (bytes line; !(line = readline()).data.empty();) out.push_back(line);
-        return out;
-    }
-    std::int64_t status() const { return s_->status; }
-    std::int64_t code() const { return s_->status; }
-    std::int64_t getcode() const { return s_->status; }
-    std::string reason() const { return s_->reason; }
-    std::string url() const { return s_->url; }
-    std::string geturl() const { return s_->url; }
-    Headers headers() const { return s_->headers; }
-    Headers info() const { return s_->headers; }
-    std::optional<std::string> getheader(const std::string& name, std::optional<std::string> fallback = std::nullopt) const {
-        return s_->headers.get(name, fallback);
-    }
-    list<std::tuple<std::string, std::string>> getheaders() const { return s_->headers.items(); }
-    void close() { s_->closed = true; }
-    // `for line in response`: reads lines from where the response is, like a file.
-    struct LineIterator {
-        std::shared_ptr<State> s;
-        bytes line;
-        bool operator==(std::default_sentinel_t) const { return line.data.empty(); }
-        const bytes& operator*() const { return line; }
-        LineIterator& operator++() {
-            line = Response(s).readline();
-            return *this;
-        }
-    };
-    LineIterator begin() const { return {s_, Response(s_).readline()}; }
-    std::default_sentinel_t end() const { return {}; }
-    std::string sd_repr() const { return "<http.client.HTTPResponse object>"; }
-};
-
 }  // namespace sd::urlrequest
 
 namespace sd::urlerror {
@@ -596,116 +380,69 @@ struct HTTPError : URLError {
 
 namespace sd::urlrequest {
 
-// One request/response over a fresh connection ("Connection: close").
-inline std::tuple<std::int64_t, std::string, Headers, std::string> exchange(const std::string& method, const std::string& url,
-                                                                           const std::vector<std::pair<std::string, std::string>>& headers,
-                                                                           const std::optional<bytes>& data,
-                                                                           std::optional<double> timeout) {
+// One request over a new connection ("Connection: close"). As in Python, errors while
+// connecting and sending become URLError; errors reading the response don't.
+inline Response open_once(const std::string& method, const std::string& url,
+                          const std::vector<std::pair<std::string, std::string>>& headers,
+                          const std::optional<bytes>& data, std::optional<double> timeout,
+                          const std::shared_ptr<ssl::SSLContext>& context) {
     urlparse::Parts p = urlparse::urlsplit(url);
     if (p.scheme_ != "http" && p.scheme_ != "https")
         throw Thrown{std::make_shared<urlerror::URLError>("unknown url type: " + (p.scheme_.empty() ? repr_str(url) : p.scheme_))};
     auto host = p.hostname();
     if (!host) throw Thrown{std::make_shared<urlerror::URLError>("no host given")};
     bool tls = p.scheme_ == "https";
-    std::int64_t port = p.port().value_or(tls ? 443 : 80);
     std::string target = (p.path_.empty() ? "/" : p.path_) + (p.query_.empty() ? "" : "?" + p.query_);
-    std::string host_header = p.hostport();
-    std::string req = method + " " + target + " HTTP/1.1\r\n";
     auto has = [&](const std::string& k) {
         for (const auto& [hk, hv] : headers)
             if (urlparse::lower(hk) == urlparse::lower(k)) return true;
         return false;
     };
-    if (!has("Host")) req += "Host: " + host_header + "\r\n";
-    if (!has("User-agent")) req += "User-Agent: Python-urllib/3.12\r\n";
-    req += "Accept-Encoding: identity\r\n";
-    if (data) {
-        if (!has("Content-type")) req += "Content-Type: application/x-www-form-urlencoded\r\n";
-        if (!has("Content-length")) req += "Content-Length: " + std::to_string(data->data.size()) + "\r\n";
-    }
-    for (const auto& [k, v] : headers) req += k + ": " + v + "\r\n";
-    req += "Connection: close\r\n\r\n";
-    if (data) req += data->data;
-
-    Connection conn(*host, port, tls, timeout);
-    conn.send_all(req);
-    std::string in;
-    std::size_t header_end;
-    while ((header_end = in.find("\r\n\r\n")) == std::string::npos) {
-        std::string more = conn.recv_some();
-        if (more.empty()) throw Thrown{std::make_shared<urlerror::URLError>("Remote end closed connection without response")};
-        in += more;
-    }
-    std::string head = in.substr(0, header_end);
-    std::string rest = in.substr(header_end + 4);
-    std::size_t line_end = head.find("\r\n");
-    std::string status_line = head.substr(0, line_end);
-    std::size_t sp1 = status_line.find(' '), sp2 = status_line.find(' ', sp1 + 1);
-    std::int64_t status = std::stoll(status_line.substr(sp1 + 1, sp2 == std::string::npos ? std::string::npos : sp2 - sp1 - 1));
-    std::string reason = sp2 == std::string::npos ? "" : status_line.substr(sp2 + 1);
-    Headers h;
-    for (std::size_t i = line_end == std::string::npos ? head.size() : line_end + 2; i < head.size();) {
-        std::size_t e = head.find("\r\n", i);
-        std::string line = head.substr(i, e == std::string::npos ? std::string::npos : e - i);
-        auto colon = line.find(':');
-        if (colon != std::string::npos) {
-            std::string v = line.substr(colon + 1);
-            v.erase(0, v.find_first_not_of(" \t"));
-            h.add(line.substr(0, colon), v);
+    httpclient::HTTPConnection conn(*host, p.port().value_or(tls ? 443 : 80), timeout,
+                                    tls ? (context ? context : ssl::create_default_context()) : nullptr);
+    try {
+        conn.putrequest(method, target, true, true);
+        if (!has("Host")) conn.putheader("Host", p.hostport());
+        if (!has("User-agent")) conn.putheader("User-Agent", "Python-urllib/3.12");
+        conn.putheader("Accept-Encoding", "identity");
+        if (data) {
+            if (!has("Content-type")) conn.putheader("Content-Type", "application/x-www-form-urlencoded");
+            if (!has("Content-length")) conn.putheader("Content-Length", std::to_string(data->data.size()));
         }
-        i = e == std::string::npos ? head.size() : e + 2;
+        for (const auto& [k, v] : headers) conn.putheader(k, v);
+        conn.putheader("Connection", "close");
+        conn.endheaders(data);
+    } catch (const Thrown& t) {
+        if (!dynamic_cast<OSError*>(t.exc.get())) throw;
+        std::string why = dynamic_cast<TimeoutError*>(t.exc.get()) ? "timed out" : t.exc->message;
+        throw Thrown{std::make_shared<urlerror::URLError>(why)};
     }
-    auto read_more = [&]() {
-        std::string more = conn.recv_some();
-        rest += more;
-        return !more.empty();
-    };
-    std::string body;
-    bool no_body = method == "HEAD" || status == 204 || status == 304 || (status >= 100 && status < 200);
-    if (no_body) {
-    } else if (urlparse::lower(h.get("Transfer-Encoding").value_or("")).find("chunked") != std::string::npos) {
-        std::size_t pos = 0;
-        while (true) {
-            std::size_t eol;
-            while ((eol = rest.find("\r\n", pos)) == std::string::npos)
-                if (!read_more()) throw Thrown{std::make_shared<urlerror::URLError>("incomplete chunked read")};
-            std::size_t size = std::stoul(rest.substr(pos, eol - pos), nullptr, 16);
-            pos = eol + 2;
-            if (size == 0) break;
-            while (rest.size() < pos + size + 2)
-                if (!read_more()) throw Thrown{std::make_shared<urlerror::URLError>("incomplete chunked read")};
-            body += rest.substr(pos, size);
-            pos += size + 2;
-        }
-    } else if (auto length = h.get("Content-Length")) {
-        std::size_t n = std::stoul(*length);
-        while (rest.size() < n && read_more()) {
-        }
-        body = rest.substr(0, n);
-    } else {
-        while (read_more()) {
-        }
-        body = rest;
-    }
-    return {status, reason, h, body};
+    Response r = conn.getresponse();
+    r.state()->url = url;
+    return r;
 }
 
 // urlopen: follows redirects like Python (301/302/303 become GET; 307/308 keep the method),
-// and raises HTTPError for 4xx/5xx.
+// and raises HTTPError for 4xx/5xx. The body is read as it's asked for.
 inline Response urlopen(const Request& request, std::optional<bytes> data = std::nullopt,
-                        std::optional<double> timeout = std::nullopt) {
+                        std::optional<double> timeout = std::nullopt,
+                        std::optional<std::shared_ptr<ssl::SSLContext>> context = std::nullopt) {
     std::string url = request.full_url_, method = request.get_method();
     std::optional<bytes> body = data ? data : request.data_;
     if (data && !request.method_) method = "POST";
     auto headers = request.headers_;
+    std::shared_ptr<ssl::SSLContext> ctx = context ? *context : nullptr;
     for (int hops = 0;; ++hops) {
-        auto [status, reason, h, content] = exchange(method, url, headers, body, timeout);
-        auto location = h.get("Location");
+        Response r = open_once(method, url, headers, body, timeout, ctx);
+        std::int64_t status = r.status();
+        auto location = r.headers().get("Location");
         if ((status == 301 || status == 302 || status == 303 || status == 307 || status == 308) && location) {
             if (hops >= 10)
                 throw Thrown{std::make_shared<urlerror::HTTPError>(
                     status, "The HTTP server returned a redirect error that would lead to an infinite loop.\n"
-                            "The last 30x error message was:\n" + reason, h, Response(status, reason, h, content, url), url)};
+                            "The last 30x error message was:\n" + r.reason(), r.headers(), r, url)};
+            r.read();  // (done with it)
+            r.close();
             url = urlparse::urljoin(url, *location);
             if (status == 301 || status == 302 || status == 303) {
                 if (method != "HEAD") method = "GET";
@@ -716,20 +453,16 @@ inline Response urlopen(const Request& request, std::optional<bytes> data = std:
             }
             continue;
         }
-        Response r(status, reason, h, content, url);
-        if (status >= 400) throw Thrown{std::make_shared<urlerror::HTTPError>(status, reason, h, r, url)};
+        if (status >= 400) throw Thrown{std::make_shared<urlerror::HTTPError>(status, r.reason(), r.headers(), r, url)};
         return r;
     }
 }
 inline Response urlopen(const std::string& url, std::optional<bytes> data = std::nullopt,
-                        std::optional<double> timeout = std::nullopt) {
-    return urlopen(Request(url, std::nullopt, dict<std::string, std::string>{}, std::nullopt), std::move(data), timeout);
+                        std::optional<double> timeout = std::nullopt,
+                        std::optional<std::shared_ptr<ssl::SSLContext>> context = std::nullopt) {
+    return urlopen(Request(url, std::nullopt, dict<std::string, std::string>{}, std::nullopt), std::move(data), timeout,
+                   std::move(context));
 }
 
 }  // namespace sd::urlrequest
 
-namespace sd {
-// `"Content-Type" in response.headers`, `response.headers["Content-Type"]` (None if missing)
-inline bool contains(const urlrequest::Headers& h, const std::string& name) { return h.has(name); }
-inline std::optional<std::string> index(const urlrequest::Headers& h, const std::string& name) { return h.get(name); }
-}  // namespace sd

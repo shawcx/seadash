@@ -1701,6 +1701,25 @@ def test_urllib_types_and_errors():
     )
 
 
+
+def test_http_client_types_and_errors():
+    h = "import http.client\nc = http.client.HTTPConnection('h')\n"
+    info = ok(h + "import ssl\nctx = ssl.create_default_context()\nctx.check_hostname = False\n"
+              "ctx.verify_mode = ssl.CERT_NONE\ns = http.client.HTTPSConnection('h', 443, context=ctx)\n"
+              "s.request('GET', '/', 'body', {'A': 'b'})\nr: http.client.HTTPResponse = s.getresponse()\n"
+              "m: http.client.HTTPMessage = r.msg\nv = r.version\ndone = r.isclosed()\nport = s.port\n")
+    assert {"v: int", "done: bool", "port: int"} <= set(variables(info))
+    assert err(h + "c.request('POST', '/', body=3)\n").message == "request() body must be bytes or str, not int"
+    assert err(h + "c.request('GET', '/', headers={'a': 1})\n").message == (
+        "request() headers must be dict[str, str], not dict[str, int]"
+    )
+    assert err("import ssl\nx = ssl.create_default_context()\nx.verify_mode = 'no'\n").message == (
+        "field 'verify_mode' is int, can't assign str"
+    )
+    assert err("import urllib.request\nr = urllib.request.urlopen('https://h/', context=3)\n").message == (
+        "urlopen() context must be SSLContext, not int"
+    )
+
 MATCH_HEADER = """
 from dataclasses import dataclass
 

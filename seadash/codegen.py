@@ -39,7 +39,7 @@ from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
     TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T, CODEC_TYPES, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
-    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
+    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
@@ -280,9 +280,11 @@ class CodeGen:
             case _ if t == CSV_WRITER:
                 return "sd::csv::Writer"
             case _ if t == HTTP_RESPONSE:
-                return "sd::urlrequest::Response"
+                return "sd::httpclient::HTTPResponse"
+            case _ if t == HTTP_CONNECTION:
+                return "sd::httpclient::HTTPConnection"
             case _ if t == HTTP_HEADERS:
-                return "sd::urlrequest::Headers"
+                return "sd::httpclient::HTTPMessage"
             case _ if t == URL_REQUEST:
                 return "sd::urlrequest::Request"
             case _ if t == URL_PARTS:
@@ -2690,9 +2692,20 @@ class CodeGen:
             return f"{r}.{name}({', '.join(args)})"
         if recv_type in (CSV_WRITER, CSV_DICT_WRITER):
             return f"{r}.{name}({', '.join(self.expr(a) for a in e.args)})"
+        if recv_type == HTTP_CONNECTION and name == "request":
+            args = e.http_args
+            body = args.get("body")
+            if body is None or isinstance(body, A.NoneLit):
+                body_code = "std::nullopt"
+            elif body.ty == STR:  # sent as Latin-1, like Python
+                body_code = f"std::optional<sd::bytes>(sd::httpclient::latin1_body({self.expr(body)}))"
+            else:
+                body_code = f"std::optional<sd::bytes>({self.expr(body)})"
+            headers = self.expr(args["headers"]) if "headers" in args else "sd::dict<std::string, std::string>{}"
+            return f"{r}.request({self.expr(args['method'])}, {self.expr(args['url'])}, {body_code}, {headers})"
         if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType)) or recv_type in (EXECUTOR, LOGGER, LOG_HANDLER) or recv_type in (
             SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, *DATETIME_TYPES,
-            HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS, *CODEC_TYPES,
+            HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS, *CODEC_TYPES,
         ):
             handler = builtins.method_for(recv_type, name)
             codes = []
@@ -2810,7 +2823,8 @@ class CodeGen:
             if name == "Request":
                 headers = self.expr(args["headers"]) if "headers" in args else "sd::dict<std::string, std::string>{}"
                 return f"sd::urlrequest::Request({self.expr(args['url'])}, {opt('data', BYTES)}, {headers}, {opt('method', STR)})"
-            return f"sd::urlrequest::urlopen({self.expr(args['url'])}, {opt('data', BYTES)}, {opt('timeout', FLOAT)})"
+            ctx = self.expr_as(args["context"], OptionalType(builtins.SSL_CONTEXT)) if "context" in args else "std::nullopt"
+            return f"sd::urlrequest::urlopen({self.expr(args['url'])}, {opt('data', BYTES)}, {opt('timeout', FLOAT)}, {ctx})"
         if mod == "os" and name == "fdopen":
             return self.open_call(self.expr(e.args[0]), e.args[1] if len(e.args) > 1 else self.keyword(e, "mode"), e)
         if mod == "dataclasses" and name == "replace":  # a copy with some fields changed

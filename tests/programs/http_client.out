@@ -1,0 +1,32 @@
+True True 5.0
+200 OK 11 1, 2 None -
+[('Content-Length', '5'), ('X-A', '1'), ('X-A', '2')] 5 1 True
+b'he' b'llo' b'' True False
+b'hello'
+b'hello'
+UnicodeEncodeError: 'latin-1' codec can't encode character '\u20ac' in position 0: Body ('€') is not valid Latin-1. Use body.encode('utf-8') if you want to send it encoded in UTF-8.
+b'hello'
+CannotSendRequest: 'Request-sent'
+ResponseNotReady: 'Idle'
+b'hello'
+b'bye' True
+b'hello'
+b'a' b'bcd' b'e'
+404 Not Found b'one\n' [b'two\n', b'end']
+IncompleteRead: IncompleteRead(3 bytes read, 7 more expected) IncompleteRead(3 bytes read, 7 more expected) b'abc' 7
+['GET /a HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity'] b''
+['POST /b HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity', 'Content-Length: 13', 'X-Test: 1'] b'h\xc3\xa9llo w\xc3\xb6rld'
+['POST /c HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity', 'Content-Length: 1'] b'\xe9'
+['PUT /d HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity', 'Content-Length: 0'] b''
+['GET /e HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity'] b''
+['GET /close HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity'] b''
+['GET /after-close HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity'] b''
+['GET /chunked HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity'] b''
+['GET /lines HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity'] b''
+['GET /short HTTP/1.1', 'Host: 127.0.0.1:PORT', 'Accept-Encoding: identity'] b''
+Not Found I'm a Teapot 404 200 80 443
+example.com 8080
+example.com 443
+::1 81
+ConnectionRefusedError
+InvalidURL: nonnumeric port: 'x'

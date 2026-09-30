@@ -1057,13 +1057,11 @@ class Checker:
                 case "tuple":
                     return TupleType(tuple(resolved))
         if "." in name:
-            mod_name, _, member = name.rpartition(".")
-            mod = self.modules.get(mod_name)
-            if mod is not None and isinstance(mod.members.get(member), StructType):
-                return mod.members[member]
-            if mod is not None and isinstance(mod.members.get(member), builtins.NamedType):
-                return mod.members[member].type
-            m = mod.members.get(member) if mod is not None else None
+            m = self.module_member_named(name)  # (also http.client.HTTPResponse, from a submodule)
+            if isinstance(m, StructType):
+                return m
+            if isinstance(m, builtins.NamedType):
+                return m.type
             if isinstance(m, builtins.Function) and m.as_type is not None:  # socket.socket
                 return m.as_type
             raise self.error(f"unknown type '{name}'", node)
