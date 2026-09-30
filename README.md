@@ -215,7 +215,7 @@ def work():
 | module | notes |
 |---|---|
 | `base64`, `binascii`, `zlib` | encode, decode, compress; `hexlify` with separators, `crc32`, `crc_hqx` (not yet: uu and quoted-printable) |
-| `gzip` | `compress`, `decompress` (with Python's exact output and errors) and `open`, which gives the same file objects as `open()` (not yet: the `GzipFile` class) |
+| `gzip`, `bz2` | `compress`, `decompress` (Python's exact output and errors) and `open`, which gives the same file objects as `open()` (not yet: the `GzipFile`/`BZ2File` classes and incremental (de)compressors) |
 | `errno`, `stat` | the error numbers and `errorcode` (and `OSError` carries `errno`, `strerror` and `filename`); the `st_mode` bits, `S_ISDIR`..., `S_IMODE`, `S_IFMT`, `filemode` |
 | `shlex` | `split`, `quote`, `join` (POSIX mode) |
 | `uuid` | `UUID` values (ordered, hashable), `uuid1`/`uuid3`/`uuid4`/`uuid5`, the namespaces; not yet: `u.int` (128 bits) and `getnode()` |

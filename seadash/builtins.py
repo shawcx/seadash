@@ -2612,31 +2612,52 @@ MODULES["binascii"] = module_with_params(runtime_module(
 
 # ---- gzip ----------------------------------------------------------------------------
 
-def gzip_open(ctx: CallContext) -> Type:
-    """gzip.open(filename, mode="rb", compresslevel=9, encoding=None, errors=None, newline=None):
-    binary unless the mode says 't', like Python's gzip (and unlike open())."""
-    n = ctx.arity(1, 3, keywords=("mode", "compresslevel", "encoding", "newline"))
-    ctx.need(0, lambda t: t in (STR, PATH), "a str or Path")
-    mode_node = ctx.args[1] if n >= 2 else ctx.keyword_arg("mode")
-    if n == 3:
-        ctx.expect(2, INT)
-    else:
-        ctx.keyword("compresslevel", INT)
-    if (nl := ctx.keyword_arg("newline")) is not None:
-        ctx.checker.check_expr(nl)
-    if mode_node is None:
-        return BINARY_FILE
-    open_mode(ctx, mode_node)
-    return TEXT_FILE if "t" in mode_node.value else BINARY_FILE
+# gzip.open(filename, mode="rb", compresslevel=9, ...), bz2.open (the same) and
+# lzma.open(filename, mode="rb", *, format=None, check=-1, preset=None, ...): binary unless
+# the mode says 't', like Python (and unlike open()). Codegen passes these options in order.
+COMPRESSED_OPEN_OPTIONS = {
+    "gzip": (("compresslevel", INT, "9_i"),),
+    "bz2": (("compresslevel", INT, "9_i"),),
+    "lzma": (("format", OptionalType(INT), "std::nullopt"), ("check", INT, "(-1_i)"), ("preset", OptionalType(INT), "std::nullopt")),
+}
 
+
+def compressed_open(module: str) -> Callable[[CallContext], Type]:
+    options = COMPRESSED_OPEN_OPTIONS[module]
+    positional = 3 if module != "lzma" else 2  # (lzma's options are keyword-only)
+
+    def handler(ctx: CallContext) -> Type:
+        n = ctx.arity(1, positional, keywords=("mode", *(o[0] for o in options), "encoding", "newline"))
+        ctx.need(0, lambda t: t in (STR, PATH), "a str or Path")
+        mode_node = ctx.args[1] if n >= 2 else ctx.keyword_arg("mode")
+        if n == 3:
+            ctx.expect(2, options[0][1])
+        else:
+            for name, t, _ in options:
+                ctx.keyword(name, t)
+        if (nl := ctx.keyword_arg("newline")) is not None:
+            ctx.checker.check_expr(nl)
+        if mode_node is None:
+            return BINARY_FILE
+        open_mode(ctx, mode_node)
+        return TEXT_FILE if "t" in mode_node.value else BINARY_FILE
+
+    return handler
 
 MODULES["gzip"] = module_with_params(runtime_module(
     "gzip", "modules/gzip.hpp", ("z",),
     compress=(signature(BYTES, ("data", BYTES), ("compresslevel", INT, "9_i"), ("mtime", OptionalType(INT), "std::nullopt")),
               "sd::gzip::compress"),
     decompress=(signature(BYTES, ("data", BYTES)), "sd::gzip::decompress"),
-    open=(gzip_open, None),
+    open=(compressed_open("gzip"), None),
     BadGzipFile=exception_class("BadGzipFile", "sd::gzip::BadGzipFile", "OSError"),
+))
+
+MODULES["bz2"] = module_with_params(runtime_module(
+    "bz2", "modules/bz2.hpp", ("bz2",),
+    compress=(signature(BYTES, ("data", BYTES), ("compresslevel", INT, "9_i")), "sd::bz2::compress"),
+    decompress=(signature(BYTES, ("data", BYTES)), "sd::bz2::decompress"),
+    open=(compressed_open("bz2"), None),
 ))
 
 

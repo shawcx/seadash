@@ -91,6 +91,9 @@ headers (Homebrew's `pcre2` and `openssl@3` on macOS).
 - Arguments that only instruct the compiler (`type=int`, `digestmod=hashlib.sha256`) are
   marked `compile_time` so codegen doesn't evaluate them as values.
 - C library names that are macros (`stdout`, `st_mtime`...) are renamed by `codegen.ident`.
+- File objects over callbacks (`gzip.open`, `bz2.open`, `lzma.open`: `modules/cookie_file.hpp`)
+  can't throw through C stdio: a callback parks its exception in `sd::pending_file_error`
+  and fails the read; `FileBase::check_error` rethrows it.
 - Linux and macOS are both supported, and only one is at hand at a time. libc++ doesn't
   include headers transitively the way libstdc++ does (include what you use), lacks the
   `<chrono>` time zone database (`modules/tzif.hpp` stands in), and some libc calls are

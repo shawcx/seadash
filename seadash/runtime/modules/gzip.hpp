@@ -9,6 +9,8 @@
 
 #include <ctime>
 
+#include "cookie_file.hpp"
+
 namespace sd::gzip {
 
 struct BadGzipFile : OSError {
@@ -99,35 +101,10 @@ inline bytes decompress(const bytes& data) {
 
 // ---- open(): a FILE* over a gzFile ------------------------------------------------------
 
-inline std::FILE* gz_stdio(gzFile gz, bool reading) {
-#ifdef __APPLE__
-    auto read = [](void* c, char* buf, int n) -> int { return gzread(static_cast<gzFile>(c), buf, static_cast<unsigned>(n)); };
-    auto write = [](void* c, const char* buf, int n) -> int { return gzwrite(static_cast<gzFile>(c), buf, static_cast<unsigned>(n)); };
-    auto close = [](void* c) -> int { return gzclose(static_cast<gzFile>(c)) == Z_OK ? 0 : -1; };
-    return funopen(gz, reading ? read : nullptr, reading ? nullptr : write, nullptr, close);
-#else
-    cookie_io_functions_t io{};
-    io.read = [](void* c, char* buf, size_t n) -> ssize_t { return gzread(static_cast<gzFile>(c), buf, static_cast<unsigned>(n)); };
-    io.write = [](void* c, const char* buf, size_t n) -> ssize_t {
-        int w = gzwrite(static_cast<gzFile>(c), buf, static_cast<unsigned>(n));
-        return w == 0 && n > 0 ? -1 : w;
-    };
-    io.close = [](void* c) -> int { return gzclose(static_cast<gzFile>(c)) == Z_OK ? 0 : -1; };
-    return fopencookie(gz, reading ? "r" : "w", io);
-#endif
-}
-
 inline std::FILE* open_gz(const std::string& path, const std::string& mode, std::int64_t compresslevel) {
     if (compresslevel < 0 || compresslevel > 9) raise("ValueError", "Bad compression level");
     char kind = mode[mode.find_first_of("rwax")];
-    int flags = kind == 'r' ? O_RDONLY : kind == 'w' ? O_WRONLY | O_CREAT | O_TRUNC : kind == 'a' ? O_WRONLY | O_CREAT | O_APPEND : O_WRONLY | O_CREAT | O_EXCL;
-    int fd = ::open(path.c_str(), flags | O_CLOEXEC, 0666);
-    if (fd < 0) raise_os(errno, path);
-    struct stat info;
-    if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) {
-        ::close(fd);
-        raise_os(EISDIR, path);
-    }
+    int fd = open_fd_for(path, mode);
     if (kind == 'r') {  // Python checks the magic on the first read; a non-empty file must be gzipped
         char head[2];
         ssize_t n = ::read(fd, head, 2);
@@ -143,7 +120,16 @@ inline std::FILE* open_gz(const std::string& path, const std::string& mode, std:
         ::close(fd);
         raise_os(ENOMEM, path);
     }
-    std::FILE* f = gz_stdio(gz, kind == 'r');
+    Cookie cookie{
+        gz,
+        [](void* g, char* buf, std::size_t n) -> std::int64_t { return gzread(static_cast<gzFile>(g), buf, static_cast<unsigned>(n)); },
+        [](void* g, const char* buf, std::size_t n) -> std::int64_t {
+            int w = gzwrite(static_cast<gzFile>(g), buf, static_cast<unsigned>(n));
+            return w == 0 && n > 0 ? -1 : w;
+        },
+        [](void* g) -> int { return gzclose(static_cast<gzFile>(g)) == Z_OK ? 0 : -1; },
+    };
+    std::FILE* f = cookie_file(cookie, kind == 'r');
     if (!f) {
         gzclose(gz);
         raise_os(errno, path);

@@ -2930,6 +2930,10 @@ inline const std::string& raw(const std::string& s) { return s; }
     throw Thrown{std::make_shared<OSError>(msg, err, what, path)};
 }
 
+// A file over callbacks (gzip.open...) can't throw through C stdio: the callback stores
+// the exception here and fails the read, and the file object rethrows it.
+inline thread_local std::exception_ptr pending_file_error;
+
 struct FileBase {
     std::FILE* fp;
     std::string path, mode;
@@ -2955,7 +2959,7 @@ struct FileBase {
             out.resize(static_cast<std::size_t>(n));
             out.resize(std::fread(out.data(), 1, out.size(), f));
         }
-        if (std::ferror(f)) raise_os(errno, path);
+        check_error(f);
         return out;
     }
     std::string readline_raw() {
@@ -2965,12 +2969,17 @@ struct FileBase {
         ssize_t len = ::getline(&line, &capacity, f);  // binary-safe, unlike fgets
         std::string out = len > 0 ? std::string(line, static_cast<std::size_t>(len)) : std::string();
         std::free(line);
+        if (len < 0) check_error(f);
         return out;
     }
     std::int64_t write_raw(const std::string& s) {
         std::FILE* f = handle();
-        if (std::fwrite(s.data(), 1, s.size(), f) != s.size()) raise_os(errno, path);
+        if (std::fwrite(s.data(), 1, s.size(), f) != s.size()) check_error(f, true);
         return static_cast<std::int64_t>(s.size());
+    }
+    void check_error(std::FILE* f, bool failed = false) const {
+        if (auto e = std::exchange(pending_file_error, nullptr)) std::rethrow_exception(e);
+        if (failed || std::ferror(f)) raise_os(errno, path);
     }
     void close() {
         if (fp && owned) std::fclose(fp);
@@ -3044,6 +3053,7 @@ struct TextFile : FileBase {
             if (c == '\n') break;
         }
         ::funlockfile(f);
+        if (out.empty()) check_error(f);
         return out;
     }
     std::vector<std::string> readlines() {

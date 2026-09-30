@@ -1,0 +1,21 @@
+9000 True b'BZh9' True
+b'BZh91AY&SY\x9eb[\xfe\x00\x00\x02\x91\x00@\x00\x02D\xa0\x00!\x14`f\x82\x91\xef#G\x0b\xb9"\x9c(HO1-\xff\x00'
+b'BZh9\x17rE8P\x90\x00\x00\x00\x00' b'' b''
+47 47
+b'abcd' b'ab'
+OSError: Invalid data stream
+ValueError: Compressed data ended before the end-of-stream marker was reached
+ValueError: Compressed data ended before the end-of-stream marker was reached
+ValueError: compresslevel must be between 1 and 9
+'first line\n'
+'line 0\n'
+'line 1\n'
+'line 2\n'
+'appended\n'
+b'first line\nline 0\nline 1\nline 2\nappended\n' True
+25600
+b'\x00\x01\x02' 25597
+OSError: Invalid data stream
+EOFError: Compressed file ended before the end-of-stream marker was reached
+FileNotFoundError: [Errno 2] No such file or directory: 'missing.bz2'
+EOFError: Compressed file ended before the end-of-stream marker was reached

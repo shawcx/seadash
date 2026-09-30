@@ -1,0 +1,62 @@
+import bz2
+
+text = ("the quick brown fox jumps over the lazy dog. " * 200).encode()
+packed = bz2.compress(text)
+print(len(text), len(packed) < 200, packed[:4], bz2.decompress(packed) == text)
+print(bz2.compress(b"hello hello hello"))
+print(bz2.compress(b""), bz2.decompress(bz2.compress(b"")), bz2.decompress(b""))
+print(len(bz2.compress(b"x" * 100000, 1)), len(bz2.compress(b"x" * 100000, compresslevel=9)))
+print(bz2.decompress(bz2.compress(b"ab") + bz2.compress(b"cd")), bz2.decompress(bz2.compress(b"ab") + b"trailing junk"))
+
+for bad in [b"garbage", packed[:-4], b"BZh9"]:
+    try:
+        print(bz2.decompress(bad))
+    except OSError as e:
+        print("OSError:", e)
+    except ValueError as e:
+        print("ValueError:", e)
+try:
+    bz2.compress(b"x", 10)
+except ValueError as e:
+    print("ValueError:", e)
+
+with bz2.open("log.txt.bz2", "wt") as f:
+    f.write("first line\n")
+    for i in range(3):
+        print("line", i, file=f)
+with bz2.open("log.txt.bz2", "at", compresslevel=1) as f:
+    f.write("appended\n")
+with bz2.open("log.txt.bz2", "rt") as f:
+    for line in f:
+        print(repr(line))
+with bz2.open("log.txt.bz2") as f:  # binary by default
+    raw = f.read()
+print(raw, bz2.decompress(open("log.txt.bz2", "rb").read()) == raw)
+with bz2.open("data.bin.bz2", "wb", 6) as f:
+    print(f.write(bytes(range(256)) * 100))
+with bz2.open("data.bin.bz2", "rb") as f:
+    print(f.read(3), len(f.read()))
+with open("plain.txt", "w") as f:
+    f.write("not compressed\n")
+try:
+    with bz2.open("plain.txt", "rt") as f:
+        print(f.read())
+except OSError as e:
+    print("OSError:", e)
+with open("cut.bz2", "wb") as f:
+    f.write(packed[:100])
+try:
+    with bz2.open("cut.bz2", "rb") as f:
+        print(len(f.read()))
+except EOFError as e:
+    print("EOFError:", e)
+try:
+    bz2.open("missing.bz2")
+except FileNotFoundError as e:
+    print("FileNotFoundError:", e)
+open("empty.bz2", "wb").close()
+try:
+    with bz2.open("empty.bz2", "rb") as f:
+        print(f.read())
+except EOFError as e:
+    print("EOFError:", e)
