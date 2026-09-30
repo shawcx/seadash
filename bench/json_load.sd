@@ -1,0 +1,62 @@
+# Runs unchanged under python3 and seadash: json.loads on one large document of each
+# common shape, and on many small ones (where per-call overhead matters).
+# (Python's parser is written in C, so this compares two native parsers.)
+from __future__ import annotations  # (so Python doesn't look up json.Value)
+
+import json
+
+ROUNDS = 8
+
+# Records with mixed fields, as an API would return them: loaded without a schema.
+rows: list[str] = []
+for i in range(40_000):
+    tags = ", ".join([f'"tag{(i + k) % 17}"' for k in range(i % 4)])
+    active = "true" if i % 3 else "false"
+    parent = "null" if i % 5 else f'{{"id": {i // 5}, "kind": "group"}}'
+    rows.append(f'{{"id": {i}, "name": "user{i}", "email": "user{i}@example.com", "score": {i * 0.37}, '
+                f'"active": {active}, "tags": [{tags}], "parent": {parent}}}')
+records_text = "[" + ", ".join(rows) + "]"
+fields = 0
+for _ in range(ROUNDS):
+    records: json.Value = json.loads(records_text)
+    for record in records:
+        fields += len(record) + len(record["tags"])
+        if record["active"]:
+            fields += 1
+print("records:", len(records_text), "bytes,", fields, "fields")
+
+# Numbers: a matrix of floats.
+matrix_text = json.dumps([[(r * 131 + c * 17) % 1000 / 7 - 50 for c in range(100)] for r in range(1500)])
+total = 0.0
+for _ in range(ROUNDS):
+    matrix: list[list[float]] = json.loads(matrix_text)
+    total += sum([sum(row) for row in matrix])
+print("floats:", len(matrix_text), "bytes, sum", total)
+
+# An object with many keys, each a list of ints.
+series_text = json.dumps({f"series-{k}": [(k * j) % 9973 - 4000 for j in range(k % 40)] for k in range(30_000)})
+points = 0
+for _ in range(ROUNDS):
+    series: dict[str, list[int]] = json.loads(series_text)
+    points += len(series) + sum([sum(v) for v in series.values()])
+print("ints:", len(series_text), "bytes, checksum", points)
+
+# Strings: plain, escaped, and non-ASCII (as \u escapes, and as UTF-8).
+words = ["plain text", 'a "quoted" word', "tab\there", "line\nbreak", "back\\slash", "café été", "日本語のテキスト", "emoji 😀"]
+phrases = [f"{words[i % 8]} {i} {words[(i * 7 + 3) % 8]}" for i in range(150_000)]
+for strings_text in [json.dumps(phrases), json.dumps(phrases, ensure_ascii=False)]:
+    intact = 0
+    for _ in range(ROUNDS // 2):
+        strings: list[str] = json.loads(strings_text)
+        if strings == phrases:
+            intact += 1
+    print("strings:", len(strings_text.encode()), "bytes,", intact, "of", ROUNDS // 2, "loads intact")
+
+# Many small documents, like messages off a queue.
+messages = [f'{{"seq": {i}, "width": {i % 640}, "height": {i % 480}, "retries": {i % 3}}}' for i in range(1000)]
+area = 0
+for _ in range(400):
+    for message in messages:
+        size: dict[str, int] = json.loads(message)
+        area += size["width"] * size["height"] + size["seq"]
+print("small documents:", 400 * len(messages), "area", area)

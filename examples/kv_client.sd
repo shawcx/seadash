@@ -1,0 +1,132 @@
+# Exercises kv_server.sd: checks every command's reply, then hammers the server from
+# several threads at once and checks that no update was lost.
+#
+#   sd run examples/kv_server.sd --port 7000 &
+#   sd run examples/kv_client.sd --port 7000 --clients 8 --requests 2000
+#
+# This one is plain Python too: `python3 examples/kv_client.sd` does the same, only
+# slower, because its threads take turns.
+import argparse
+import socket
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+
+class Client:
+    conn: socket.socket
+    buffer: bytes
+
+    def __init__(self, host: str, port: int):
+        self.conn = socket.create_connection((host, port), timeout=10)
+        self.conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.buffer = b""
+
+    def command(self, line: str) -> str:
+        """Send one command and return the server's one-line reply."""
+        self.conn.sendall(line.encode() + b"\n")
+        while b"\n" not in self.buffer:
+            data = self.conn.recv(4096)
+            if not data:
+                raise ConnectionError("the server closed the connection")
+            self.buffer += data
+        reply, _, self.buffer = self.buffer.partition(b"\n")
+        return reply.decode()
+
+    def close(self):
+        self.conn.close()
+
+
+def check_commands(host: str, port: int) -> int:
+    """Every command, and what it should answer. Returns the number of wrong replies."""
+    cases = [
+        ("GET demo:name", "(nil)"),
+        ("SET demo:name seadash server", "OK"),
+        ("GET demo:name", "seadash server"),
+        ("INCR demo:count", "1"),
+        ("INCR demo:count", "2"),
+        ("GET demo:count", "2"),
+        ("INCR demo:name", "ERR value is not an integer"),
+        ("DEL demo:name", "1"),
+        ("DEL demo:name", "0"),
+        ("SET demo:name", "ERR unknown command: SET demo:name"),
+        ("FLY away", "ERR unknown command: FLY away"),
+        ("", ""),
+        ("DEL demo:count", "1"),
+        ("QUIT", "BYE"),
+    ]
+    client = Client(host, port)
+    client.command("DEL demo:name")  # start clean, whatever an earlier run left behind
+    client.command("DEL demo:count")
+    wrong = 0
+    for line, expected in cases:
+        reply = client.command(line)
+        ok = reply == expected
+        print(f"  {'ok  ' if ok else 'FAIL'} {line!r:32} -> {reply!r}" + ("" if ok else f" (expected {expected!r})"))
+        if not ok:
+            wrong += 1
+    client.close()
+    return wrong
+
+
+def load(host: str, port: int, worker: int, requests: int) -> int:
+    """One connection's share of the load. Returns the number of wrong replies."""
+    client = Client(host, port)
+    wrong = 0
+    for i in range(requests):
+        # A counter every worker fights over, and a key of this worker's own.
+        client.command("INCR load:hits")
+        value = f"value {i} from worker {worker}"
+        if client.command(f"SET load:worker:{worker} {value}") != "OK":
+            wrong += 1
+        if client.command(f"GET load:worker:{worker}") != value:
+            wrong += 1
+    client.command(f"DEL load:worker:{worker}")
+    client.close()
+    return wrong
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Exercise the key-value server.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=7000)
+    parser.add_argument("--clients", type=int, default=8, help="connections at once")
+    parser.add_argument("--requests", type=int, default=2000, help="rounds per connection (3 commands each)")
+    args = parser.parse_args()
+    host, port, clients, requests = args.host, args.port, args.clients, args.requests
+
+    try:
+        Client(host, port).close()
+    except OSError as e:
+        print(f"can't reach the server at {host}:{port}: {e}")
+        sys.exit(1)
+
+    print("commands:")
+    wrong = check_commands(host, port)
+
+    print(f"load: {clients} connections x {requests} rounds")
+    control = Client(host, port)
+    control.command("DEL load:hits")
+    start = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=clients) as pool:
+        futures = [pool.submit(load, host, port, worker, requests) for worker in range(clients)]
+        wrong += sum([f.result() for f in futures])
+    elapsed = time.perf_counter() - start
+    total = clients * requests * 3
+    print(f"  {total} commands in {elapsed:.2f}s ({total / elapsed:.0f} per second)")
+
+    hits = int(control.command("GET load:hits"))
+    print(f"  {'ok  ' if hits == clients * requests else 'FAIL'} load:hits is {hits} (expected {clients * requests})")
+    if hits != clients * requests:
+        wrong += 1
+    control.command("DEL load:hits")
+    print(" ", control.command("STATS"))
+    control.close()
+
+    if wrong:
+        print(f"{wrong} wrong replies")
+        sys.exit(1)
+    print("all good")
+
+
+main()

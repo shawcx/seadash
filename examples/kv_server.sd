@@ -1,0 +1,123 @@
+# A key-value server: one thread per connection, all sharing one store.
+#
+#   sd run examples/kv_server.sd --port 7000
+#   nc localhost 7000
+#   SET greeting hello world
+#   GET greeting
+#
+# Commands (one per line): SET key value, GET key, DEL key, INCR key, KEYS, STATS, QUIT.
+#
+# The threads run in parallel (there's no GIL), so what they share must be thread-safe,
+# and the compiler checks that it is. `Store` is a threading.Synchronized class: each
+# method call holds the object's lock, so `incr` is atomic without any locking here.
+import argparse
+import logging
+import socket
+import threading
+
+log = logging.getLogger("kv")
+
+
+class Store(threading.Synchronized):
+    items: dict[str, str]
+
+    def set(self, key: str, value: str):
+        self.items[key] = value
+
+    def get(self, key: str) -> str | None:
+        return self.items.get(key)
+
+    def delete(self, key: str) -> bool:
+        if key in self.items:
+            self.items.pop(key)
+            return True
+        return False
+
+    def incr(self, key: str) -> int:
+        n = int(self.items.get(key, "0")) + 1
+        self.items[key] = str(n)
+        return n
+
+    def keys(self) -> list[str]:
+        return sorted(self.items)
+
+
+connections = threading.Atomic()  # open right now
+commands = threading.Atomic()     # handled since the server started
+
+
+def respond(store: Store, raw: bytes) -> str | None:
+    """The reply to one command; None to close the connection."""
+    try:
+        line = raw.decode()
+    except UnicodeDecodeError:
+        return "ERR commands must be UTF-8"
+    match line.split():
+        case []:
+            return ""
+        case ["SET", key, *value] if value:
+            store.set(key, " ".join(value))  # (runs of spaces in the value become one)
+            return "OK"
+        case ["GET", key]:
+            value = store.get(key)
+            return "(nil)" if value is None else value
+        case ["DEL", key]:
+            return "1" if store.delete(key) else "0"
+        case ["INCR", key]:
+            try:
+                return str(store.incr(key))
+            except ValueError:
+                return "ERR value is not an integer"
+        case ["KEYS"]:
+            return " ".join(store.keys())
+        case ["STATS"]:
+            return f"connections={connections.get()} commands={commands.get()} keys={len(store.keys())}"
+        case ["QUIT"]:
+            return None
+        case _:
+            return f"ERR unknown command: {line.strip()}"
+
+
+def handle(conn: socket.socket, peer: str, store: Store):
+    connections.add(1)
+    log.info("%s connected", peer)
+    try:
+        with conn:
+            buffer = b""
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    return
+                buffer += data
+                while b"\n" in buffer:
+                    raw, _, buffer = buffer.partition(b"\n")
+                    commands.add(1)
+                    reply = respond(store, raw)
+                    if reply is None:
+                        conn.sendall(b"BYE\n")
+                        return
+                    conn.sendall(reply.encode() + b"\n")
+    except OSError as e:
+        log.warning("%s: %s", peer, e)
+    finally:
+        connections.sub(1)
+        log.info("%s disconnected", peer)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="A threaded key-value server.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=7000)
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(threadName)s %(message)s")
+    store = Store({})
+    server = socket.create_server((args.host, args.port))
+    log.info("listening on %s:%d", args.host, server.getsockname()[1])
+    while True:
+        conn, addr = server.accept()
+        peer = f"{addr[0]}:{addr[1]}"
+        threading.Thread(target=handle, args=(conn, peer, store), daemon=True).start()
+
+
+main()
