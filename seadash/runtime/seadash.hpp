@@ -134,6 +134,15 @@ template <class E>
     raise<RuntimeError>(msg);
 }
 
+// A hint to the CPU inside a spin-wait loop.
+inline void cpu_relax() {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    asm volatile("yield");
+#endif
+}
+
 // A module used as a value, e.g. print(math): only its repr is needed.
 struct ModuleRef {
     std::string text;

@@ -10,13 +10,6 @@
 
 namespace sd::threading {
 
-inline void cpu_relax() {
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    asm volatile("yield");
-#endif
-}
 
 // Python's Lock: may be released by a different thread than the one that acquired it
 // (undefined behaviour for std::mutex). The state is one atomic: 0 = unlocked,

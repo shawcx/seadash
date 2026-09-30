@@ -656,7 +656,8 @@ class CodeGen:
             if var.captured:  # shared with a closure: a cell both sides point to
                 self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>();")
             else:
-                self.line(f"{t} {ident(var.cpp_name)}{{}};")
+                unused = "[[maybe_unused]] " if var.name == "_" else ""  # `for _ in range(n):`
+                self.line(f"{unused}{t} {ident(var.cpp_name)}{{}};")
 
     def param_vars(self, fn: FuncInfo) -> list[Var]:
         nodes = fn.node.params[1:] if fn.owner is not None and fn.kind != "static" else fn.node.params

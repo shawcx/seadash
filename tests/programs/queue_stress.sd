@@ -1,0 +1,115 @@
+# queue.Queue under pressure: many producers and consumers on a tiny bounded queue
+# (so both sides keep sleeping and waking), nothing lost or duplicated, plus timeouts,
+# the non-blocking calls, and task_done()/join().
+import queue
+import threading
+import time
+
+PRODUCERS = 6
+CONSUMERS = 5
+PER_PRODUCER = 20000
+
+
+def produce(q: queue.Queue[int], start: int):
+    for i in range(start, start + PER_PRODUCER):
+        q.put(i)
+
+
+def consume(q: queue.Queue[int], out: queue.Queue[tuple[int, int]]):
+    count = 0
+    total = 0
+    while True:
+        item = q.get()
+        if item < 0:
+            break
+        count += 1
+        total += item
+    out.put((count, total))
+
+
+for maxsize in [1, 3, 0]:
+    q: queue.Queue[int] = queue.Queue(maxsize=maxsize)
+    out: queue.Queue[tuple[int, int]] = queue.Queue()
+    consumers = [threading.Thread(target=consume, args=(q, out)) for _ in range(CONSUMERS)]
+    producers = [threading.Thread(target=produce, args=(q, p * PER_PRODUCER)) for p in range(PRODUCERS)]
+    for t in consumers + producers:
+        t.start()
+    for t in producers:
+        t.join()
+    for _ in range(CONSUMERS):
+        q.put(-1)
+    for t in consumers:
+        t.join()
+    count = 0
+    total = 0
+    for _ in range(CONSUMERS):
+        c, s = out.get()
+        count += c
+        total += s
+    n = PRODUCERS * PER_PRODUCER
+    print(f"maxsize={maxsize}: {count} items, sum ok: {total == n * (n - 1) // 2}, empty: {q.empty()}")
+
+# Timeouts and the non-blocking calls.
+q2: queue.Queue[str] = queue.Queue(maxsize=1)
+try:
+    q2.get_nowait()
+except queue.Empty:
+    print("get_nowait: Empty")
+start = time.monotonic()
+try:
+    q2.get(timeout=0.05)
+except queue.Empty:
+    print("get(timeout): Empty after >= 0.05s:", time.monotonic() - start >= 0.05)
+q2.put("a")
+try:
+    q2.put_nowait("b")
+except queue.Full:
+    print("put_nowait: Full")
+try:
+    q2.put("b", timeout=0.05)
+except queue.Full:
+    print("put(timeout): Full")
+print(q2.full(), q2.qsize(), q2.get(), q2.empty())
+
+
+# A sleeping getter is woken by a later put.
+def late_put(q: queue.Queue[str]):
+    time.sleep(0.1)
+    q.put("late")
+
+
+t = threading.Thread(target=late_put, args=(q2,))
+t.start()
+print("woken with:", q2.get(timeout=5.0))
+t.join()
+
+
+# task_done() / join()
+def worker(q: queue.Queue[int], done: queue.Queue[int]):
+    while True:
+        item = q.get()
+        if item < 0:
+            q.task_done()
+            break
+        done.put(item * 2)
+        q.task_done()
+
+
+jobs: queue.Queue[int] = queue.Queue()
+doubled: queue.Queue[int] = queue.Queue()
+workers = [threading.Thread(target=worker, args=(jobs, doubled)) for _ in range(3)]
+for w in workers:
+    w.start()
+for i in range(1000):
+    jobs.put(i)
+for _ in workers:
+    jobs.put(-1)
+jobs.join()
+total = 0
+while not doubled.empty():
+    total += doubled.get()
+print("join done:", total, jobs.qsize())
+try:
+    jobs.task_done()
+except ValueError as e:
+    print("error:", e)

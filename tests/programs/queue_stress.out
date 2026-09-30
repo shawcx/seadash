@@ -1,0 +1,11 @@
+maxsize=1: 120000 items, sum ok: True, empty: True
+maxsize=3: 120000 items, sum ok: True, empty: True
+maxsize=0: 120000 items, sum ok: True, empty: True
+get_nowait: Empty
+get(timeout): Empty after >= 0.05s: True
+put_nowait: Full
+put(timeout): Full
+True 1 a True
+woken with: late
+join done: 999000 0
+error: task_done() called too many times
