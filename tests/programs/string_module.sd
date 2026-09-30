@@ -1,0 +1,26 @@
+# string: character sets, capwords and Template.
+import string
+from string import Template
+
+print(repr(string.whitespace), repr(string.printable[-10:]), string.punctuation, string.hexdigits, string.octdigits)
+print(string.ascii_letters, string.digits, len(string.printable), "q" in string.ascii_lowercase)
+print(string.capwords("  hello   big world "), string.capwords("a-b c-d", "-"))
+t = Template("$who likes ${what}, costs $$$n")
+print(t.substitute(who="tim", what="kung pao", n=3), t.substitute({"who": "a", "what": "b", "n": "1"}, who="kw"))
+print(t.safe_substitute(who="x"), t.substitute({"who": 1, "what": 2, "n": 3}))
+print(t.template, t.get_identifiers(), t.is_valid(), Template("$ bad").is_valid())
+try:
+    t.substitute(who="x")
+except KeyError as e:
+    print(repr(e), e)
+try:
+    Template("ok\nline $ bad").substitute()
+except ValueError as e:
+    print(e)
+try:
+    Template("$ first").substitute()
+except ValueError as e:
+    print(e)
+print(Template("${a}b $a_1 $A").substitute(a=1, a_1=2.5, A=True), Template("$a $").safe_substitute(a="z"))
+letters = [c for c in "Hello, World! 42" if c in string.ascii_letters]
+print("".join(letters), sum(1 for c in "Hello, World! 42" if c in string.punctuation))

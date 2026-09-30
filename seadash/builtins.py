@@ -18,7 +18,7 @@ from .types import (
     BINARY_FILE, TEXT_FILE,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
-    GeneratorType, TEXT_WRAPPER,
+    GeneratorType, TEXT_WRAPPER, STR_TEMPLATE,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -828,6 +828,9 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             return {"add_parser": subparsers_add_parser}.get(name)
         case _ if t == PATH:
             return PATH_METHODS.get(name)
+        case _ if t == STR_TEMPLATE:
+            return {"substitute": template_substitute, "safe_substitute": template_substitute,
+                    "get_identifiers": sync_method(ListType(STR)), "is_valid": sync_method(BOOL)}.get(name)
         case _ if t == TEXT_WRAPPER:
             return {"wrap": sync_method(ListType(STR), ("text", STR)), "fill": sync_method(STR, ("text", STR))}.get(name)
         case _ if t == TEMPDIR:
@@ -1660,6 +1663,8 @@ MATCH_ATTRIBUTES = {
 
 
 def type_attributes(t: Type) -> dict | None:
+    if t == STR_TEMPLATE:
+        return {"template": lambda t: STR}
     if isinstance(t, NamespaceType):
         return {name: (lambda _, ft=ft: ft) for name, ft in t.fields}
     if t in DATETIME_ATTRIBUTES:
@@ -2356,6 +2361,32 @@ MODULES["textwrap"] = module_with_params(runtime_module(
     TextWrapper=(signature(TEXT_WRAPPER, WIDTH_70, *WRAP_OPTIONS), "sd::textwrap::make"),
 ))
 MODULES["textwrap"].members["TextWrapper"].as_type = TEXT_WRAPPER
+
+
+# ---- string ---------------------------------------------------------------------------
+
+def template_substitute(ctx: CallContext) -> Type:
+    """t.substitute(mapping, **keywords): the mapping's values and the keywords can be anything
+    printable (they're shown with str())."""
+    ctx.arity(0, 1, keywords=tuple(k.name for k in ctx.call.keywords))
+    if ctx.args:
+        t = ctx.arg(0)
+        if not (isinstance(t, DictType) and t.key == STR):
+            raise ctx.error(f"{ctx.what} takes a dict with str keys (and/or keyword arguments), not {t}", ctx.args[0])
+    for kw in ctx.call.keywords:
+        ctx.checker.check_printable(ctx.checker.check_expr(kw.value), kw.value)
+    return STR
+
+
+MODULES["string"] = module_with_params(runtime_module(
+    "string", "modules/string.hpp",
+    capwords=(signature(STR, ("s", STR), ("sep", OptionalType(STR), "std::nullopt")), "sd::stringmod::capwords"),
+    Template=(signature(STR_TEMPLATE, ("template", STR)), "sd::stringmod::Template"),
+    **{name: (STR, f"sd::stringmod::{name}") for name in (
+        "ascii_letters", "ascii_lowercase", "ascii_uppercase", "digits", "hexdigits", "octdigits",
+        "punctuation", "printable", "whitespace")},
+))
+MODULES["string"].members["Template"].as_type = STR_TEMPLATE
 
 
 class AttributeUnavailable(Exception):

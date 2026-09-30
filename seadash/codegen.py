@@ -37,7 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    TEXT_WRAPPER,
+    TEXT_WRAPPER, STR_TEMPLATE,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
@@ -252,6 +252,8 @@ class CodeGen:
                 return "sd::tempfile::TemporaryDirectory"
             case _ if t == TEXT_WRAPPER:
                 return "sd::textwrap::TextWrapper"
+            case _ if t == STR_TEMPLATE:
+                return "sd::stringmod::Template"
             case _ if t in DATETIME_TYPES:
                 return f"sd::datetime::{t.name}"
             case ParserType() | SubParsersType():
@@ -1399,6 +1401,8 @@ class CodeGen:
             obj, vt = self.expr(e.value), e.value.ty
             if isinstance(vt, ProcessType):
                 return self.process_attribute(obj, vt, e.sym[1], e.ty)
+            if vt == STR_TEMPLATE:  # t.template
+                return f"{obj}.get_template()"
             if isinstance(vt, NamespaceType):  # args.count
                 return f"{obj}.get<{self.cpp_type(e.ty)}>({cpp_string(e.sym[1])})"
             return f"{obj}.{e.sym[1]}()"  # m.string(), pattern.groups()
@@ -2143,9 +2147,16 @@ class CodeGen:
             node = e.regex_args["args"]
             given = node is not None and not isinstance(node, A.NoneLit)
             return f"{r}.parse_args({self.expr_as(node, OptionalType(ListType(STR))) if given else 'std::nullopt'})"
+        if recv_type == STR_TEMPLATE and name in ("substitute", "safe_substitute"):
+            keywords = ", ".join(f"{{{cpp_string(k.name)}, sd::str({self.expr(k.value)})}}" for k in e.keywords)
+            mapping = f"sd::stringmod::stringify({self.expr(e.args[0])})" if e.args else "std::nullopt"
+            safe = "true" if name == "safe_substitute" else "false"
+            return f"{r}.substitute(sd::dict<std::string, std::string>{{{keywords}}}, {mapping}, {safe})"
         if recv_type == DATETIME and name in ("date", "time"):
             return f"{r}.to_{name}()"  # (a C++ member can't share its class's name)
-        if isinstance(recv_type, (SyncType, ParserType)) or recv_type in (SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, *DATETIME_TYPES):
+        if isinstance(recv_type, (SyncType, ParserType)) or recv_type in (
+            SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, *DATETIME_TYPES
+        ):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):

@@ -1,0 +1,11 @@
+' \t\n\r\x0b\x0c' '{|}~ \t\n\r\x0b\x0c' !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ 0123456789abcdefABCDEF 01234567
+abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789 100 True
+Hello Big World A-B c-D
+tim likes kung pao, costs $3 kw likes b, costs $1
+x likes ${what}, costs $$n 1 likes 2, costs $3
+$who likes ${what}, costs $$$n ['who', 'what', 'n'] True False
+KeyError('what') 'what'
+Invalid placeholder in string: line 2, col 6
+Invalid placeholder in string: line 1, col 1
+1b 2.5 True z $
+HelloWorld 2
