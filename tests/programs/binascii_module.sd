@@ -1,0 +1,36 @@
+import base64
+import binascii
+
+data = b"\x00\x01\xfe\xff hello"
+print(binascii.hexlify(data), binascii.b2a_hex(data), binascii.hexlify(b""))
+print(binascii.hexlify(b"\x01\x02\x03\x04\x05", ":"), binascii.hexlify(b"\x01\x02\x03\x04\x05", "-", 2))
+print(binascii.hexlify(b"\x01\x02\x03\x04\x05", sep=" ", bytes_per_sep=-2), binascii.hexlify(b"\x01\x02\x03", ":", 0))
+print(binascii.unhexlify(b"0001feff"), binascii.a2b_hex("0001FEff"), binascii.unhexlify(binascii.hexlify(data)) == data)
+for bad in [b"abc", b"zz", b"0g"]:
+    try:
+        print(binascii.unhexlify(bad))
+    except binascii.Error as e:
+        print("Error:", e, isinstance(e, ValueError))
+try:
+    print(binascii.unhexlify("é1"))
+except ValueError as e:
+    print("ValueError:", e)
+try:
+    print(binascii.hexlify(b"ab", "::"))
+except ValueError as e:
+    print("ValueError:", e)
+
+print(binascii.crc32(b"hello"), binascii.crc32(b" world", binascii.crc32(b"hello")), binascii.crc32(b""))
+print(binascii.crc_hqx(b"hello", 0), binascii.crc_hqx(b"hello", 0xFFFF), binascii.crc_hqx(b"", 0x1234))
+
+print(binascii.b2a_base64(b"hi"), binascii.b2a_base64(b"hi", newline=False), binascii.b2a_base64(b""))
+print(binascii.a2b_base64(b"aGk=\n"), binascii.a2b_base64("Y Q=="), binascii.a2b_base64(b"YWJj"))
+for bad in ["YQ", "Y", "YQ=x"]:
+    try:
+        print(binascii.a2b_base64(bad))
+    except binascii.Error as e:
+        print("Error:", repr(e))
+try:
+    base64.b64decode("YQ")  # base64 is built on binascii: the same errors
+except binascii.Error as e:
+    print("base64 raises", repr(e))

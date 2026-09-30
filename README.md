@@ -201,7 +201,7 @@ def work():
 
 | module | notes |
 |---|---|
-| `base64`, `zlib` | encode, decode, compress |
+| `base64`, `binascii`, `zlib` | encode, decode, compress; `hexlify` with separators, `crc32`, `crc_hqx` (not yet: uu and quoted-printable) |
 | `shlex` | `split`, `quote`, `join` (POSIX mode) |
 | `json` | typed: `json.loads` straight into your dataclasses, lists and dicts; `json.Value` for dynamic JSON |
 | `os`, `os.path` | files, directories, environment |

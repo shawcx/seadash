@@ -1117,7 +1117,8 @@ std::string repr(const T& x) {
 }
 
 inline std::string BaseException::sd_repr() const {
-    return sd_type() + "(" + (message.empty() ? "" : repr_str(message)) + ")";
+    std::string type = sd_type();  // a module's exception shows its bare name: error('...'), not zlib.error('...')
+    return type.substr(type.rfind('.') + 1) + "(" + (message.empty() ? "" : repr_str(message)) + ")";
 }
 inline std::string KeyError::sd_repr() const {
     return from_lookup ? "KeyError(" + message + ")" : LookupError::sd_repr();

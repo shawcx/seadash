@@ -1,0 +1,17 @@
+b'0001feff2068656c6c6f' b'0001feff2068656c6c6f' b''
+b'01:02:03:04:05' b'01-0203-0405'
+b'0102 0304 05' b'010203'
+b'\x00\x01\xfe\xff' b'\x00\x01\xfe\xff' True
+Error: Odd-length string True
+Error: Non-hexadecimal digit found True
+Error: Non-hexadecimal digit found True
+ValueError: string argument should contain only ASCII characters
+ValueError: sep must be length 1.
+907060870 222957957 0
+50018 53870 4660
+b'aGk=\n' b'aGk=' b'\n'
+b'hi' b'a' b'abc'
+Error: Error('Incorrect padding')
+Error: Error('Invalid base64-encoded string: number of data characters (1) cannot be 1 more than a multiple of 4')
+Error: Error('Incorrect padding')
+base64 raises Error('Incorrect padding')
