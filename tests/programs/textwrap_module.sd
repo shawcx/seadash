@@ -1,0 +1,30 @@
+# textwrap: Python's line wrapping, including hyphenated words and em-dashes.
+import textwrap
+from textwrap import TextWrapper, dedent, fill, indent, shorten, wrap
+
+text = ("The quick brown fox jumps over the lazy dog -- a well-known pangram, used by "
+        "typographers and programmers alike. Supercalifragilisticexpialidocious words get broken.")
+print(wrap(text, 30))
+print(fill(text, width=40))
+print(fill(text, 25, initial_indent="* ", subsequent_indent="  "))
+print(wrap("a-very-long-hyphenated-compound-word here", 12))
+print(wrap("aaaaaaaaaaaaaaaaaaaa bbb", 8, break_long_words=False), wrap("x  y\tz\nw", 3))
+print(wrap(text, 30, max_lines=2), fill(text, 30, max_lines=3, placeholder=" (more)"))
+print(repr(shorten("Hello  world, this is a sentence", width=20)), repr(shorten("Hi there", 20)))
+print(wrap("Dr. Smith went home. It was late.", 15, fix_sentence_endings=True))
+print(wrap("naïve café résumé façade", 11), wrap("", 10), wrap("   ", 10))
+block = """
+    def f():
+        return 1
+
+      # comment
+    """
+print(repr(dedent(block)), repr(dedent("  a\n\tb")), repr(dedent("    x\n  \n    y")))
+print(repr(indent("one\n\ntwo\n", "> ")), repr(indent("a\n b\n", "+", lambda line: line.startswith(" "))))
+tw = TextWrapper(width=20, subsequent_indent="    ")
+print(tw.wrap(text[:60]), tw.fill("short"))
+print(textwrap.fill("tab\there", 12, expand_tabs=True, tabsize=4), wrap("keep  spaces", 20, drop_whitespace=False))
+try:
+    wrap("x", 0)
+except ValueError as e:
+    print("error:", e)

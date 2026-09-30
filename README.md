@@ -179,6 +179,7 @@ def work():
 | `socket` | TCP/UDP with Python's API and errors |
 | `threading`, `queue` | threads, locks, events, queues; plus seadash's `Mutex[T]`, `Atomic` and `Synchronized` |
 | `itertools` | all of it, lazily: `count`, `cycle`, `repeat`, `accumulate`, `chain`, `groupby`, `islice`, `tee`, `zip_longest`, `product`, `permutations`, `combinations`, `pairwise`, `batched`... (`permutations(xs, 2)` gives `tuple[T, T]`) |
+| `textwrap` | `wrap`, `fill`, `shorten`, `dedent`, `indent`, `TextWrapper`: a port of Python's algorithm (hyphens, em-dashes, `max_lines`), so lines break where Python's do |
 | `collections` | `defaultdict`, `Counter`, `deque` |
 | `re` | Python's regular expressions on PCRE2; literal patterns are checked at compile time, and `m.group(1)` is a `str` when the group always matches |
 | `subprocess` | `run`, `check_output`, `call`, `Popen` (streaming, `communicate`, timeouts); `r.stdout` is `str` or `bytes` depending on `text=`, and reading an uncaptured stream is a compile error |

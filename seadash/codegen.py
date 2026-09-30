@@ -37,6 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
+    TEXT_WRAPPER,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
@@ -249,6 +250,8 @@ class CodeGen:
                 return "sd::pathlib::Path"
             case _ if t == TEMPDIR:
                 return "sd::tempfile::TemporaryDirectory"
+            case _ if t == TEXT_WRAPPER:
+                return "sd::textwrap::TextWrapper"
             case _ if t in DATETIME_TYPES:
                 return f"sd::datetime::{t.name}"
             case ParserType() | SubParsersType():
@@ -2142,7 +2145,7 @@ class CodeGen:
             return f"{r}.parse_args({self.expr_as(node, OptionalType(ListType(STR))) if given else 'std::nullopt'})"
         if recv_type == DATETIME and name in ("date", "time"):
             return f"{r}.to_{name}()"  # (a C++ member can't share its class's name)
-        if isinstance(recv_type, (SyncType, ParserType)) or recv_type in (SOCKET, PATH, TEMPDIR, *DATETIME_TYPES):
+        if isinstance(recv_type, (SyncType, ParserType)) or recv_type in (SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, *DATETIME_TYPES):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):

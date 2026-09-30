@@ -18,7 +18,7 @@ from .types import (
     BINARY_FILE, TEXT_FILE,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
-    GeneratorType,
+    GeneratorType, TEXT_WRAPPER,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -828,6 +828,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             return {"add_parser": subparsers_add_parser}.get(name)
         case _ if t == PATH:
             return PATH_METHODS.get(name)
+        case _ if t == TEXT_WRAPPER:
+            return {"wrap": sync_method(ListType(STR), ("text", STR)), "fill": sync_method(STR, ("text", STR))}.get(name)
         case _ if t == TEMPDIR:
             return {"cleanup": sync_method(NONE)}.get(name)
         case ProcessType(kind):
@@ -2331,6 +2333,29 @@ ITERTOOLS = ("count", "cycle", "repeat", "accumulate", "chain", "chain.from_iter
 MODULES["itertools"] = Module("itertools", {
     name: Function(name, itertools_function(name)) for name in ITERTOOLS
 }, "modules/itertools.hpp")
+
+
+# ---- textwrap -----------------------------------------------------------------------------
+
+WRAP_OPTIONS = (
+    ("initial_indent", STR, '""s'), ("subsequent_indent", STR, '""s'), ("expand_tabs", BOOL, "true"),
+    ("replace_whitespace", BOOL, "true"), ("fix_sentence_endings", BOOL, "false"), ("break_long_words", BOOL, "true"),
+    ("drop_whitespace", BOOL, "true"), ("break_on_hyphens", BOOL, "true"), ("tabsize", INT, "8"),
+    ("max_lines", OptionalType(INT), "std::nullopt"), ("placeholder", STR, '" [...]"s'),
+)
+WIDTH_70 = ("width", INT, "70")
+MODULES["textwrap"] = module_with_params(runtime_module(
+    "textwrap", "modules/textwrap.hpp", ("pcre2-8",),
+    wrap=(signature(ListType(STR), ("text", STR), WIDTH_70, *WRAP_OPTIONS), "sd::textwrap::wrap"),
+    fill=(signature(STR, ("text", STR), WIDTH_70, *WRAP_OPTIONS), "sd::textwrap::fill"),
+    shorten=(signature(STR, ("text", STR), ("width", INT), *WRAP_OPTIONS), "sd::textwrap::shorten"),
+    dedent=(signature(STR, ("text", STR)), "sd::textwrap::dedent"),
+    indent=(signature(STR, ("text", STR), ("prefix", STR), ("predicate", FuncType((STR,), BOOL),
+                                                               "[](const std::string& l) { return !sd::textwrap::is_blank(l); }")),
+            "sd::textwrap::indent"),
+    TextWrapper=(signature(TEXT_WRAPPER, WIDTH_70, *WRAP_OPTIONS), "sd::textwrap::make"),
+))
+MODULES["textwrap"].members["TextWrapper"].as_type = TEXT_WRAPPER
 
 
 class AttributeUnavailable(Exception):

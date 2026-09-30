@@ -34,6 +34,7 @@ JSON_VALUE = Prim("json.Value")  # a dynamically typed JSON value (the json modu
 UNKNOWN = Prim("?")  # only while inferring literals: the element type of an empty []
 SOCKET = Prim("socket")  # socket.socket: a thread-safe handle
 PATH = Prim("Path")  # pathlib.Path: an immutable path value
+TEXT_WRAPPER = Prim("TextWrapper")  # textwrap.TextWrapper
 TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
 
 DATE = Prim("date")  # the datetime module's value types

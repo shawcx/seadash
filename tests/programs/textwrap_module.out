@@ -1,0 +1,28 @@
+['The quick brown fox jumps over', 'the lazy dog -- a well-known', 'pangram, used by typographers', 'and programmers alike. Superca', 'lifragilisticexpialidocious', 'words get broken.']
+The quick brown fox jumps over the lazy
+dog -- a well-known pangram, used by
+typographers and programmers alike.
+Supercalifragilisticexpialidocious words
+get broken.
+* The quick brown fox
+  jumps over the lazy dog
+  -- a well-known
+  pangram, used by
+  typographers and
+  programmers alike. Supe
+  rcalifragilisticexpiali
+  docious words get
+  broken.
+['a-very-long-', 'hyphenated-', 'compound-', 'word here']
+['aaaaaaaaaaaaaaaaaaaa', 'bbb'] ['x', 'y', 'z w']
+['The quick brown fox jumps over', 'the lazy dog -- a well- [...]'] The quick brown fox jumps over
+the lazy dog -- a well-known
+pangram, used by (more)
+'Hello world, [...]' 'Hi there'
+['Dr.  Smith went', 'home.  It was', 'late.']
+['naïve café', 'résumé', 'façade'] [] []
+'\ndef f():\n    return 1\n\n  # comment\n' '  a\n\tb' 'x\n\ny'
+'> one\n\n> two\n' 'a\n+ b\n'
+['The quick brown fox', '    jumps over the', '    lazy dog -- a', '    well-known'] short
+tab here ['keep  spaces']
+error: invalid width 0 (must be > 0)
