@@ -95,6 +95,11 @@ $ .venv/bin/sd run books.sd     # the example above
 | `sd check FILE` | type-check, and list every variable's inferred type |
 | `sd emit FILE` | print the generated C++ |
 | `sd tokens` / `sd ast` | debugging views of the lexer and parser |
+| `sd clean` | empty the build cache |
+
+Builds are cached (in `~/.cache/seadash`): running a program you haven't changed skips the
+C++ compiler entirely, and the runtime header is precompiled once, so small edits rebuild
+quickly. `--no-cache` always compiles.
 
 `sd run` with no file (or `-`) reads the program from stdin:
 

@@ -6,12 +6,14 @@
     sd emit FILE       print the generated C++
     sd build FILE      compile to a native binary (named after FILE, or -o NAME)
     sd run FILE ARGS   build to a temporary binary and run it
+    sd clean           empty the build cache (built binaries, precompiled headers)
 
 FILE may be `-` to read the program from stdin; `sd run` with no FILE does too.
 """
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,7 +21,7 @@ from pathlib import Path
 
 from .astdump import dump
 from .checker import check
-from .driver import BuildError, BuildOptions, Translation, check_program, compile_cpp, translate
+from .driver import BuildError, BuildOptions, Translation, cache_dir, check_program, compile_cpp, translate
 from .errors import CompileError
 from .lexer import TokenKind, tokenize
 from .parser import parse
@@ -169,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the program")
     for p in (p_build, p_run):
         p.add_argument("--debug", action="store_true", help="compile without optimization (faster build)")
+        p.add_argument("--no-cache", action="store_true", help="always compile (don't reuse cached builds)")
+    sub.add_parser("clean", help="empty the build cache")
     args = parser.parse_args(argv)
 
     if args.command == "tokens":
@@ -179,7 +183,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_check(args.file)
     if args.command == "emit":
         return cmd_emit(args.file)
-    options = BuildOptions(optimize=not getattr(args, "debug", False), cxx=os.environ.get("SEADASH_CXX"))
+    if args.command == "clean":
+        shutil.rmtree(cache_dir(), ignore_errors=True)
+        print(f"removed {cache_dir()}")
+        return 0
+    options = BuildOptions(optimize=not getattr(args, "debug", False), cxx=os.environ.get("SEADASH_CXX"),
+                           cache=not getattr(args, "no_cache", False))
     if args.command == "build":
         return cmd_build(args.file, args.output, options)
     if args.command == "run":

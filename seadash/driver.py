@@ -1,8 +1,12 @@
 """The full pipeline: seadash source -> C++ -> native binary."""
 
+import fcntl
+import functools
+import hashlib
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,24 +118,124 @@ def find_cxx() -> str:
 class BuildOptions:
     optimize: bool = True
     cxx: str | None = None
+    cache: bool = True  # reuse binaries built from the same C++, and a precompiled runtime header
+
+
+# ---- build cache ---------------------------------------------------------------------
+#
+# Compiling the C++ is nearly all of a build's time, so two things are cached:
+#  - the runtime header (seadash.hpp) precompiled, per compiler and flags (GCC only);
+#  - finished binaries, keyed by everything that goes into them: the C++ source, flags,
+#    libraries, the compiler's version and the runtime headers. An unchanged program
+#    runs again without compiling at all.
+# Files appear atomically (written aside, then renamed), so parallel builds are safe.
+
+MAX_CACHED_BINARIES = 256
+
+
+def cache_dir() -> Path:
+    if env := os.environ.get("SEADASH_CACHE_DIR"):
+        return Path(env)
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return Path(base) / "seadash"
+
+
+@functools.cache
+def compiler_id(cxx: str) -> str:
+    """The compiler's identity for cache keys: where it is and its version."""
+    try:
+        version = subprocess.run([cxx, "--version"], capture_output=True, text=True).stdout.splitlines()[0]
+    except (OSError, IndexError):
+        version = "?"
+    return f"{shutil.which(cxx) or cxx} {version}"
+
+
+@functools.cache
+def runtime_hash() -> str:
+    h = hashlib.sha256()
+    for path in sorted(RUNTIME_DIR.rglob("*.hpp")):
+        h.update(str(path.relative_to(RUNTIME_DIR)).encode())
+        h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def digest(*parts: str) -> str:
+    h = hashlib.sha256()
+    for part in parts:
+        h.update(part.encode())
+        h.update(b"\0")
+    return h.hexdigest()[:32]
+
+
+def atomic_copy(src: Path, dst: Path) -> None:
+    tmp = dst.with_name(f".{dst.name}.{os.getpid()}.{threading.get_ident()}")
+    shutil.copy2(src, tmp)
+    os.replace(tmp, dst)
+
+
+def precompiled_header(cxx: str, flags: list[str]) -> Path | None:
+    """A directory holding seadash.hpp.gch for these flags, built on first use; None if
+    the compiler isn't GCC or it can't be built (then the header is simply parsed)."""
+    if "clang" in compiler_id(cxx).lower():
+        return None
+    where = cache_dir() / "pch" / digest(compiler_id(cxx), *flags, runtime_hash())
+    gch = where / "seadash.hpp.gch"
+    if gch.exists():
+        return where
+    try:
+        where.mkdir(parents=True, exist_ok=True)
+        with open(where / "lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # one build; others wait for it
+            if not gch.exists():
+                tmp = where / f".seadash.hpp.gch.{os.getpid()}"
+                cmd = [cxx, *flags, "-x", "c++-header", str(RUNTIME_DIR / "seadash.hpp"), "-o", str(tmp)]
+                if subprocess.run(cmd, capture_output=True).returncode != 0:
+                    tmp.unlink(missing_ok=True)
+                    return None
+                os.replace(tmp, gch)
+    except OSError:
+        return None
+    return where
+
+
+def prune(directory: Path, keep: int) -> None:
+    entries = sorted(directory.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0)
+    for old in entries[: max(0, len(entries) - keep)]:
+        old.unlink(missing_ok=True)
 
 
 def compile_cpp(cpp_path: Path, output: Path, options: BuildOptions, libs: list[str] = ()) -> None:
     cxx = options.cxx or find_cxx()
-    cmd = [
-        cxx,
+    flags = [
         "-std=c++23",
         "-fwrapv",  # int overflow wraps instead of being undefined behaviour
         "-O2" if options.optimize else "-O0",
-        f"-I{RUNTIME_DIR}",
-        str(cpp_path),
-        "-o",
-        str(output),
-        *(f"-l{lib}" for lib in libs),
     ]
+    link = [f"-l{lib}" for lib in libs]
+    cached = None
+    if options.cache:
+        key = digest(cpp_path.read_text(), *flags, *link, compiler_id(cxx), runtime_hash())
+        cached = cache_dir() / "bin" / key
+        if cached.exists():
+            try:
+                os.utime(cached)  # recently used: kept when the cache is pruned
+                atomic_copy(cached, output)
+                return
+            except OSError:
+                pass
+    pch = precompiled_header(cxx, flags) if options.cache else None
+    cmd = [cxx, *flags, *([f"-I{pch}"] if pch else []), f"-I{RUNTIME_DIR}", str(cpp_path), "-o", str(output), *link]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise BuildError(
             "the C++ compiler rejected the generated code. This is a bug in seadash, "
             f"not in your program.\ncommand: {' '.join(cmd)}\n{result.stderr}"
         )
+    if cached is not None:
+        try:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            atomic_copy(output, cached)
+            if len(os.listdir(cached.parent)) > MAX_CACHED_BINARIES + 32:
+                prune(cached.parent, MAX_CACHED_BINARIES)
+        except OSError:
+            pass  # caching is only an optimization

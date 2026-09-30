@@ -43,7 +43,7 @@ def main() -> int:
         for prog in programs:
             binary = Path(tmp) / prog.stem
             start = time.perf_counter()
-            subprocess.run([str(SD), "build", str(prog), "-o", str(binary)], check=True)
+            subprocess.run([str(SD), "build", "--no-cache", str(prog), "-o", str(binary)], check=True)
             compile_time = time.perf_counter() - start
             py_time, py_out = best(["python3", str(prog)])
             sd_time, sd_out = best([str(binary)])
