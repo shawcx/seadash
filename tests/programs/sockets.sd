@@ -1,0 +1,67 @@
+import socket
+import threading
+
+def serve(server: socket.socket, clients: int):
+    for _ in range(clients):
+        conn, addr = server.accept()
+        with conn:
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    break
+                conn.sendall(data.upper())
+
+server = socket.create_server(("127.0.0.1", 0))
+host, port = server.getsockname()
+print(host, port > 0)
+t = threading.Thread(target=serve, args=(server, 2))
+t.start()
+
+with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+    c.sendall(b"hello, ")
+    print(c.recv(1024))
+    c.sendall(b"world")
+    print(c.recv(1024), c.getpeername()[1] == port)
+    c.shutdown(socket.SHUT_WR)
+    print(c.recv(1024))
+
+s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s2.connect(("127.0.0.1", port))
+s2.sendall(b"x" * 5000)
+received = b""
+while len(received) < 5000:
+    received += s2.recv(4096)
+print(len(received), received[:3])
+s2.close()
+t.join()
+server.close()
+
+udp_a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp_a.bind(("127.0.0.1", 0))
+udp_b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp_b.sendto(b"ping", udp_a.getsockname())
+data, sender = udp_a.recvfrom(100)
+print(data, sender[0])
+udp_a.settimeout(0.2)
+print(udp_a.gettimeout())
+try:
+    udp_a.recvfrom(100)
+except TimeoutError as e:
+    print("timeout:", e)
+try:
+    udp_a.recvfrom(100)
+except socket.timeout as e:
+    print("socket.timeout is TimeoutError:", isinstance(e, TimeoutError))
+udp_a.close()
+udp_b.close()
+
+closed = socket.create_server(("127.0.0.1", 0))
+dead_port = closed.getsockname()[1]
+closed.close()
+try:
+    socket.create_connection(("127.0.0.1", dead_port))
+except ConnectionRefusedError as e:
+    print("refused:", e)
+except OSError as e:
+    print("other:", e)
+print(len(socket.gethostname()) > 0, socket.gethostbyname("127.0.0.1"))

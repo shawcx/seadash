@@ -36,7 +36,7 @@ from . import ast as A
 from . import builtins
 from .checker import CallTarget, ModuleInfo
 from .types import (
-    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, STR, SyncType,
+    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, SyncType,
     DictType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric,
 )
@@ -237,6 +237,8 @@ class CodeGen:
                 return "sd::bytes"
             case _ if t == JSON_VALUE:
                 return "sd::json::Value"
+            case _ if t == SOCKET:
+                return "sd::socket::Socket"
             case _ if t == NONE:
                 return "void"
             case ListType(elem):
@@ -769,6 +771,8 @@ class CodeGen:
         exit_param = None
         if info.kind == "file":
             enter, exit_call = ctx, f"{ctx}->close()"
+        elif info.kind == "socket":
+            enter, exit_call = ctx, f"{ctx}.close()"
         else:
             st: StructType = item.context.ty
             arrow = "->" if st.kind == "class" else "."
@@ -781,7 +785,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind != "file":
+        elif info.kind not in ("file", "socket"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -1464,12 +1468,16 @@ class CodeGen:
             return f"{r}->{name}({', '.join(args)})"
         if recv_type == JSON_VALUE:
             return f"{r}.{name}({', '.join(args)})"
-        if isinstance(recv_type, SyncType):
+        if isinstance(recv_type, SyncType) or recv_type == SOCKET:
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):
                 node = e.args[i] if i < len(e.args) else self.keyword(e, pname)
-                codes.append(self.expr_as(node, handler.resolve(ptype, recv_type)) if node is not None else default[0])
+                want = handler.resolve(ptype, recv_type)
+                if node is None:
+                    codes.append(default[0])
+                else:
+                    codes.append(self.expr_as(node, want) if isinstance(want, Type) else self.expr(node))
             return f"{r}.{name}({', '.join(codes)})"
         match recv_type:
             case ListType():
@@ -1574,7 +1582,7 @@ def is_synchronized(st: StructType) -> bool:
 
 def by_value(t: Type) -> bool:
     """Passed by value: small scalars, and classes (a shared pointer)."""
-    return t in (INT, FLOAT, BOOL) or isinstance(t, (FuncType, SyncType)) or (isinstance(t, StructType) and t.kind == "class")
+    return t in (INT, FLOAT, BOOL, SOCKET) or isinstance(t, (FuncType, SyncType)) or (isinstance(t, StructType) and t.kind == "class")
 
 
 def attr_chain(e: A.Expr) -> list[str]:

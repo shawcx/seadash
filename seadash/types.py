@@ -32,6 +32,7 @@ BYTES = Prim("bytes")
 NONE = Prim("None")
 JSON_VALUE = Prim("json.Value")  # a dynamically typed JSON value (the json module)
 UNKNOWN = Prim("?")  # only while inferring literals: the element type of an empty []
+SOCKET = Prim("socket")  # socket.socket: a thread-safe handle
 
 PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "None": NONE}
 

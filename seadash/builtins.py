@@ -14,7 +14,7 @@ from . import ast as A
 from .errors import CheckError
 from .errors import Loc
 from .types import (
-    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, STR,
+    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE,
     DictType, Field, FileType, SyncType, FuncType, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
@@ -119,6 +119,7 @@ class Function:
     cpp: str | None = None  # C++ function to call with the arguments as given, if that's all it takes
     params: tuple | None = None  # for keyword support: ((name, type[, C++ default]), ...)
     mutates_first_arg: bool = False  # random.shuffle(xs) changes xs in place
+    as_type: Type | None = None  # also a type in annotations: socket.socket
 
 
 @dataclass
@@ -529,11 +530,26 @@ STR_METHODS = {
     "encode": returns(BYTES, 0, 1, (STR,)),
 }
 
+def bytes_join(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    elem = ctx.iterable(0)
+    if elem != BYTES:
+        raise ctx.error(f"bytes.join() needs bytes items, not {elem}", ctx.args[0])
+    return BYTES
+
+
 BYTES_METHODS = {
     "decode": returns(STR, 0, 1, (STR,)),
     "hex": returns(STR),
     **{name: returns(BOOL, args=(BYTES,)) for name in ("startswith", "endswith")},
     **{name: returns(INT, args=(BYTES,)) for name in ("find", "count")},
+    **{name: returns(BYTES) for name in ("upper", "lower", "title", "capitalize")},
+    **{name: returns(BYTES, 0, 1, (BYTES,)) for name in ("strip", "lstrip", "rstrip")},
+    **{name: returns(BOOL) for name in ("isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower")},
+    "split": returns(ListType(BYTES), 0, 1, (BYTES,)),
+    "splitlines": returns(ListType(BYTES)),
+    "replace": returns(BYTES, args=(BYTES, BYTES)),
+    "join": bytes_join,
 }
 
 LIST_METHODS = {
@@ -620,6 +636,8 @@ JSON_VALUE_METHODS = {
 def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
     if isinstance(t, SyncType):
         return SYNC_METHODS[t.kind].get(name)
+    if t == SOCKET:
+        return SOCKET_METHODS.get(name)
     match t:
         case _ if t == JSON_VALUE:
             return JSON_VALUE_METHODS.get(name)
@@ -737,6 +755,12 @@ EXCEPTION_TREE = [
     ("PermissionError", "OSError"),
     ("IsADirectoryError", "OSError"),
     ("NotADirectoryError", "OSError"),
+    ("TimeoutError", "OSError"),
+    ("ConnectionError", "OSError"),
+    ("BrokenPipeError", "ConnectionError"),
+    ("ConnectionAbortedError", "ConnectionError"),
+    ("ConnectionRefusedError", "ConnectionError"),
+    ("ConnectionResetError", "ConnectionError"),
     ("UnicodeError", "ValueError"),
     ("UnicodeDecodeError", "UnicodeError"),
 ]
@@ -1102,6 +1126,9 @@ def sync_method(result, *params):
         if len(ctx.args) > len(params):
             raise ctx.error(f"{ctx.what} takes at most {plural_args(len(params))} ({len(ctx.args)} given)")
         for kw in ctx.call.keywords:
+            if kw.name in names and names.index(kw.name) < len(ctx.args):
+                raise ctx.error(f"{ctx.what} got multiple values for argument '{kw.name}'", kw)
+        for kw in ctx.call.keywords:
             if kw.name not in names:
                 raise ctx.error(f"{ctx.what} got an unexpected keyword argument '{kw.name}'", kw)
         for i, p in enumerate(params):
@@ -1111,6 +1138,11 @@ def sync_method(result, *params):
                     raise ctx.error(f"{ctx.what} is missing argument '{p[0]}'")
                 continue
             want = resolve(p[1], ctx.receiver)
+            if want is BYTES_OR_STR:
+                actual = ctx.checker.check_expr(node)
+                if not bytes_like(actual):
+                    raise ctx.error(f"{ctx.what} argument '{p[0]}' must be bytes (or str), not {actual}", node)
+                continue
             actual = ctx.checker.check_expr(node, want)
             if not assignable(actual, want):
                 raise ctx.error(f"{ctx.what} argument '{p[0]}' must be {want}, not {actual}", node)
@@ -1189,3 +1221,53 @@ MODULES["queue"] = Module("queue", {
     "Empty": exception_class("Empty", "sd::queue::Empty"),
     "Full": exception_class("Full", "sd::queue::Full"),
 }, "modules/queue.hpp")
+
+
+# ---- socket -------------------------------------------------------------------------
+
+BYTES_OR_STR = object()  # a parameter taking bytes, or str (sent as UTF-8)
+ADDRESS = TupleType((STR, INT))
+
+SOCKET_METHODS = {
+    "connect": sync_method(NONE, ("address", ADDRESS)),
+    "bind": sync_method(NONE, ("address", ADDRESS)),
+    "listen": sync_method(NONE, ("backlog", INT, "128_i")),
+    "accept": sync_method(TupleType((SOCKET, ADDRESS))),
+    "send": sync_method(INT, ("data", BYTES_OR_STR)),
+    "sendall": sync_method(NONE, ("data", BYTES_OR_STR)),
+    "recv": sync_method(BYTES, ("bufsize", INT)),
+    "sendto": sync_method(INT, ("data", BYTES_OR_STR), ("address", ADDRESS)),
+    "recvfrom": sync_method(TupleType((BYTES, ADDRESS)), ("bufsize", INT)),
+    "settimeout": sync_method(NONE, ("value", OPT_FLOAT)),
+    "gettimeout": sync_method(OPT_FLOAT),
+    "setsockopt": sync_method(NONE, ("level", INT), ("optname", INT), ("value", INT)),
+    "getsockname": sync_method(ADDRESS),
+    "getpeername": sync_method(ADDRESS),
+    "shutdown": sync_method(NONE, ("how", INT)),
+    "close": sync_method(NONE),
+    "fileno": sync_method(INT),
+}
+
+SOCKET_CONSTANTS = [
+    "AF_INET", "AF_INET6", "AF_UNSPEC", "SOCK_STREAM", "SOCK_DGRAM", "SOL_SOCKET", "SO_REUSEADDR",
+    "SO_REUSEPORT", "SO_KEEPALIVE", "SO_BROADCAST", "IPPROTO_TCP", "IPPROTO_UDP", "TCP_NODELAY",
+    "SHUT_RD", "SHUT_WR", "SHUT_RDWR",
+]
+
+MODULES["socket"] = module_with_params(runtime_module(
+    "socket", "modules/socket.hpp",
+    socket=(signature(SOCKET, ("family", INT, "static_cast<std::int64_t>(AF_INET)"),
+                      ("type", INT, "static_cast<std::int64_t>(SOCK_STREAM)")), "sd::socket::Socket"),
+    create_connection=(signature(SOCKET, ("address", ADDRESS), ("timeout", OPT_FLOAT, "std::nullopt")),
+                       "sd::socket::create_connection"),
+    create_server=(signature(SOCKET, ("address", ADDRESS), ("family", INT, "static_cast<std::int64_t>(AF_INET)"),
+                             ("backlog", OptionalType(INT), "std::nullopt"), ("reuse_port", BOOL, "false")),
+                   "sd::socket::create_server"),
+    gethostname=(signature(STR), "sd::socket::gethostname"),
+    gethostbyname=(signature(STR, ("hostname", STR)), "sd::socket::gethostbyname"),
+    gaierror=exception_class("gaierror", "sd::socket::gaierror", "OSError"),
+    **{c: (INT, f"static_cast<std::int64_t>({c})") for c in SOCKET_CONSTANTS},
+))
+MODULES["socket"].members["socket"].as_type = SOCKET
+MODULES["socket"].members["timeout"] = EXCEPTIONS["TimeoutError"]  # socket.timeout is TimeoutError
+MODULES["socket"].members["error"] = EXCEPTIONS["OSError"]  # socket.error is OSError

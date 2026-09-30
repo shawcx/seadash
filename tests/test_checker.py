@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, json, math, os, queue, random, sys, threading, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, json, math, os, queue, random, socket, sys, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -1178,3 +1178,37 @@ def test_random_types(expr, ty):
 ])
 def test_random_errors(src, msg):
     assert err(f"import random\n{src}\n").message == msg
+
+
+# ---- socket ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("expr,ty", [
+    ("socket.socket()", "socket"),
+    ("socket.socket().accept()", "tuple[socket, tuple[str, int]]"),
+    ("socket.socket().recv(10)", "bytes"),
+    ("socket.socket().send('text')", "int"),
+    ("socket.create_connection(('h', 1), timeout=2).getsockname()", "tuple[str, int]"),
+])
+def test_socket_types(expr, ty):
+    [v] = ok(f"import socket\nx = {expr}\n").globals
+    assert str(v.type) == ty
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("socket.socket().send(5)", "socket.send() argument 'data' must be bytes (or str), not int"),
+    ("socket.socket().connect('host')", "socket.connect() argument 'address' must be tuple[str, int], not str"),
+    ("socket.socket().recv(10, bufsize=5)", "socket.recv() got multiple values for argument 'bufsize'"),
+])
+def test_socket_errors(src, msg):
+    assert err(f"import socket\n{src}\n").message == msg
+
+
+def test_socket_annotations():
+    ok("""
+        import socket
+        from socket import socket as Sock
+        def handle(conn: socket.socket, other: Sock) -> bytes:
+            with conn:
+                return conn.recv(10)
+    """)

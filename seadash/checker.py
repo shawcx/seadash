@@ -35,7 +35,7 @@ from . import ast as A
 from . import builtins, threads
 from .errors import CheckError, Loc
 from .types import (
-    BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PRIMITIVES, STR, TEXT_FILE,
+    BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PRIMITIVES, SOCKET, STR, TEXT_FILE,
     SYNC_ARITY, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
@@ -878,8 +878,11 @@ class Checker:
             name = TYPING_ALIASES[name]
         if name in self.imported and not args:  # `from json import Value`
             mod, member = self.imported[name]
-            if isinstance(mod.members.get(member), builtins.NamedType):
-                return mod.members[member].type
+            m = mod.members.get(member)
+            if isinstance(m, builtins.NamedType):
+                return m.type
+            if isinstance(m, builtins.Function) and m.as_type is not None:  # `from socket import socket`
+                return m.as_type
         if name in PRIMITIVES or self.lookup_struct(name):
             if args:
                 raise self.error(f"'{name}' doesn't take type arguments", node)
@@ -908,6 +911,9 @@ class Checker:
                 return mod.members[member]
             if mod is not None and isinstance(mod.members.get(member), builtins.NamedType):
                 return mod.members[member].type
+            m = mod.members.get(member) if mod is not None else None
+            if isinstance(m, builtins.Function) and m.as_type is not None:  # socket.socket
+                return m.as_type
             raise self.error(f"unknown type '{name}'", node)
         raise self.error(f"unknown type '{name}'", node)
 
@@ -1268,6 +1274,8 @@ class Checker:
             return WithInfo("file", t, None, False)
         if isinstance(t, SyncType) and t.kind in ("Lock", "RLock"):
             return WithInfo("lock", BOOL, None, False)
+        if t == SOCKET:
+            return WithInfo("socket", t, None, False)
         if isinstance(t, SyncType) and t.kind == "Mutex":
             return WithInfo("mutex", t.args[0], None, False)
         if isinstance(t, StructType):

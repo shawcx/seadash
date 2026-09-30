@@ -89,6 +89,12 @@ SD_EXCEPTION(FileExistsError, OSError)
 SD_EXCEPTION(PermissionError, OSError)
 SD_EXCEPTION(IsADirectoryError, OSError)
 SD_EXCEPTION(NotADirectoryError, OSError)
+SD_EXCEPTION(TimeoutError, OSError)
+SD_EXCEPTION(ConnectionError, OSError)
+SD_EXCEPTION(BrokenPipeError, ConnectionError)
+SD_EXCEPTION(ConnectionAbortedError, ConnectionError)
+SD_EXCEPTION(ConnectionRefusedError, ConnectionError)
+SD_EXCEPTION(ConnectionResetError, ConnectionError)
 SD_EXCEPTION(UnicodeError, ValueError)
 SD_EXCEPTION(UnicodeDecodeError, UnicodeError)
 #undef SD_EXCEPTION
@@ -121,6 +127,8 @@ template <class E>
     if (kind == "AssertionError") raise<AssertionError>(msg);
     if (kind == "EOFError") raise<EOFError>(msg);
     if (kind == "LookupError") raise<LookupError>(msg);
+    if (kind == "OverflowError") raise<OverflowError>(msg);
+    if (kind == "OSError") raise<OSError>(msg);
     if (kind == "UnicodeDecodeError") raise<UnicodeDecodeError>(msg);
     if (kind == "UnicodeError") raise<UnicodeError>(msg);
     raise<RuntimeError>(msg);
@@ -1403,6 +1411,44 @@ inline bool bytes_endswith(const bytes& b, const bytes& p) { return b.data.ends_
 inline std::int64_t bytes_find(const bytes& b, const bytes& sub) { return str_find(b.data, sub.data); }
 inline std::int64_t bytes_count(const bytes& b, const bytes& sub) { return str_count(b.data, sub.data); }
 
+// The str methods that make sense for bytes, applied to the underlying bytes.
+inline bytes bytes_upper(const bytes& b) { return bytes(str_upper(b.data)); }
+inline bytes bytes_lower(const bytes& b) { return bytes(str_lower(b.data)); }
+inline bytes bytes_title(const bytes& b) { return bytes(str_title(b.data)); }
+inline bytes bytes_capitalize(const bytes& b) { return bytes(str_capitalize(b.data)); }
+inline bytes bytes_strip(const bytes& b) { return bytes(str_strip(b.data)); }
+inline bytes bytes_strip(const bytes& b, const bytes& chars) { return bytes(str_strip(b.data, chars.data)); }
+inline bytes bytes_lstrip(const bytes& b) { return bytes(str_lstrip(b.data)); }
+inline bytes bytes_lstrip(const bytes& b, const bytes& chars) { return bytes(str_lstrip(b.data, chars.data)); }
+inline bytes bytes_rstrip(const bytes& b) { return bytes(str_rstrip(b.data)); }
+inline bytes bytes_rstrip(const bytes& b, const bytes& chars) { return bytes(str_rstrip(b.data, chars.data)); }
+inline bool bytes_isdigit(const bytes& b) { return str_isdigit(b.data); }
+inline bool bytes_isalpha(const bytes& b) { return str_isalpha(b.data); }
+inline bool bytes_isalnum(const bytes& b) { return str_isalnum(b.data); }
+inline bool bytes_isspace(const bytes& b) { return str_isspace(b.data); }
+inline bool bytes_isupper(const bytes& b) { return str_isupper(b.data); }
+inline bool bytes_islower(const bytes& b) { return str_islower(b.data); }
+inline std::vector<bytes> as_bytes_list(const std::vector<std::string>& parts) {
+    std::vector<bytes> out;
+    for (const auto& p : parts) out.emplace_back(p);
+    return out;
+}
+inline std::vector<bytes> bytes_split(const bytes& b) { return as_bytes_list(str_split(b.data)); }
+inline std::vector<bytes> bytes_split(const bytes& b, const bytes& sep) { return as_bytes_list(str_split(b.data, sep.data)); }
+inline std::vector<bytes> bytes_splitlines(const bytes& b) { return as_bytes_list(str_splitlines(b.data)); }
+inline bytes bytes_replace(const bytes& b, const bytes& from, const bytes& to) { return bytes(str_replace(b.data, from.data, to.data)); }
+template <class It>
+bytes bytes_join(const bytes& sep, It&& parts) {
+    std::string out;
+    bool first = true;
+    for (auto&& part : iter(std::forward<It>(parts))) {
+        if (!first) out += sep.data;
+        first = false;
+        out += part.data;
+    }
+    return bytes(out);
+}
+
 inline bytes to_bytes() { return bytes(); }
 inline bytes to_bytes(std::int64_t n) {
     if (n < 0) raise("ValueError", "negative count");
@@ -1428,9 +1474,15 @@ inline const std::string& raw(const std::string& s) { return s; }
 // ============================================================================
 
 // OSError subclasses with Python's message: [Errno 2] No such file or directory: 'x.txt'
-[[noreturn]] inline void raise_os(int err, const std::string& path) {
-    std::string msg = "[Errno " + std::to_string(err) + "] " + std::strerror(err) + ": " + repr_str(path);
+// (no path for sockets: [Errno 111] Connection refused)
+[[noreturn]] inline void raise_os(int err, const std::optional<std::string>& path) {
+    std::string msg = "[Errno " + std::to_string(err) + "] " + std::strerror(err) + (path ? ": " + repr_str(*path) : "");
     switch (err) {
+        case ECONNREFUSED: raise<ConnectionRefusedError>(msg);
+        case ECONNRESET: raise<ConnectionResetError>(msg);
+        case ECONNABORTED: raise<ConnectionAbortedError>(msg);
+        case EPIPE: raise<BrokenPipeError>(msg);
+        case ETIMEDOUT: raise<TimeoutError>(msg);
         case ENOENT: raise<FileNotFoundError>(msg);
         case EEXIST: raise<FileExistsError>(msg);
         case EACCES:

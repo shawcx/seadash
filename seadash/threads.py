@@ -27,7 +27,7 @@ import dataclasses
 from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
-    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, STR,
+    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     DictType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
@@ -53,6 +53,8 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
             return None
         case SyncType():
             return None
+        case _ if t == SOCKET:
+            return None
         case ListType(x) | SetType(x) | OptionalType(x):
             return unsendable(x, seen)
         case DictType(k, v):
@@ -74,7 +76,7 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
 
 def shareable(t: Type) -> bool:
     """Safe to access from several threads at once without copying."""
-    return isinstance(t, SyncType) or t == JSON_VALUE or (isinstance(t, StructType) and is_synchronized(t))
+    return isinstance(t, SyncType) or t in (JSON_VALUE, SOCKET) or (isinstance(t, StructType) and is_synchronized(t))
 
 
 def children(node):
