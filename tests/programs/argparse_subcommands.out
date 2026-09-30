@@ -1,0 +1,29 @@
+usage: todo [-h] [--db DB] {add,remove,rm,list} ...
+
+A to-do list.
+
+positional arguments:
+  {add,remove,rm,list}  what to do
+    add                 add an item
+    remove (rm)         remove an item
+
+options:
+  -h, --help            show this help message and exit
+  --db DB
+---
+usage: todo add [-h] [--priority PRIORITY] text
+
+positional arguments:
+  text
+
+options:
+  -h, --help           show this help message and exit
+  --priority PRIORITY
+Namespace(db='todo.json', command='add', text='milk', priority=3)
+adding MILK at priority 3 to todo.json
+Namespace(db='x.json', command='rm', index=2, force=True)
+removing 2 forced
+Namespace(db='todo.json', command='list')
+listing list
+Namespace(cmd=None) usage: q [-h] {go} ...
+Namespace(cmd='go', fast=True)

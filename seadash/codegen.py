@@ -37,7 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    PARSER,
+    PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, MatchType, NamespaceType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
@@ -250,7 +250,7 @@ class CodeGen:
                 return "sd::tempfile::TemporaryDirectory"
             case _ if t in DATETIME_TYPES:
                 return f"sd::datetime::{t.name}"
-            case _ if t == PARSER:
+            case ParserType() | SubParsersType():
                 return "sd::argparse::ArgumentParser"
             case NamespaceType():
                 return "sd::argparse::Namespace"
@@ -1934,15 +1934,28 @@ class CodeGen:
             return f"{r}.joinpath({', '.join(args)})"
         if recv_type == PATH and name == "open":
             return self.open_call(f"{r}.str()", e.args[0] if e.args else self.keyword(e, "mode"), e)
-        if recv_type == PARSER and name == "add_argument":
+        if isinstance(recv_type, ParserType) and name == "add_argument":
             return f"{r}.add_argument({self.argument_spec(e)})"
-        if recv_type == PARSER and name == "parse_args":
+        if isinstance(recv_type, ParserType) and name == "add_subparsers":
+            sub = e.argparse_sub
+            lines = [f"s.dest = {cpp_string(sub['dest'])};", f"s.required = {'true' if sub['required'] else 'false'};"]
+            for field in ("help", "metavar"):
+                if field in sub["kw"]:
+                    lines.append(f"s.{field} = {self.expr(sub['kw'][field])};")
+            return f"{r}.add_subparsers([&] {{ sd::argparse::Spec s; {' '.join(lines)} return s; }}())"
+        if isinstance(recv_type, SubParsersType):  # add_parser(name, help=, aliases=, description=)
+            cmd = e.argparse_cmd
+            opt = lambda k: self.expr_as(cmd["kw"][k], OptionalType(STR)) if k in cmd["kw"] else "std::nullopt"
+            aliases = ", ".join(cpp_string(a) for a in cmd["aliases"])
+            return (f"{r}.add_parser({cpp_string(cmd['name'])}, {opt('help')}, sd::list<std::string>{{{aliases}}}, "
+                    f"{opt('description')})")
+        if isinstance(recv_type, ParserType) and name == "parse_args":
             node = e.regex_args["args"]
             given = node is not None and not isinstance(node, A.NoneLit)
             return f"{r}.parse_args({self.expr_as(node, OptionalType(ListType(STR))) if given else 'std::nullopt'})"
         if recv_type == DATETIME and name in ("date", "time"):
             return f"{r}.to_{name}()"  # (a C++ member can't share its class's name)
-        if isinstance(recv_type, SyncType) or recv_type in (SOCKET, PATH, TEMPDIR, PARSER, *DATETIME_TYPES):
+        if isinstance(recv_type, (SyncType, ParserType)) or recv_type in (SOCKET, PATH, TEMPDIR, *DATETIME_TYPES):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):

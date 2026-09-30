@@ -35,7 +35,7 @@ UNKNOWN = Prim("?")  # only while inferring literals: the element type of an emp
 SOCKET = Prim("socket")  # socket.socket: a thread-safe handle
 PATH = Prim("Path")  # pathlib.Path: an immutable path value
 TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
-PARSER = Prim("ArgumentParser")  # argparse.ArgumentParser
+
 DATE = Prim("date")  # the datetime module's value types
 TIME = Prim("time")
 DATETIME = Prim("datetime")
@@ -158,10 +158,37 @@ class VarTupleType(Type):
 
 
 @dataclass(frozen=True)
+class ParserType(Type):
+    """argparse.ArgumentParser. Each parser created in the code has its own key, which
+    the checker files its add_argument() calls under (None: a parser from elsewhere)."""
+
+    key: int | None = None
+
+    def __str__(self) -> str:
+        return "argparse.ArgumentParser"
+
+
+@dataclass(frozen=True)
+class SubParsersType(Type):
+    """What add_subparsers() returns: add_parser() makes the subcommands."""
+
+    parent: int
+
+    def __str__(self) -> str:
+        return "argparse._SubParsersAction"
+
+
+PARSER = ParserType()
+
+
+@dataclass(frozen=True)
 class NamespaceType(Type):
     """argparse.Namespace from parse_args(): one typed attribute per argument added."""
 
     fields: tuple[tuple[str, Type], ...] = ()
+    # Subcommands: (dest, (name and aliases), their arguments' types), for narrowing by
+    # `if args.command == "add":` (outside such a check they're optional).
+    commands: tuple[tuple[str, tuple[str, ...], tuple[tuple[str, Type], ...]], ...] = ()
 
     def __str__(self) -> str:
         return "argparse.Namespace"

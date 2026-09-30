@@ -170,15 +170,26 @@ inline list<std::string> wrap(const std::string& text, std::size_t width) {
 }
 
 class ArgumentParser {
+    struct Command {  // a subcommand from add_subparsers().add_parser(...)
+        list<std::string> names;  // its name, then any aliases
+        std::optional<std::string> help;
+        std::shared_ptr<void> parser;  // an ArgumentParser's state (the class isn't complete here)
+    };
     struct State {
         std::string prog;
         std::optional<std::string> usage, description, epilog;
         std::vector<Spec> actions;
+        std::vector<Command> commands;
     };
     std::shared_ptr<State> s_;
 
     std::string metavar(const Spec& a) const {
         if (a.metavar) return *a.metavar;
+        if (a.action == "parsers") {
+            list<std::string> names;
+            for (const auto& c : s_->commands) names.insert(names.end(), c.names.begin(), c.names.end());
+            return "{" + join(names, ",") + "}";
+        }
         if (!a.choices.empty()) {
             std::string out = "{";
             for (std::size_t i = 0; i < a.choices.size(); ++i) out += (i ? "," : "") + a.choices[i].sd_str();
@@ -192,6 +203,7 @@ class ArgumentParser {
     bool takes_values(const Spec& a) const { return a.action == "store" || a.action == "append"; }
     std::string args_text(const Spec& a) const {
         std::string m = metavar(a);
+        if (a.action == "parsers") return m + " ...";
         switch (a.nargs) {
             case ONE: return m;
             case OPTIONAL: return "[" + m + "]";
@@ -342,6 +354,14 @@ public:
         }
         return out;
     }
+    static std::string command_invocation(const Command& c) {  // "remove (rm)"
+        std::string out = c.names[0];
+        if (c.names.size() > 1) {
+            list<std::string> aliases(c.names.begin() + 1, c.names.end());
+            out += " (" + join(aliases, ", ") + ")";
+        }
+        return out;
+    }
     std::string invocation(const Spec& a) const {
         if (a.positional()) return metavar(a);
         if (!takes_values(a)) return join(a.flags, ", ");
@@ -359,8 +379,26 @@ public:
         std::size_t max_help_position = std::min<std::size_t>(24, std::max<std::size_t>(text_width - 20, 4));
         std::size_t longest = 0;
         for (const auto& a : s_->actions) longest = std::max(longest, invocation(a).size() + 2);
+        for (const auto& c : s_->commands)
+            if (c.help) longest = std::max(longest, command_invocation(c).size() + 4);
         std::size_t help_position = std::min(longest + 2, max_help_position);
         std::size_t help_width = std::max<std::size_t>(text_width - help_position, 11);
+        auto entry = [&](const std::string& head, const std::optional<std::string>& help, std::size_t indent) {
+            std::string pad(indent, ' ');
+            std::size_t action_width = help_position - indent - 2;
+            if (!help) {
+                out += pad + head + "\n";
+                return;
+            }
+            auto lines = wrap(*help, help_width);
+            if (head.size() <= action_width) {
+                out += pad + head + std::string(action_width - head.size() + 2, ' ') + (lines.empty() ? "" : lines[0]) + "\n";
+                for (std::size_t i = 1; i < lines.size(); ++i) out += std::string(help_position, ' ') + lines[i] + "\n";
+            } else {
+                out += pad + head + "\n";
+                for (auto& line : lines) out += std::string(help_position, ' ') + line + "\n";
+            }
+        };
         auto section = [&](const char* title, bool positional) {
             bool any = false;
             for (const auto& a : s_->actions) any = any || a.positional() == positional;
@@ -368,19 +406,10 @@ public:
             out += std::string("\n") + title + ":\n";
             for (const auto& a : s_->actions) {
                 if (a.positional() != positional) continue;
-                std::string head = invocation(a);
-                std::size_t action_width = help_position - 4;
-                if (!a.help) {
-                    out += "  " + head + "\n";
-                    continue;
-                }
-                auto lines = wrap(expand_help(a), help_width);
-                if (head.size() <= action_width) {
-                    out += "  " + head + std::string(action_width - head.size() + 2, ' ') + (lines.empty() ? "" : lines[0]) + "\n";
-                    for (std::size_t i = 1; i < lines.size(); ++i) out += std::string(help_position, ' ') + lines[i] + "\n";
-                } else {
-                    out += "  " + head + "\n";
-                    for (auto& line : lines) out += std::string(help_position, ' ') + line + "\n";
+                entry(invocation(a), a.help ? std::optional(expand_help(a)) : std::nullopt, 2);
+                if (a.action == "parsers") {
+                    for (const auto& c : s_->commands)
+                        if (c.help) entry(command_invocation(c), c.help, 4);
                 }
             }
         };
@@ -414,6 +443,7 @@ public:
 
 private:
     std::string name_of(const Spec& a) const {
+        if (a.positional() && a.dest.empty()) return metavar(a);
         if (a.positional()) return a.metavar ? *a.metavar : a.dest;
         return join(a.flags, "/");
     }
@@ -516,6 +546,7 @@ private:
         }
     }
     static std::pair<std::int64_t, std::int64_t> arity(const Spec& a) {  // (min, max) strings; max -1: any
+        if (a.action == "parsers") return {1, 1};
         if (a.action != "store" && a.action != "append") return {0, 0};
         switch (a.nargs) {
             case ONE: return {1, 1};
@@ -535,8 +566,17 @@ public:
             for (std::size_t i = 1; i < argv().size(); ++i) input.push_back(argv()[i]);
         }
         Namespace ns;
+        list<std::string> extras;
+        parse_known(input, ns, extras);
+        if (!extras.empty()) error("unrecognized arguments: " + join(extras, " "));
+        return ns;
+    }
+
+    // Parse `input` into `ns`; strings nothing wanted go to `extras` (a subcommand's
+    // leftovers are reported by the top parser, like Python).
+    void parse_known(const list<std::string>& input, Namespace& ns, list<std::string>& extras) const {
         for (const auto& a : s_->actions) {  // every dest exists, in order, starting from its default
-            if (a.action == "help" || a.action == "version") continue;
+            if (a.action == "help" || a.action == "version" || a.dest.empty()) continue;
             Value& slot = ns.slot(a.dest);
             if (a.action == "store_true") {
                 slot = a.default_.is_none() ? Value(false) : a.default_;
@@ -565,7 +605,6 @@ public:
             if (a.positional()) positionals.push_back(&a);
         std::size_t next_positional = 0;
         std::vector<const Spec*> seen;
-        list<std::string> extras;
 
         // Give the run of arguments starting at `start` to as many positionals as can take
         // them (each greedily, leaving the minimum the following ones need), like Python.
@@ -589,8 +628,14 @@ public:
                 std::int64_t take = hi < 0 ? available : std::min(hi, available);
                 take = std::max(take, lo);
                 list<std::string> texts(strings.begin() + pos, strings.begin() + pos + take);
-                apply(a, texts, ns);
                 seen.push_back(&a);
+                if (a.action == "parsers") {  // the subcommand takes its name and everything after it
+                    list<std::string> rest(strings.begin() + pos + 1, strings.end());
+                    run_command(a, strings[pos], rest, ns, extras);
+                    next_positional = positionals.size();
+                    return strings.size();
+                }
+                apply(a, texts, ns);
                 pos += take;
             }
             next_positional += count;
@@ -687,12 +732,44 @@ public:
         list<std::string> missing;
         for (const auto& a : s_->actions) {
             bool given = std::find(seen.begin(), seen.end(), &a) != seen.end();
-            if (!given && (a.required || (a.positional() && arity(a).first > 0))) missing.push_back(name_of(a));
+            bool needed = a.action == "parsers" ? a.required : a.required || (a.positional() && arity(a).first > 0);
+            if (!given && needed) missing.push_back(name_of(a));
         }
         if (!missing.empty()) error("the following arguments are required: " + join(missing, ", "));
-        if (!extras.empty()) error("unrecognized arguments: " + join(extras, " "));
-        return ns;
     }
+
+    // add_subparsers(): subcommands are one more positional argument.
+    ArgumentParser add_subparsers(Spec spec) {  // (returns this parser: add_parser() goes on it)
+        spec.action = "parsers";
+        s_->actions.push_back(std::move(spec));
+        return *this;
+    }
+    ArgumentParser add_parser(const std::string& name, std::optional<std::string> help, list<std::string> aliases,
+                              std::optional<std::string> description) {
+        ArgumentParser child(s_->prog + " " + name, std::nullopt, std::move(description));
+        list<std::string> names{name};
+        names.insert(names.end(), aliases.begin(), aliases.end());
+        s_->commands.push_back(Command{names, std::move(help), child.s_});
+        return child;
+    }
+
+private:
+    explicit ArgumentParser(std::shared_ptr<State> s) : s_(std::move(s)) {}
+    void run_command(const Spec& a, const std::string& name, const list<std::string>& rest, Namespace& ns,
+                     list<std::string>& extras) const {
+        for (const auto& c : s_->commands) {
+            if (std::find(c.names.begin(), c.names.end(), name) == c.names.end()) continue;
+            ns.slot(a.dest) = Value(name);
+            ArgumentParser(std::static_pointer_cast<State>(c.parser)).parse_known(rest, ns, extras);
+            return;
+        }
+        list<std::string> names;
+        for (const auto& c : s_->commands)
+            for (const auto& n : c.names) names.push_back(repr_str(n));
+        error("argument " + name_of(a) + ": invalid choice: " + repr_str(name) + " (choose from " + join(names, ", ") + ")");
+    }
+
+public:
     std::string sd_repr() const {
         return "ArgumentParser(prog=" + repr_str(s_->prog) + ", usage=None, description=" +
                (s_->description ? repr_str(*s_->description) : "None") +

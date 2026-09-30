@@ -1516,3 +1516,21 @@ def test_var_tuples():
             "both: list[tuple[int, ...]]"} <= set(variables(info))
     assert err("x: tuple[..., int] = ()\n").message == "'...' only goes in tuple[T, ...] (a tuple of any length)"
     assert err("t: tuple[int, ...] = ('a',)\n").message == "'t' is declared as tuple[int, ...], but the value is tuple[str]"
+
+
+SUBCOMMANDS = (
+    "import argparse\np = argparse.ArgumentParser()\ns = p.add_subparsers(dest='command', required=True)\n"
+    "a = s.add_parser('add')\na.add_argument('text')\nr = s.add_parser('rm')\nr.add_argument('n', type=int)\n"
+    "args = p.parse_args()\n"
+)
+
+
+def test_argparse_subcommand_narrowing():
+    info = ok(SUBCOMMANDS + "cmd = args.command\nif args.command == 'add':\n    t = args.text\nmaybe = args.text\n")
+    assert {"cmd: str", "t: str", "maybe: str?"} <= set(variables(info))
+    assert err(SUBCOMMANDS + "x = args.text.upper()\n").message == (
+        "str? might be None; check it first, e.g. `if args.text is not None:`"
+    )
+    assert err(SUBCOMMANDS + "if args.command == 'rm':\n    x = args.text.upper()\n").message.startswith(
+        "str? might be None"
+    )

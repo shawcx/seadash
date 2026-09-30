@@ -223,7 +223,8 @@ class Checker:
         self.pending: list = []  # generic instance bodies waiting to be checked
         self.spawns: list = []  # threading.Thread(...) calls, verified once the program is checked
         self.decorated: dict[str, str] = {}  # decorated function name -> hidden name of the original
-        self.argument_parsers: dict[int, list] = {}  # id(parser variable) -> [(dest, type)] from add_argument
+        self.argument_parsers: dict[int, list] = {}  # parser key -> [(dest, type)] from add_argument()
+        self.subcommands: dict[int, dict] = {}  # parser key -> its add_subparsers() and add_parser()s
         self.module_checked = False
         self.out_structs: list[StructType] = []
         self.out_functions: list[FuncInfo] = []
@@ -1501,6 +1502,18 @@ class Checker:
             case A.Call(A.Name("isinstance")) if self.is_builtin_name(e.func, "isinstance"):
                 self.check_expr(e)
                 return self.isinstance_narrowing(e), self.state.copy()
+            case A.Compare(A.Attribute(obj, attr) as subject, ["==" | "!=" as op], [A.StrLit(value)]) if (
+                isinstance(self.check_expr(obj), NamespaceType) and any(d == attr for d, _, _ in obj.ty.commands)
+                and attr_path(subject) is not None
+            ):  # if args.command == "add": that subcommand's arguments have their own types
+                self.check_expr(e)
+                chosen = self.state.copy()
+                base = attr_path(subject)
+                for dest, names, fields in obj.ty.commands:
+                    if dest == attr and value in names:
+                        for name, t in fields:
+                            chosen.attrs[base[:-1] + (name,)] = t
+                return (chosen, self.state.copy()) if op == "==" else (self.state.copy(), chosen)
             case A.Compare(subject, [op], [A.NoneLit()]) if op in ("is", "is not", "==", "!="):
                 self.check_expr(e)
                 narrowed = self.narrowed(subject)
@@ -2100,6 +2113,8 @@ class Checker:
             except builtins.AttributeUnavailable as problem:
                 raise self.error(f"{vt}.{attr}: {problem}", e) from None
             e.sym = ("builtin_attr", attr)
+            if (path := attr_path(e)) in self.state.attrs:
+                return self.state.attrs[path]  # narrowed: `if args.command == "add":`
             return t
         if isinstance(vt, OptionalType):
             raise self.error(

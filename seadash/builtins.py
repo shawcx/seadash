@@ -17,7 +17,7 @@ from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
-    DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, VarTupleType,
+    DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -790,8 +790,10 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = {"count": returns(INT, args=(elem_of,)), "index": returns(INT, args=(elem_of,))}
         case _ if t in DATETIME_METHODS:
             return DATETIME_METHODS[t].get(name)
-        case _ if t == PARSER:
+        case ParserType():
             return PARSER_METHODS.get(name)
+        case SubParsersType():
+            return {"add_parser": subparsers_add_parser}.get(name)
         case _ if t == PATH:
             return PATH_METHODS.get(name)
         case _ if t == TEMPDIR:
@@ -1866,12 +1868,64 @@ ACTIONS = ("store", "store_true", "store_false", "store_const", "count", "append
 ARG_KEYWORDS = ("action", "nargs", "const", "default", "type", "choices", "required", "help", "metavar", "dest", "version")
 
 
-def parser_var(ctx: CallContext) -> object:
-    recv = ctx.call.func.value
-    sym = getattr(recv, "sym", None)
-    if not isinstance(recv, A.Name) or sym is None or not hasattr(sym, "cpp_name"):
-        raise ctx.error(f"{ctx.what} must be called on the variable holding the parser, so its arguments are known")
-    return sym
+def parser_key(ctx: CallContext) -> int:
+    key = ctx.receiver.key
+    if key is None:
+        raise ctx.error(f"{ctx.what} needs a parser created in this module (so its arguments are known)")
+    return key
+
+
+def new_parser(ctx: CallContext) -> Type:
+    """ArgumentParser(...): a parser of its own, for add_argument() to describe."""
+    ARGUMENT_PARSER_SIGNATURE(ctx)
+    return ParserType(id(ctx.call))
+
+
+def parser_add_subparsers(ctx: CallContext) -> Type:
+    key = parser_key(ctx)
+    ctx.arity(0, keywords=("dest", "required", "title", "description", "help", "metavar"))
+    kw = {k.name: k.value for k in ctx.call.keywords}
+    dest = literal_str(ctx, kw["dest"], "dest=") if "dest" in kw else ""
+    required = False
+    if "required" in kw:
+        if not isinstance(kw["required"], A.BoolLit):
+            raise ctx.error("required= must be True or False written out", kw["required"])
+        kw["required"].ty = BOOL
+        required = kw["required"].value
+    for name in ("title", "description", "help", "metavar"):
+        if name in kw:
+            ctx.checker.expect_type(kw[name], STR, name)
+    if key in ctx.checker.subcommands:
+        raise ctx.error("a parser can only have one add_subparsers()", ctx.call)
+    ctx.checker.subcommands[key] = {"dest": dest, "required": required, "commands": []}
+    ctx.call.argparse_sub = {"dest": dest, "required": required, "kw": kw}
+    return SubParsersType(key)
+
+
+def subparsers_add_parser(ctx: CallContext) -> Type:
+    parent = ctx.receiver.parent
+    if not ctx.args:
+        raise ctx.error("add_parser() needs the subcommand's name")
+    ctx.arity(1, keywords=("help", "aliases", "description"))
+    name = literal_str(ctx, ctx.args[0], "the subcommand's name")
+    kw = {k.name: k.value for k in ctx.call.keywords}
+    aliases: list[str] = []
+    if "aliases" in kw:
+        if not isinstance(kw["aliases"], (A.ListLit, A.TupleLit)):
+            raise ctx.error("aliases= must be a list written out, like aliases=['rm']", kw["aliases"])
+        aliases = [literal_str(ctx, a, "an alias") for a in kw["aliases"].elts]
+        kw["aliases"].ty = ListType(STR)
+    for field in ("help", "description"):
+        if field in kw:
+            ctx.checker.expect_type(kw[field], STR, field)
+    commands = ctx.checker.subcommands[parent]["commands"]
+    for names, _ in commands:
+        if name in names or set(aliases) & set(names):
+            raise ctx.error(f"conflicting subparser: {name}", ctx.call)
+    child = ParserType(id(ctx.call))
+    commands.append(((name, *aliases), child.key))
+    ctx.call.argparse_cmd = {"name": name, "aliases": aliases, "kw": kw}
+    return child
 
 
 def literal_str(ctx: CallContext, node: A.Expr, what: str) -> str:
@@ -1896,7 +1950,7 @@ def argument_kind(ctx: CallContext, node: A.Expr | None) -> tuple[str, Type]:
 
 
 def parser_add_argument(ctx: CallContext) -> Type:
-    var = parser_var(ctx)
+    var = parser_key(ctx)
     if not ctx.args:
         raise ctx.error("add_argument() needs a name, or option flags like '-v', '--verbose'")
     names = [literal_str(ctx, a, "an argument name") for a in ctx.args]
@@ -1982,7 +2036,7 @@ def parser_add_argument(ctx: CallContext) -> Type:
         for c in ch.elts:
             ctx.checker.expect_type(c, item, "each choice")
         ch.ty = ListType(item)
-    specs = ctx.checker.argument_parsers.setdefault(id(var), [])
+    specs = ctx.checker.argument_parsers.setdefault(var, [])
     for existing, _ in specs:
         if existing == dest and t is not None:
             raise ctx.error(f"'{dest}' is already an argument of this parser", ctx.call)
@@ -1998,17 +2052,36 @@ def strip_optional_type(t: Type) -> Type:
 
 
 def parser_parse_args(ctx: CallContext) -> Type:
-    var = parser_var(ctx)
+    key = parser_key(ctx)
     ctx.arity(0, 1, keywords=("args",))
     node = ctx.args[0] if ctx.args else ctx.keyword_arg("args")
     if node is not None and not isinstance(node, A.NoneLit):
         ctx.checker.expect_type(node, ListType(STR), "args")
     ctx.call.regex_args = {"args": node}  # (the bound argument, for codegen)
-    return NamespaceType(tuple(ctx.checker.argument_parsers.get(id(var), [])))
+    fields = list(ctx.checker.argument_parsers.get(key, []))
+    commands = []
+    sub = ctx.checker.subcommands.get(key)
+    if sub is not None:
+        if sub["dest"]:
+            fields.append((sub["dest"], STR if sub["required"] else OptionalType(STR)))
+        merged: dict[str, Type] = {}
+        for names, child in sub["commands"]:
+            own = tuple(ctx.checker.argument_parsers.get(child, []))
+            commands.append((sub["dest"], names, own))
+            for name, t in own:
+                opt = t if isinstance(t, OptionalType) else OptionalType(t)  # only there for that subcommand
+                if any(name == f for f, _ in fields):
+                    raise ctx.error(f"subcommand '{names[0]}' has an argument '{name}' that its parser already has")
+                if name in merged and merged[name] != opt:
+                    raise ctx.error(f"'{name}' is {merged[name]} in one subcommand and {opt} in another")
+                merged[name] = opt
+        fields.extend(merged.items())
+    return NamespaceType(tuple(fields), tuple(commands))
 
 
 PARSER_METHODS = {
     "add_argument": parser_add_argument,
+    "add_subparsers": parser_add_subparsers,
     "parse_args": parser_parse_args,
     "print_help": sync_method(NONE),
     "print_usage": sync_method(NONE),
@@ -2017,13 +2090,14 @@ PARSER_METHODS = {
     "error": sync_method(NONE, ("message", STR)),
     "exit": sync_method(NONE, ("status", INT, "0"), ("message", OptionalType(STR), "std::nullopt")),
 }
+ARGUMENT_PARSER_SIGNATURE = signature(
+    PARSER, *((name, OptionalType(STR), "std::nullopt") for name in ("prog", "usage", "description", "epilog")),
+    ("add_help", BOOL, "true"))
 MODULES["argparse"] = Module("argparse", {
-    "ArgumentParser": Function("ArgumentParser", signature(
-        PARSER, *((name, OptionalType(STR), "std::nullopt") for name in ("prog", "usage", "description", "epilog")),
-        ("add_help", BOOL, "true")), "sd::argparse::ArgumentParser", as_type=PARSER),
+    "ArgumentParser": Function("ArgumentParser", new_parser, "sd::argparse::ArgumentParser", as_type=PARSER),
     "Namespace": NamedType("Namespace", NamespaceType()),
 }, "modules/argparse.hpp")
-MODULES["argparse"].members["ArgumentParser"].params = MODULES["argparse"].members["ArgumentParser"].check.params
+MODULES["argparse"].members["ArgumentParser"].params = ARGUMENT_PARSER_SIGNATURE.params
 
 
 class AttributeUnavailable(Exception):
