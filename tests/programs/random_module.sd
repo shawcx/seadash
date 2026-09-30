@@ -1,0 +1,46 @@
+import random
+from random import randint, shuffle
+
+for s in [42, 0, -7, 2**40 + 3, 123456789012345]:
+    random.seed(s)
+    print(s, random.random(), random.randint(-5, 5), random.getrandbits(8), random.getrandbits(40))
+
+random.seed(2024)
+print([random.randrange(10) for _ in range(8)], [random.randrange(3, 30, 7) for _ in range(5)])
+print([random.randrange(20, 0, -3) for _ in range(5)], [randint(1, 6) for _ in range(10)])
+print(random.uniform(1.5, 2.5), random.gauss(), random.gauss(), random.gauss(10, 0.5))
+
+words = ["apple", "banana", "cherry", "date", "elderberry", "fig", "grape"]
+print(random.choice(words), random.choice("seadash"), random.choice(range(100, 200)), random.choice(b"xyz"))
+deck = list(range(20))
+shuffle(deck)
+print(deck)
+print(random.sample(words, 3), random.sample(range(1000), 12), random.sample("abcdefgh", k=4))
+big = random.sample(range(10**6), 30)
+print(big[:5], len(set(big)))
+print(random.choices(words, k=6), random.choices(words, weights=[10, 1, 1, 1, 1, 1, 30], k=8))
+print(random.choices(["x", "y", "z"], cum_weights=[1.0, 5.0, 6.0], k=10))
+print(random.randbytes(7), len(random.randbytes(33)))
+
+def shuffled_copy(xs: list[int]) -> list[int]:
+    ys = xs
+    random.shuffle(ys)
+    return ys
+
+base = [1, 2, 3, 4, 5]
+print(shuffled_copy(base), base == [1, 2, 3, 4, 5])
+
+for bad in [lambda: random.randrange(0), lambda: random.randint(5, 1), lambda: random.randrange(1, 10, 0)]:
+    try:
+        bad()
+    except ValueError as e:
+        print("ValueError:", e)
+empty: list[str] = []
+try:
+    random.choice(empty)
+except IndexError as e:
+    print("IndexError:", e)
+try:
+    random.sample(words, 10)
+except ValueError as e:
+    print("ValueError:", e)

@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, json, math, os, sys, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, json, math, os, random, sys, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -1150,3 +1150,31 @@ def test_lambda_types_come_from_the_generic_signature():
 ])
 def test_generic_errors(src, msg):
     assert err(src).message == msg
+
+
+# ---- random -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("expr,ty", [
+    ("random.choice([1, 2])", "int"),
+    ("random.choice('abc')", "str"),
+    ("random.choice(range(5))", "int"),
+    ("random.sample(['a'], 1)", "list[str]"),
+    ("random.choices([1.5], weights=[1], k=3)", "list[float]"),
+    ("random.randrange(1, 10, 2)", "int"),
+    ("random.gauss(sigma=2)", "float"),
+    ("random.randbytes(4)", "bytes"),
+])
+def test_random_types(expr, ty):
+    [v] = ok(f"import random\nx = {expr}\n").globals
+    assert str(v.type) == ty
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("random.choice({1: 2})", "random.choice() needs a sequence (a list, str, bytes, range or tuple), not dict[int, int]"),
+    ("random.shuffle('abc')", "random.shuffle() shuffles a list in place, not a str"),
+    ("random.sample([1])", "random.sample() is missing argument 'k'"),
+    ("random.seed('x')", "random.seed() argument 'a' must be int?, not str"),
+])
+def test_random_errors(src, msg):
+    assert err(f"import random\n{src}\n").message == msg

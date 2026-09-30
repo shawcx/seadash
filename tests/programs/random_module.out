@@ -1,0 +1,21 @@
+42 0.6394267984578837 -5 189 267469214295
+0 0.8444218515250481 1 10 1061968961082
+-7 0.32383276483316237 -3 101 54335349840
+1099511627779 0.21978710637116716 3 213 618881645672
+123456789012345 0.6744750084019356 -1 105 855664176365
+[7, 2, 9, 4, 3, 6, 4, 8] [10, 24, 17, 24, 10]
+[14, 8, 5, 14, 8] [1, 6, 2, 6, 6, 4, 6, 6, 2, 5]
+1.712611070777931 -0.29534088088651317 0.18249339816753243 9.696374746793632
+apple s 195 120
+[7, 2, 4, 16, 8, 0, 1, 17, 18, 3, 9, 14, 13, 15, 5, 6, 11, 19, 12, 10]
+['grape', 'elderberry', 'date'] [628, 114, 339, 871, 668, 621, 799, 236, 241, 475, 374, 139] ['d', 'c', 'h', 'e']
+[877148, 658608, 148265, 274656, 406083] 30
+['grape', 'date', 'banana', 'banana', 'banana', 'banana'] ['grape', 'grape', 'grape', 'grape', 'grape', 'grape', 'grape', 'elderberry']
+['y', 'y', 'y', 'y', 'y', 'z', 'y', 'y', 'z', 'y']
+b'\x14Z\x08\xc0\x03\xda\xb3' 33
+[2, 3, 4, 5, 1] True
+ValueError: empty range for randrange()
+ValueError: empty range in randrange(5, 2)
+ValueError: zero step for randrange()
+IndexError: Cannot choose from an empty sequence
+ValueError: Sample larger than population or is negative
