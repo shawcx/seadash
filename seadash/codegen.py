@@ -57,7 +57,7 @@ CPP_KEYWORDS = frozenset(
     static_assert static_cast struct switch template this thread_local throw true try
     typedef typeid typename union unsigned using virtual void volatile wchar_t while xor
     xor_eq main std sd prog module_main NULL
-    stdin stdout stderr errno st_atime st_mtime st_ctime
+    stdin stdout stderr errno st_atime st_mtime st_ctime fileno
     """.split()  # (the last line: C library names that are macros on some systems)
 )
 
@@ -2501,15 +2501,21 @@ class CodeGen:
         raise NotImplementedError(f"codegen for builtin {name}()")
 
     def open_call(self, path: str, mode: A.Expr | None, e: A.Call) -> str:
+        """open(path) / open(fd) / os.fdopen(fd): the runtime overloads on the path or fd."""
         mode_code = self.expr(mode) if mode else '"r"s'
+        closefd = self.keyword(e, "closefd")
         if e.ty.binary:
-            return f"sd::open_binary({path}, {mode_code})"
+            return f"sd::open_binary({path}, {mode_code}{', ' + self.expr(closefd) if closefd else ''})"
         encoding, newline = self.keyword(e, "encoding"), self.keyword(e, "newline")
         args = [path, mode_code]
-        if encoding or newline:
+        if encoding or newline or closefd:
             args.append(self.expr(encoding) if encoding else '"utf-8"s')
         if newline is not None and not isinstance(newline, A.NoneLit):
             args.append(f"std::optional<std::string>({self.expr(newline)})")
+        elif closefd:
+            args.append("std::nullopt")
+        if closefd:
+            args.append(self.expr(closefd))
         return f"sd::open_text({', '.join(args)})"
 
     def argument_spec(self, e: A.Call) -> str:
@@ -2583,7 +2589,7 @@ class CodeGen:
         if recv_type == BYTES:
             return f"sd::bytes_{name}({r}{rest})"
         if isinstance(recv_type, FileType):
-            return f"{r}->{name}({', '.join(args)})"
+            return f"{r}->{'fileno_' if name == 'fileno' else name}({', '.join(args)})"  # (fileno: a macro on macOS)
         if recv_type == JSON_VALUE:
             return f"{r}.{name}({', '.join(args)})"
         if recv_type == PATH and name == "joinpath":
@@ -2758,6 +2764,8 @@ class CodeGen:
                 headers = self.expr(args["headers"]) if "headers" in args else "sd::dict<std::string, std::string>{}"
                 return f"sd::urlrequest::Request({self.expr(args['url'])}, {opt('data', BYTES)}, {headers}, {opt('method', STR)})"
             return f"sd::urlrequest::urlopen({self.expr(args['url'])}, {opt('data', BYTES)}, {opt('timeout', FLOAT)})"
+        if mod == "os" and name == "fdopen":
+            return self.open_call(self.expr(e.args[0]), e.args[1] if len(e.args) > 1 else self.keyword(e, "mode"), e)
         if mod == "dataclasses" and name == "replace":  # a copy with some fields changed
             t: StructType = e.ty
             tmp = self.fresh("r")

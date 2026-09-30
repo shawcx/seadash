@@ -220,13 +220,13 @@ def work():
 | `shlex` | `split`, `quote`, `join` (POSIX mode) |
 | `uuid` | `UUID` values (ordered, hashable), `uuid1`/`uuid3`/`uuid4`/`uuid5`, the namespaces; not yet: `u.int` (128 bits) and `getnode()` |
 | `json` | typed: `json.loads` straight into your dataclasses, lists and dicts; `json.Value` for dynamic JSON |
-| `os`, `os.path` | files, directories, environment |
+| `os`, `os.path` | files, directories, environment; file descriptors (`os.open`/`read`/`write`/`close`/`dup`/`pipe`, `os.fdopen`, `open(fd)`, `f.fileno()`) |
 | `sys` | `argv`, `exit`, `stdin`/`stdout`/`stderr`, `platform`, `maxsize` |
 | `csv` | `reader`, `writer`, `DictReader`, `DictWriter` with every dialect option and quoting mode; a port of CPython's parser, so quoting edge cases match |
 | `logging` | loggers (a dotted hierarchy with levels and propagation), `StreamHandler`/`FileHandler`/`NullHandler`, `Formatter` (`%(levelname)s`, `%(lineno)d`...), `basicConfig`, and lazy `log.info("x=%s", x)` messages; thread-safe |
 | `urllib.request`, `urllib.parse`, `urllib.error` | `urlopen` (GET/POST over HTTP and HTTPS with certificate checks, redirects, timeouts), `Request`, response headers; `urlparse`/`urlsplit`, `quote`/`unquote`, `urlencode`, `urljoin`, `parse_qs`; `HTTPError` (also readable as the error page) and `URLError` |
 | `time`, `math`, `random` | the usual |
-| `socket` | TCP/UDP with Python's API and errors |
+| `socket` | TCP/UDP with Python's API and errors; `socket.socket(fileno=fd)` takes over a descriptor |
 | `threading`, `queue` | threads, locks, events, queues; plus seadash's `Mutex[T]` (owns its data: `with m as data:`), `RWMutex[T]` (`with m.read()` / `m.write()`), `Atomic` and `Synchronized` |
 | `concurrent.futures` | `ThreadPoolExecutor` (`submit`, `map`, `shutdown`, `with`), `Future`, `as_completed`, `wait`; work on the pool is checked for data races like threads are |
 | `itertools` | all of it, lazily: `count`, `cycle`, `repeat`, `accumulate`, `chain`, `groupby`, `islice`, `tee`, `zip_longest`, `product`, `permutations`, `combinations`, `pairwise`, `batched`... (`permutations(xs, 2)` gives `tuple[T, T]`) |

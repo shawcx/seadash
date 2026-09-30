@@ -31,6 +31,7 @@
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <tuple>
 #include <type_traits>
 #include <typeinfo>
@@ -2986,6 +2987,8 @@ struct FileBase {
         fp = nullptr;
     }
     void flush() { std::fflush(handle()); }
+    // f.fileno(). ((fileno) calls the function: on macOS `fileno` is also a macro.)
+    std::int64_t fileno_() const { return (fileno)(handle()); }
 };
 
 // `for line in f:` reads one line at a time, so big files don't need to fit in memory.
@@ -3141,6 +3144,35 @@ inline std::shared_ptr<TextFile> open_text(const std::string& path, const std::s
 }
 inline std::shared_ptr<BinaryFile> open_binary(const std::string& path, const std::string& mode) {
     return std::make_shared<BinaryFile>(open_file(path, mode), path, mode);
+}
+
+// open(fd) / os.fdopen(fd): a file object for a descriptor the program already has. With
+// closefd=False, closing the file leaves the descriptor open (the file uses a dup of it).
+inline std::FILE* open_fd(std::int64_t fd, const std::string& mode, bool closefd) {
+    std::string c_mode;
+    for (char ch : mode)
+        if (ch != 't') c_mode += ch == 'x' ? 'w' : ch;
+    if (c_mode.find('b') == std::string::npos) c_mode += 'b';
+    int use = closefd ? static_cast<int>(fd) : ::dup(static_cast<int>(fd));
+    if (use < 0) raise_os(errno, std::nullopt);
+    std::FILE* f = ::fdopen(use, c_mode.c_str());
+    if (!f) {
+        int err = errno;
+        if (!closefd) ::close(use);
+        raise_os(err, std::nullopt);
+    }
+    return f;
+}
+inline std::shared_ptr<TextFile> open_text(std::int64_t fd, const std::string& mode = "r",
+                                           const std::string& encoding = "utf-8",
+                                           std::optional<std::string> newline = std::nullopt, bool closefd = true) {
+    check_encoding(encoding);
+    auto f = std::make_shared<TextFile>(open_fd(fd, mode, closefd), std::to_string(fd), mode);
+    f->translate_newlines = !newline;
+    return f;
+}
+inline std::shared_ptr<BinaryFile> open_binary(std::int64_t fd, const std::string& mode, bool closefd = true) {
+    return std::make_shared<BinaryFile>(open_fd(fd, mode, closefd), std::to_string(fd), mode);
 }
 
 template <class... Ts>

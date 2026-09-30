@@ -168,8 +168,7 @@ for it: copying the value class copies the number, not the resource, and closing
 (`os.close(fd)`) is up to the program. To use it, a program turns it back into an object
 (`os.fdopen(fd)`, `socket.socket(fileno=fd)`).
 
-Work needed for this: `os.open`, `os.close`, `os.fdopen`, and `socket.socket(fileno=...)`
-where missing.
+(`os.open`, `os.close`, `os.fdopen`, `open(fd)`, `f.fileno()` and `socket.socket(fileno=...)` exist.)
 
 See **Future: implied handles** for making this safer later.
 
@@ -309,8 +308,8 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
    (`flow.mark_copy_outs`: bound, returned, stored, put in a literal, or passed to a function
    that keeps its parameter; calls through a function value always get a copy). A change to
    a copy that's never read afterwards is an error (`flow.dropped_changes`), for @value
-   parameters, names bound to a copy, and `for p in ps` over @value classes. Not done: the
-   file-descriptor functions (`os.open`, `os.fdopen`, `f.fileno()`...), next as their own
+   parameters, names bound to a copy, and `for p in ps` over @value classes. The
+   file-descriptor functions (`os.open`, `os.fdopen`, `f.fileno()`...) followed as their own
    feature.
 5. **Done.** A frozen `@value` class (`@value` + `@dataclass(frozen=True)`) is frozen all
    the way down: any change through it, including through `for row in t.grid`, is an error
@@ -353,14 +352,12 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
 - **Moves as a visible concept.** Whether the programmer can request a move explicitly,
   or it stays an optimization.
 
-## Future: implied handles
+## Decided against: implied handles
 
-Today a handle in a value class is a plain number the program manages itself. Later, seadash
-could understand handles as a kind of value: a file descriptor on Unix, a `HANDLE` on
-Windows if seadash adds Windows support, and so on. Questions to explore then:
-
-- what copying a value class with a handle means (share the number, `dup()` the descriptor, or
-  forbid the copy and move instead);
-- who closes it, and when (ownership, like `with` blocks, or reference counting);
-- how a handle crosses a thread boundary;
-- one portable type (`os.Handle`?) that is a descriptor on Unix and a `HANDLE` on Windows.
+We considered letting a value class hold a file (or socket) field that's stored as its
+descriptor and turned back into a file object on each access. It isn't supported: a file
+object carries more than a number (a buffer, a mode, responsibility for closing), and
+rebuilding it on every access raises ownership and buffering questions whose answers would
+give value classes hidden shared state. Value classes are for simple data. A program that
+needs a descriptor in one stores it as an `int` and manages it itself (`f.fileno()`,
+`os.open`, `os.fdopen`, `os.close`, `socket.socket(fileno=...)`).

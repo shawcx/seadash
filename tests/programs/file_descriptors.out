@@ -1,0 +1,11 @@
+6 6
+b'hel' b'lo\nworld\n' b''
+True hello
+['hello', 'world']
+5
+b'hello\nworld\nmore\nlast\n'
+b'hello'
+b'through a pipe' b''
+FileNotFoundError
+OSError
+True True

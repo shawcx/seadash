@@ -98,8 +98,23 @@ class Socket {
 
 public:
     Socket() = default;
-    Socket(std::int64_t family, std::int64_t type) : s_(std::make_shared<State>()) {
-        int fd = ::socket(static_cast<int>(family), static_cast<int>(type), 0);
+    Socket(std::int64_t family, std::int64_t type, std::int64_t proto = 0,
+           std::optional<std::int64_t> fileno = std::nullopt)
+        : s_(std::make_shared<State>()) {
+        if (fileno) {  // socket.socket(fileno=fd): take over an existing socket (closed with this one)
+            int fd = static_cast<int>(*fileno);
+            int kind = 0;
+            socklen_t len = sizeof kind;
+            if (::getsockopt(fd, SOL_SOCKET, SO_TYPE, &kind, &len) != 0) fail();
+            sockaddr_storage sa{};
+            socklen_t sa_len = sizeof sa;
+            if (::getsockname(fd, reinterpret_cast<sockaddr*>(&sa), &sa_len) != 0) fail();
+            s_->fd = fd;
+            s_->family = sa.ss_family;
+            s_->type = kind;
+            return;
+        }
+        int fd = ::socket(static_cast<int>(family), static_cast<int>(type), static_cast<int>(proto));
         if (fd < 0) fail();
         s_->fd = fd;
         s_->family = static_cast<int>(family);

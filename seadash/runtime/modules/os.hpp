@@ -3,9 +3,50 @@
 #pragma once
 
 #include <filesystem>
+#include <fcntl.h>
 #include <unistd.h>
 
 namespace sd::os {
+
+// ---- file descriptors: the program does the bookkeeping (os.close what os.open gave) ----
+
+inline std::int64_t open(const std::string& path, std::int64_t flags, std::int64_t mode = 0777) {
+    int fd;
+    do fd = ::open(path.c_str(), static_cast<int>(flags), static_cast<mode_t>(mode));
+    while (fd < 0 && errno == EINTR);
+    if (fd < 0) raise_os(errno, path);
+    return fd;
+}
+inline void close(std::int64_t fd) {
+    if (::close(static_cast<int>(fd)) != 0 && errno != EINTR) raise_os(errno, std::nullopt);
+}
+inline bytes read(std::int64_t fd, std::int64_t n) {
+    if (n < 0) raise("ValueError", "negative buffersize in read");
+    std::string buf(static_cast<std::size_t>(n), '\0');
+    ssize_t k;
+    do k = ::read(static_cast<int>(fd), buf.data(), buf.size());
+    while (k < 0 && errno == EINTR);
+    if (k < 0) raise_os(errno, std::nullopt);
+    buf.resize(static_cast<std::size_t>(k));
+    return bytes(std::move(buf));
+}
+inline std::int64_t write(std::int64_t fd, const bytes& data) {
+    ssize_t k;
+    do k = ::write(static_cast<int>(fd), data.data.data(), data.data.size());
+    while (k < 0 && errno == EINTR);
+    if (k < 0) raise_os(errno, std::nullopt);
+    return k;
+}
+inline std::int64_t dup(std::int64_t fd) {
+    int copy = ::dup(static_cast<int>(fd));
+    if (copy < 0) raise_os(errno, std::nullopt);
+    return copy;
+}
+inline std::tuple<std::int64_t, std::int64_t> pipe() {
+    int fds[2];
+    if (::pipe(fds) != 0) raise_os(errno, std::nullopt);
+    return {fds[0], fds[1]};
+}
 
 namespace fs = std::filesystem;
 

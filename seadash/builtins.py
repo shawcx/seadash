@@ -227,11 +227,22 @@ OPEN_MODES = set("rwaxb+t")
 
 
 def b_open(ctx: CallContext) -> Type:
-    n = ctx.arity(1, 2, keywords=("mode", "encoding", "newline"))
-    ctx.need(0, lambda t: t in (STR, PATH), "a str or Path")
+    """open(path) or open(fd): a file object (os.fdopen(fd) is the same thing)."""
+    n = ctx.arity(1, 2, keywords=("mode", "encoding", "newline", "closefd"))
+    t = ctx.need(0, lambda t: t in (STR, PATH, INT), "a str, a Path or a file descriptor (int)")
     if (nl := ctx.keyword_arg("newline")) is not None:  # (seadash never translates newlines: newline="" is the norm)
         ctx.checker.check_expr(nl)
+    if (closefd := ctx.keyword_arg("closefd")) is not None:
+        ctx.keyword("closefd", BOOL)
+        if t != INT and not (isinstance(closefd, A.BoolLit) and closefd.value):
+            raise ctx.error("Cannot use closefd=False with file name", closefd)
     return open_mode(ctx, ctx.args[1] if n == 2 else ctx.keyword_arg("mode"))
+
+
+def os_fdopen(ctx: CallContext) -> Type:
+    """os.fdopen(fd, mode="r", ...): open() for a file descriptor."""
+    ctx.need(0, lambda t: t == INT, "a file descriptor (int)") if ctx.args else None
+    return b_open(ctx)
 
 
 def open_mode(ctx: CallContext, mode_node: A.Expr | None) -> Type:
@@ -918,6 +929,7 @@ FILE_METHODS = {
     "writelines": file_writelines,
     "close": returns(NONE),
     "flush": returns(NONE),
+    "fileno": returns(INT),
 }
 
 
@@ -1277,6 +1289,16 @@ MODULES["os"] = module_with_params(runtime_module(
     rename=(signature(NONE, ("src", STR), ("dst", STR)), "sd::os::rename"),
     getenv=(os_getenv, "sd::os::getenv"),
     sep=(STR, "sd::os::path::sep()"),
+    # file descriptors (the program closes what it opens)
+    open=(signature(INT, ("path", STR), ("flags", INT), ("mode", INT, "511_i")), "sd::os::open"),
+    close=(signature(NONE, ("fd", INT)), "sd::os::close"),
+    read=(signature(BYTES, ("fd", INT), ("n", INT)), "sd::os::read"),
+    write=(signature(INT, ("fd", INT), ("data", BYTES)), "sd::os::write"),
+    dup=(signature(INT, ("fd", INT)), "sd::os::dup"),
+    pipe=(signature(TupleType((INT, INT))), "sd::os::pipe"),
+    fdopen=(os_fdopen, None),
+    **{c: (INT, f"static_cast<std::int64_t>({c})") for c in (
+        "O_RDONLY", "O_WRONLY", "O_RDWR", "O_CREAT", "O_EXCL", "O_TRUNC", "O_APPEND", "O_NONBLOCK", "O_CLOEXEC")},
 ))
 MODULES["os"].members["path"] = OS_PATH
 
@@ -3656,7 +3678,8 @@ SOCKET_CONSTANTS = [
 MODULES["socket"] = module_with_params(runtime_module(
     "socket", "modules/socket.hpp",
     socket=(signature(SOCKET, ("family", INT, "static_cast<std::int64_t>(AF_INET)"),
-                      ("type", INT, "static_cast<std::int64_t>(SOCK_STREAM)")), "sd::socket::Socket"),
+                      ("type", INT, "static_cast<std::int64_t>(SOCK_STREAM)"), ("proto", INT, "0_i"),
+                      ("fileno", OptionalType(INT), "std::nullopt")), "sd::socket::Socket"),
     create_connection=(signature(SOCKET, ("address", ADDRESS), ("timeout", OPT_FLOAT, "std::nullopt")),
                        "sd::socket::create_connection"),
     create_server=(signature(SOCKET, ("address", ADDRESS), ("family", INT, "static_cast<std::int64_t>(AF_INET)"),

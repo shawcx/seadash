@@ -1996,3 +1996,15 @@ def test_replace_errors(line, msg):
         q = {line}
     """)
     assert e.message == msg
+
+
+@pytest.mark.parametrize("line,msg", [
+    ('open("x.txt", closefd=False)', "Cannot use closefd=False with file name"),
+    ('os.fdopen("x.txt")', "os.fdopen() argument must be a file descriptor (int), not str"),
+    ('os.open("x.txt")', "missing argument 'flags'"),
+    ('os.write(1, "text")', "must be bytes, not str"),
+    ('open(3, "q")', "invalid mode: 'q'"),
+])
+def test_file_descriptor_errors(line, msg):
+    e = err(f"import os\nx = {line}\n")
+    assert msg in e.message

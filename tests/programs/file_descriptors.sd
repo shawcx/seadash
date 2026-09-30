@@ -1,0 +1,58 @@
+# File descriptors: os.open/read/write/close/dup/pipe, os.fdopen, open(fd), f.fileno(),
+# socket.socket(fileno=...). The program does the bookkeeping: it closes what it opens.
+import os
+import socket
+import tempfile
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = os.path.join(tmp, "data.txt")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    print(os.write(fd, b"hello\n"), os.write(fd, b"world\n"))
+    os.close(fd)
+
+    fd = os.open(path, os.O_RDONLY)
+    print(os.read(fd, 3), os.read(fd, 100), os.read(fd, 10))
+    os.close(fd)
+
+    with open(path) as f:
+        print(f.fileno() >= 0, f.readline().strip())
+
+    fd = os.open(path, os.O_RDONLY)
+    with os.fdopen(fd) as f:  # the file owns fd now: closing it closes fd
+        print(f.read().split())
+
+    fd = os.open(path, os.O_RDWR | os.O_APPEND)
+    with open(fd, "a", closefd=False) as f:  # fd stays open after the file closes
+        f.write("more\n")
+    print(os.write(fd, b"last\n"))
+    os.close(fd)
+    with open(path, "rb") as b:
+        print(b.read())
+
+    fd = os.open(path, os.O_RDONLY)
+    copy = os.dup(fd)
+    os.close(fd)
+    print(os.read(copy, 5))
+    os.close(copy)
+
+    r, w = os.pipe()
+    os.write(w, b"through a pipe")
+    os.close(w)
+    print(os.read(r, 100), os.read(r, 100))
+    os.close(r)
+
+    try:
+        os.open(os.path.join(tmp, "missing"), os.O_RDONLY)
+    except FileNotFoundError:
+        print("FileNotFoundError")
+    try:
+        os.read(12345, 1)
+    except OSError:
+        print("OSError")
+
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+t = socket.socket(fileno=os.dup(s.fileno()))  # t owns the dup, and closes it
+print(t.getsockname() == s.getsockname(), t.fileno() != s.fileno())
+t.close()
+s.close()
