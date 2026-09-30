@@ -1,0 +1,41 @@
+# threading.Lock: mutual exclusion under contention, non-blocking/timeout acquire, and
+# release from another thread (the atomic fast path plus the sleeping slow path).
+import threading
+import time
+
+def hammer(lock: threading.Lock, inside: threading.Atomic, violations: threading.Atomic, rounds: int):
+    for _ in range(rounds):
+        with lock:
+            if inside.add(1) != 1:
+                violations.add(1)
+            inside.sub(1)
+
+lock = threading.Lock()
+inside = threading.Atomic(0)
+violations = threading.Atomic(0)
+ts = [threading.Thread(target=hammer, args=(lock, inside, violations, 50000)) for _ in range(16)]
+for t in ts:
+    t.start()
+for t in ts:
+    t.join()
+print("violations:", violations.get(), "locked:", lock.locked())
+
+# non-blocking and timeouts
+lock.acquire()
+print(lock.acquire(False), lock.acquire(timeout=0.05), lock.locked())
+
+# released by a different thread (legal for Lock), waking a sleeping waiter
+def releaser(lock: threading.Lock):
+    time.sleep(0.1)
+    lock.release()
+
+r = threading.Thread(target=releaser, args=(lock,))
+r.start()
+print("reacquired:", lock.acquire(timeout=5.0))
+r.join()
+lock.release()
+try:
+    lock.release()
+except RuntimeError as e:
+    print("error:", e)
+print(lock)

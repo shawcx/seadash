@@ -10,40 +10,60 @@
 
 namespace sd::threading {
 
+inline void cpu_relax() {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    asm volatile("yield");
+#endif
+}
+
 // Python's Lock: may be released by a different thread than the one that acquired it
-// (undefined behaviour for std::mutex), so it's a flag guarded by a mutex + condition.
+// (undefined behaviour for std::mutex). The state is one atomic: 0 = unlocked,
+// 1 = locked, 2 = locked and someone may be waiting. An uncontended acquire/release is a
+// single atomic operation; waiters briefly spin, then sleep on a condition variable.
 class Lock {
     struct State {
-        std::mutex mu;
+        std::atomic<int> v{0};
+        std::mutex mu;  // only for sleeping and waking
         std::condition_variable cv;
-        bool held = false;
     };
     std::shared_ptr<State> s_ = std::make_shared<State>();
 
+    bool try_lock() {
+        int expected = 0;
+        return s_->v.compare_exchange_strong(expected, 1, std::memory_order_acquire, std::memory_order_relaxed);
+    }
+
 public:
     bool acquire(bool blocking = true, double timeout = -1) {
-        std::unique_lock lk(s_->mu);
-        if (!s_->held) return s_->held = true;
+        if (try_lock()) return true;
         if (!blocking) return false;
-        if (timeout < 0) {
-            s_->cv.wait(lk, [&] { return !s_->held; });
-        } else if (!s_->cv.wait_for(lk, std::chrono::duration<double>(timeout), [&] { return !s_->held; })) {
-            return false;
+        // Critical sections are usually short: spin a little before going to sleep.
+        for (int i = 0; i < 100; ++i) {
+            if (s_->v.load(std::memory_order_relaxed) == 0 && try_lock()) return true;
+            cpu_relax();
         }
-        return s_->held = true;
+        // Mark the lock contended (2) so release() knows to wake someone. Swapping in 2
+        // and seeing 0 means we took it (conservatively still marked contended).
+        auto take = [&] { return s_->v.exchange(2, std::memory_order_acquire) == 0; };
+        std::unique_lock lk(s_->mu);
+        if (timeout < 0) {
+            s_->cv.wait(lk, take);
+            return true;
+        }
+        return s_->cv.wait_for(lk, std::chrono::duration<double>(timeout), take);
     }
     void release() {
-        {
-            std::lock_guard lk(s_->mu);
-            if (!s_->held) raise("RuntimeError", "release unlocked lock");
-            s_->held = false;
+        int prev = s_->v.exchange(0, std::memory_order_release);
+        if (prev == 0) raise("RuntimeError", "release unlocked lock");
+        if (prev == 2) {
+            // Taking the mutex orders this wake-up after a waiter's check-then-sleep.
+            { std::lock_guard lk(s_->mu); }
+            s_->cv.notify_one();
         }
-        s_->cv.notify_one();
     }
-    bool locked() const {
-        std::lock_guard lk(s_->mu);
-        return s_->held;
-    }
+    bool locked() const { return s_->v.load(std::memory_order_relaxed) != 0; }
     std::string sd_repr() const { return locked() ? "<locked Lock>" : "<unlocked Lock>"; }
 };
 
