@@ -1849,7 +1849,17 @@ DATETIME_MODULE = {
 for _f in DATETIME_MODULE.values():
     if isinstance(_f, Function):
         _f.params = _f.check.params
+DATETIME_MODULE["tzinfo"] = NamedType("tzinfo", TIMEZONE)  # for annotations: any time zone
 MODULES["datetime"] = Module("datetime", DATETIME_MODULE, "modules/datetime.hpp")
+
+MODULES["zoneinfo"] = module_with_params(runtime_module(
+    "zoneinfo", "modules/zoneinfo.hpp",
+    ZoneInfo=(signature(TIMEZONE, ("key", STR)), "sd::zoneinfo::ZoneInfo"),
+    available_timezones=(signature(SetType(STR)), "sd::zoneinfo::available_timezones"),
+    ZoneInfoNotFoundError=StructType("ZoneInfoNotFoundError", "class", None, base=EXCEPTIONS["KeyError"], builtin=True,
+                                     cpp_name="sd::zoneinfo::ZoneInfoNotFoundError"),
+))
+MODULES["zoneinfo"].members["ZoneInfo"].as_type = TIMEZONE
 
 
 def class_function(name: str, result: Type, cpp: str, *params) -> Function:

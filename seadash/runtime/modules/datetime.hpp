@@ -5,6 +5,7 @@
 
 #include <sys/time.h>
 
+#include <chrono>
 #include <cmath>
 #include <ctime>
 
@@ -140,12 +141,36 @@ inline timedelta mod(const timedelta& a, const timedelta& b) {
 }
 inline timedelta abs(const timedelta& t) { return t.total_us() < 0 ? -t : t; }
 
-// ---- timezone (a fixed offset from UTC) ----------------------------------------------
+// ---- timezone: a fixed offset from UTC, or a named zone (zoneinfo.ZoneInfo) --------------
+//
+// A named zone's offset depends on the moment: offsets are asked for at a wall-clock time
+// (the fields of a datetime) or at a UTC instant. For a wall time that happens twice or
+// not at all (when clocks change), the offset in effect before the change is used, like
+// Python's fold=0.
+
+inline std::string offset_text(std::int64_t us, bool colon = true) {  // "+05:30" / "+0530"
+    std::string sign = us < 0 ? "-" : "+";
+    us = std::abs(us);
+    std::int64_t secs = us / US_PER_SEC;
+    std::string out = sign + pad(secs / 3600, 2) + (colon ? ":" : "") + pad(secs / 60 % 60, 2);
+    if (secs % 60 || us % US_PER_SEC) out += (colon ? ":" : "") + pad(secs % 60, 2);
+    if (us % US_PER_SEC) out += "." + pad(us % US_PER_SEC, 6);
+    return out;
+}
 
 class timezone {
     std::int64_t offset_us_ = 0;
     std::optional<std::string> name_;
     bool utc_ = false;
+    const std::chrono::time_zone* zone_ = nullptr;  // a named zone (its key is name_)
+
+    std::chrono::sys_info info_utc(std::int64_t utc_us) const {
+        return zone_->get_info(std::chrono::sys_seconds(std::chrono::seconds(floordiv(utc_us, US_PER_SEC))));
+    }
+    std::chrono::sys_info info_wall(std::int64_t wall_us) const {
+        auto local = std::chrono::local_seconds(std::chrono::seconds(floordiv(wall_us, US_PER_SEC)));
+        return zone_->get_info(local).first;  // unique, or (ambiguous / skipped) the one before the change
+    }
 
 public:
     timezone() : utc_(true) {}
@@ -155,30 +180,47 @@ public:
             value_error("offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not " + offset.sd_repr() + ".");
     }
     static timezone utc() { return timezone(); }
-    timedelta offset() const { return timedelta::from_us(offset_us_); }
-    std::int64_t offset_us() const { return offset_us_; }
-    // "+05:30" (or "+0530" without the colon), with seconds if any
-    std::string offset_text(bool colon = true) const {
-        std::int64_t us = offset_us_;
-        std::string sign = us < 0 ? "-" : "+";
-        us = std::abs(us);
-        std::int64_t secs = us / US_PER_SEC;
-        std::string out = sign + pad(secs / 3600, 2) + (colon ? ":" : "") + pad(secs / 60 % 60, 2);
-        if (secs % 60 || us % US_PER_SEC) out += (colon ? ":" : "") + pad(secs % 60, 2);
-        if (us % US_PER_SEC) out += "." + pad(us % US_PER_SEC, 6);
-        return out;
+    static timezone named(const std::chrono::time_zone* zone, std::string key) {
+        timezone tz;
+        tz.utc_ = false;
+        tz.zone_ = zone;
+        tz.name_ = std::move(key);
+        return tz;
     }
+    bool is_named() const { return zone_ != nullptr; }
+    const std::string& key() const { return *name_; }
+
+    std::int64_t offset_at_wall(std::int64_t wall_us) const {
+        if (!zone_) return offset_us_;
+        return std::chrono::duration_cast<std::chrono::seconds>(info_wall(wall_us).offset).count() * US_PER_SEC;
+    }
+    std::int64_t offset_at_utc(std::int64_t utc_us) const {
+        if (!zone_) return offset_us_;
+        return std::chrono::duration_cast<std::chrono::seconds>(info_utc(utc_us).offset).count() * US_PER_SEC;
+    }
+    std::string name_at_wall(std::int64_t wall_us) const {
+        if (zone_) return info_wall(wall_us).abbrev;
+        return tzname();
+    }
+
+    // As a fixed offset (a named zone at 1970-01-01, which is only used by time objects).
+    timedelta offset() const { return timedelta::from_us(offset_at_wall(0)); }
     std::string tzname() const {
+        if (zone_) return name_at_wall(0);
         if (name_) return *name_;
         if (utc_ || offset_us_ == 0) return "UTC";
-        return "UTC" + offset_text();
+        return "UTC" + offset_text(offset_us_);
     }
-    std::string sd_str() const { return tzname(); }
+    std::string sd_str() const { return zone_ ? *name_ : tzname(); }
     std::string sd_repr() const {
+        if (zone_) return "zoneinfo.ZoneInfo(key=" + repr_str(*name_) + ")";
         if (utc_) return "datetime.timezone.utc";
         return "datetime.timezone(" + offset().sd_repr() + (name_ ? ", " + repr_str(*name_) : "") + ")";
     }
-    bool operator==(const timezone& o) const { return offset_us_ == o.offset_us_; }
+    bool operator==(const timezone& o) const {
+        if (zone_ || o.zone_) return zone_ == o.zone_;
+        return offset_us_ == o.offset_us_;
+    }
 };
 
 // ---- date ----------------------------------------------------------------------------
@@ -190,7 +232,8 @@ inline void check_date(std::int64_t y, std::int64_t m, std::int64_t d) {
 }
 
 std::string format_time(const std::string& fmt, std::int64_t y, std::int64_t mo, std::int64_t d, std::int64_t h,
-                        std::int64_t mi, std::int64_t s, std::int64_t us, const std::optional<timezone>& tz);
+                        std::int64_t mi, std::int64_t s, std::int64_t us,
+                        const std::optional<std::pair<std::int64_t, std::string>>& tz);
 
 class date {
 protected:
@@ -284,9 +327,11 @@ public:
         return time(hour.value_or(h_), minute.value_or(mi_), second.value_or(s_), microsecond.value_or(us_), tz_);
     }
     std::string isoformat(const std::string& timespec = "auto") const {
-        return time_iso(h_, mi_, s_, us_, timespec) + (tz_ ? tz_->offset_text() : "");
+        return time_iso(h_, mi_, s_, us_, timespec) + (tz_ ? offset_text(tz_->offset_at_wall(0)) : "");
     }
-    std::string strftime(const std::string& fmt) const { return format_time(fmt, 1900, 1, 1, h_, mi_, s_, us_, tz_); }
+    std::string strftime(const std::string& fmt) const {
+        return format_time(fmt, 1900, 1, 1, h_, mi_, s_, us_, tz_ ? std::optional(std::pair(tz_->offset_at_wall(0), tz_->tzname())) : std::nullopt);
+    }
     std::string sd_str() const { return isoformat(); }
     std::string sd_repr() const {
         std::string out = "datetime.time(" + std::to_string(h_) + ", " + std::to_string(mi_);
@@ -295,7 +340,7 @@ public:
         if (tz_) out += ", tzinfo=" + tz_->sd_repr();
         return out + ")";
     }
-    std::int64_t key() const { return ((h_ * 60 + mi_) * 60 + s_) * US_PER_SEC + us_ - (tz_ ? tz_->offset_us() : 0); }
+    std::int64_t key() const { return ((h_ * 60 + mi_) * 60 + s_) * US_PER_SEC + us_ - (tz_ ? tz_->offset_at_wall(0) : 0); }
     auto operator<=>(const time& o) const { return key() <=> o.key(); }
     bool operator==(const time& o) const { return key() == o.key(); }
 };
@@ -326,7 +371,7 @@ class datetime : public date {
     }
     // The real instant, for aware datetimes (naive ones are taken as local time).
     std::int64_t utc_us() const {
-        if (tz_) return wall_us() - tz_->offset_us();
+        if (tz_) return wall_us() - tz_->offset_at_wall(wall_us());
         std::tm tm{};
         tm.tm_year = static_cast<int>(y_ - 1900), tm.tm_mon = static_cast<int>(m_ - 1), tm.tm_mday = static_cast<int>(d_);
         tm.tm_hour = static_cast<int>(h_), tm.tm_min = static_cast<int>(mi_), tm.tm_sec = static_cast<int>(s_);
@@ -343,7 +388,7 @@ public:
     }
     static datetime fromtimestamp(double ts, std::optional<timezone> tz = std::nullopt) {
         auto us = static_cast<std::int64_t>(std::nearbyint(ts * US_PER_SEC));
-        if (tz) return from_wall_us(us + tz->offset_us(), tz);
+        if (tz) return from_wall_us(us + tz->offset_at_utc(us), tz);
         return from_wall_us(us + local_offset_us(static_cast<std::time_t>(floordiv(us, US_PER_SEC))), std::nullopt);
     }
     static datetime utcfromtimestamp(double ts) {
@@ -376,9 +421,9 @@ public:
     time to_time() const { return time(h_, mi_, s_, us_); }
     double timestamp() const { return static_cast<double>(utc_us()) / US_PER_SEC; }
     std::optional<timedelta> utcoffset() const {
-        return tz_ ? std::optional(tz_->offset()) : std::nullopt;
+        return tz_ ? std::optional(timedelta::from_us(tz_->offset_at_wall(wall_us()))) : std::nullopt;
     }
-    std::optional<std::string> tzname() const { return tz_ ? std::optional(tz_->tzname()) : std::nullopt; }
+    std::optional<std::string> tzname() const { return tz_ ? std::optional(tz_->name_at_wall(wall_us())) : std::nullopt; }
     datetime astimezone(std::optional<timezone> tz = std::nullopt) const {
         std::int64_t utc = utc_us();
         if (!tz) {  // the local time zone, as a fixed offset with its abbreviation
@@ -386,7 +431,7 @@ public:
             std::int64_t off = local_offset_us(static_cast<std::time_t>(floordiv(utc, US_PER_SEC)), &name);
             tz = timezone(timedelta::from_us(off), name);
         }
-        return from_wall_us(utc + tz->offset_us(), tz);
+        return from_wall_us(utc + tz->offset_at_utc(utc), tz);
     }
     datetime replace(std::optional<std::int64_t> year, std::optional<std::int64_t> month, std::optional<std::int64_t> day,
                      std::optional<std::int64_t> hour, std::optional<std::int64_t> minute, std::optional<std::int64_t> second,
@@ -395,9 +440,13 @@ public:
                         second.value_or(s_), microsecond.value_or(us_), tzinfo ? *tzinfo : tz_);
     }
     std::string isoformat(const std::string& sep = "T", const std::string& timespec = "auto") const {
-        return date::isoformat() + sep + time_iso(h_, mi_, s_, us_, timespec) + (tz_ ? tz_->offset_text() : "");
+        return date::isoformat() + sep + time_iso(h_, mi_, s_, us_, timespec) +
+               (tz_ ? offset_text(tz_->offset_at_wall(wall_us())) : "");
     }
-    std::string strftime(const std::string& fmt) const { return format_time(fmt, y_, m_, d_, h_, mi_, s_, us_, tz_); }
+    std::string strftime(const std::string& fmt) const {
+        auto zone = tz_ ? std::optional(std::pair(tz_->offset_at_wall(wall_us()), tz_->name_at_wall(wall_us()))) : std::nullopt;
+        return format_time(fmt, y_, m_, d_, h_, mi_, s_, us_, zone);
+    }
     std::string ctime() const { return strftime("%a %b %e %H:%M:%S %Y"); }
     std::string sd_str() const { return isoformat(" "); }
     std::string sd_repr() const {
@@ -412,7 +461,7 @@ public:
     // Naive and aware datetimes can't be ordered (they're never equal), like Python.
     std::partial_ordering operator<=>(const datetime& o) const {
         if (tz_.has_value() != o.tz_.has_value()) raise("TypeError", "can't compare offset-naive and offset-aware datetimes");
-        return tz_ ? utc_us() <=> o.utc_us() : wall_us() <=> o.wall_us();
+        return tz_ && !(*tz_ == *o.tz_) ? utc_us() <=> o.utc_us() : wall_us() <=> o.wall_us();
     }
     bool operator==(const datetime& o) const {
         if (tz_.has_value() != o.tz_.has_value()) return false;
@@ -425,7 +474,8 @@ public:
     friend datetime operator-(const datetime& a, const timedelta& t) { return a + (-t); }
     friend timedelta operator-(const datetime& a, const datetime& b) {
         if (a.tz_.has_value() != b.tz_.has_value()) raise("TypeError", "can't subtract offset-naive and offset-aware datetimes");
-        return timedelta::from_us(a.tz_ ? a.utc_us() - b.utc_us() : a.wall_us() - b.wall_us());
+        bool same_zone = !a.tz_ || *a.tz_ == *b.tz_;  // (Python: the same tzinfo means wall-clock arithmetic)
+        return timedelta::from_us(same_zone ? a.wall_us() - b.wall_us() : a.utc_us() - b.utc_us());
     }
 };
 
@@ -436,7 +486,8 @@ inline date date::fromtimestamp(double ts) { return datetime::fromtimestamp(ts).
 
 // The C library formats most directives; %f, %z and %Z depend on Python's own values.
 inline std::string format_time(const std::string& fmt, std::int64_t y, std::int64_t mo, std::int64_t d, std::int64_t h,
-                               std::int64_t mi, std::int64_t s, std::int64_t us, const std::optional<timezone>& tz) {
+                               std::int64_t mi, std::int64_t s, std::int64_t us,
+                               const std::optional<std::pair<std::int64_t, std::string>>& tz) {
     std::tm tm{};
     tm.tm_year = static_cast<int>(y - 1900), tm.tm_mon = static_cast<int>(mo - 1), tm.tm_mday = static_cast<int>(d);
     tm.tm_hour = static_cast<int>(h), tm.tm_min = static_cast<int>(mi), tm.tm_sec = static_cast<int>(s);
@@ -454,10 +505,10 @@ inline std::string format_time(const std::string& fmt, std::int64_t y, std::int6
         if (c == 'f') {
             expanded += pad(us, 6);
         } else if (c == 'z') {
-            if (tz) expanded += tz->offset_text(false);
+            if (tz) expanded += offset_text(tz->first, false);
         } else if (c == 'Z') {
             if (tz) {
-                for (char ch : tz->tzname()) expanded += ch == '%' ? std::string("%%") : std::string(1, ch);
+                for (char ch : tz->second) expanded += ch == '%' ? std::string("%%") : std::string(1, ch);
             }
         } else {
             expanded += '%';

@@ -1590,3 +1590,13 @@ def test_itertools_types():
 def test_star_import():
     info = ok("from itertools import *\nfrom math import *\nx = list(islice(count(), 2))\ny = sqrt(4.0)\n")
     assert {"x: list[int]", "y: float"} <= set(variables(info))
+
+
+def test_zoneinfo_types():
+    info = ok(
+        "import datetime\nfrom zoneinfo import ZoneInfo, available_timezones\n"
+        "tz = ZoneInfo('Europe/Paris')\nnow = datetime.datetime.now(tz)\nnames = available_timezones()\n"
+        "def at(z: datetime.tzinfo) -> datetime.datetime:\n    return datetime.datetime(2024, 1, 1, tzinfo=z)\n"
+        "d = at(tz)\n"
+    )
+    assert {"tz: timezone", "now: datetime", "names: set[str]", "d: datetime"} <= set(variables(info))

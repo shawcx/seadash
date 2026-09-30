@@ -1,0 +1,26 @@
+# zoneinfo: named time zones (with daylight saving time) for datetime.
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
+
+ny = ZoneInfo("America/New_York")
+d = datetime(2024, 7, 4, 12, tzinfo=ny)
+print(d, repr(d), d.utcoffset(), d.tzname(), str(ny), repr(ny), d.timestamp())
+w = datetime(2024, 1, 15, 9, 30, tzinfo=ny)
+print(w, w.tzname(), w.astimezone(ZoneInfo("Asia/Kolkata")), w.astimezone(timezone.utc))
+ambiguous = datetime(2024, 11, 3, 1, 30, tzinfo=ny)  # happens twice: the first (EDT) is used
+print(ambiguous, ambiguous.tzname())
+skipped = datetime(2024, 3, 10, 2, 30, tzinfo=ny)  # never happens: the offset before the change
+print(skipped, skipped.tzname(), skipped.astimezone(timezone.utc))
+print(datetime.fromtimestamp(1700000000, ny), datetime(2024, 7, 4, 16, tzinfo=timezone.utc).astimezone(ny))
+print(ny == ZoneInfo("America/New_York"), ny == ZoneInfo("Europe/Paris"))
+print(d.strftime("%H:%M %z %Z"), d + timedelta(days=180), datetime(2024, 3, 11, tzinfo=ny) - datetime(2024, 3, 10, tzinfo=ny))
+print(d == datetime(2024, 7, 4, 16, tzinfo=timezone.utc), len(available_timezones()) > 400, "Europe/Paris" in available_timezones())
+print(d.isoformat(), datetime.now(ny).tzinfo, datetime(2024, 6, 1, tzinfo=ZoneInfo("Australia/Sydney")).tzname())
+paris = datetime(2024, 12, 25, 18, tzinfo=ZoneInfo("Europe/Paris"))
+print(paris.astimezone(ny), paris - datetime(2024, 12, 25, 12, tzinfo=ny))
+try:
+    ZoneInfo("Mars/Base")
+except ZoneInfoNotFoundError as e:
+    print("error:", e)
+except KeyError:
+    print("a KeyError")
