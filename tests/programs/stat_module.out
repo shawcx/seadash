@@ -1,0 +1,18 @@
+16384 32768 40960 256 128 64 448 56 7
+2048 1024 512 256 128 64 4 2 1
+0o100644 -rw-r--r-- False True False False False False False 0o644 0o100000
+0o40755 drwxr-xr-x True False False False False False False 0o755 0o40000
+0o120777 lrwxrwxrwx False False True False False False False 0o777 0o120000
+0o100755 -rwxr-xr-x False True False False False False False 0o755 0o100000
+0o104755 -rwsr-xr-x False True False False False False False 0o4755 0o100000
+0o102755 -rwxr-sr-x False True False False False False False 0o2755 0o100000
+0o41777 drwxrwxrwt True False False False False False False 0o1777 0o40000
+0o100000 ---------- False True False False False False False 0o0 0o100000
+0o60660 brw-rw---- False False False False True False False 0o660 0o60000
+0o20620 crw--w---- False False False True False False False 0o620 0o20000
+0o10600 prw------- False False False False False True False 0o600 0o10000
+0o140755 srwxr-xr-x False False False False False False True 0o755 0o140000
+0o104644 -rwSr--r-- False True False False False False False 0o4644 0o100000
+0o41000 d--------T True False False False False False False 0o1000 0o40000
+True False 0o640 -rw-r----- True False
+True drwxr-xr-x True True

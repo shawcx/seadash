@@ -1,0 +1,20 @@
+import os
+import stat
+from pathlib import Path
+
+print(stat.S_IFDIR, stat.S_IFREG, stat.S_IFLNK, stat.S_IRUSR, stat.S_IWUSR, stat.S_IXUSR, stat.S_IRWXU, stat.S_IRWXG, stat.S_IRWXO)
+print(stat.S_ISUID, stat.S_ISGID, stat.S_ISVTX, stat.S_IREAD, stat.S_IWRITE, stat.S_IEXEC, stat.S_IROTH, stat.S_IWOTH, stat.S_IXOTH)
+
+# (no oct(): its output is spelled with a format spec)
+for mode in [0o100644, 0o040755, 0o120777, 0o100755, 0o104755, 0o102755, 0o041777, 0o100000, 0o060660, 0o020620, 0o010600, 0o140755, 0o104644, 0o041000]:
+    print(f"0o{mode:o}", stat.filemode(mode), stat.S_ISDIR(mode), stat.S_ISREG(mode), stat.S_ISLNK(mode), stat.S_ISCHR(mode), stat.S_ISBLK(mode),
+          stat.S_ISFIFO(mode), stat.S_ISSOCK(mode), f"0o{stat.S_IMODE(mode):o}", f"0o{stat.S_IFMT(mode):o}")
+
+Path("plain.txt").write_text("x")
+os.chmod("plain.txt", 0o640)
+mode = Path("plain.txt").stat().st_mode
+print(stat.S_ISREG(mode), stat.S_ISDIR(mode), f"0o{stat.S_IMODE(mode):o}", stat.filemode(mode), bool(mode & stat.S_IWUSR), bool(mode & stat.S_IWOTH))
+os.mkdir("sub")
+os.chmod("sub", 0o755)
+mode = Path("sub").stat().st_mode
+print(stat.S_ISDIR(mode), stat.filemode(mode), stat.S_IFMT(mode) == stat.S_IFDIR, stat.S_IMODE(mode) == 0o755)

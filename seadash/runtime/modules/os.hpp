@@ -97,6 +97,10 @@ inline void remove(const std::string& p) {
     if (::unlink(p.c_str()) != 0) raise_os(errno, p);
 }
 
+inline void chmod(const std::string& p, std::int64_t mode) {
+    if (::chmod(p.c_str(), static_cast<mode_t>(mode)) != 0) raise_os(errno, p);
+}
+
 inline void rmdir(const std::string& p) {
     if (::rmdir(p.c_str()) != 0) raise_os(errno, p);
 }
