@@ -1,0 +1,113 @@
+import sqlite3
+
+conn = sqlite3.connect(":memory:")
+cur = conn.cursor()
+print(cur.rowcount, cur.lastrowid, cur.description, conn.in_transaction)
+cur.execute("create table users (id integer primary key, name text not null, age integer, score real, photo blob)")
+print(cur.rowcount, cur.description, conn.in_transaction)
+cur.execute("insert into users (name, age, score, photo) values (?, ?, ?, ?)", ("ann", 31, 9.5, b"\x00\x01"))
+print(cur.rowcount, cur.lastrowid, conn.in_transaction, conn.total_changes)
+cur.executemany("insert into users (name, age, score) values (?, ?, ?)", [("bob", 25, 7.0), ("cy", None, None), ("dee", 40, 8)])
+print(cur.rowcount, conn.in_transaction)
+conn.commit()
+print(conn.in_transaction, conn.total_changes)
+
+cur.execute("select id, name, age, score, photo from users order by id")
+desc = cur.description
+print([d[0] for d in desc] if desc is not None else None, cur.rowcount)
+first: tuple[int, str, int | None, float | None, bytes | None] | None = cur.fetchone()
+print(first)
+rest: list[tuple[int, str, int | None, float | None, bytes | None]] = cur.fetchmany(2)
+print(rest)
+rest = cur.fetchall()
+first = cur.fetchone()
+rest = cur.fetchall()
+print(rest, first, rest)
+
+names: list[tuple[str]] = conn.execute("select name from users where age > ? order by name", (30,)).fetchall()
+print(names, [n for (n,) in names])
+row: tuple[str, int] | None = conn.execute("select name, age from users where name = :who", {"who": "bob"}).fetchone()
+print(row)
+if row is not None:
+    name, age = row
+    print(name.upper(), age + 1)
+total: tuple[int, float] | None = conn.execute("select count(*), max(score) from users").fetchone()
+print(total)
+flags: list[tuple[int | None, int, str]] = conn.execute("select age > 30, length(name), upper(name) from users order by id").fetchall()
+print(flags)
+pair: list[tuple[int, int]] = conn.execute("select ?, ?", [1, 2]).fetchall()
+one: list[tuple[int]] = conn.execute("select 1").fetchall()
+print(pair, one)
+
+# transactions: an implicit BEGIN before the first change; `with` commits or rolls back
+conn.execute("update users set age = age + 1 where name = 'ann'")
+print(conn.in_transaction)
+conn.rollback()
+ages: list[tuple[int | None]] = conn.execute("select age from users where name = 'ann'").fetchall()
+print(conn.in_transaction, ages)
+with conn:
+    conn.execute("delete from users where name = 'dee'")
+count: tuple[int] | None = conn.execute("select count(*) from users").fetchone()
+print(conn.in_transaction, count)
+try:
+    with conn:
+        conn.execute("delete from users where name = 'cy'")
+        raise ValueError("changed my mind")
+except ValueError as e:
+    print("rolled back:", e)
+count = conn.execute("select count(*) from users").fetchone()
+print(conn.in_transaction, count)
+conn.executescript("create table log (t text); insert into log values ('a'); insert into log values ('b');")
+count = conn.execute("select count(*) from log").fetchone()
+print(conn.in_transaction, count)
+
+# errors, Python's classes and messages
+for bad in ["select * from nope", "insert into users (id, name) values (1, 'dup')", "select 1; select 2", "bogus sql",
+            "insert into users (name) values (null)"]:
+    try:
+        cur.execute(bad)
+    except sqlite3.IntegrityError as e:
+        print("IntegrityError:", e)
+    except sqlite3.ProgrammingError as e:
+        print("ProgrammingError:", e)
+    except sqlite3.OperationalError as e:
+        print("OperationalError:", e, isinstance(e, sqlite3.DatabaseError), isinstance(e, sqlite3.Error))
+try:
+    cur.execute("select ?, ?", (1,))
+except sqlite3.ProgrammingError as e:
+    print("ProgrammingError:", e)
+try:
+    cur.execute("select :a", {"b": 1})
+except sqlite3.ProgrammingError as e:
+    print("ProgrammingError:", e)
+try:
+    cur.executemany("select ?", [(1,)])
+except sqlite3.ProgrammingError as e:
+    print("ProgrammingError:", e)
+conn.close()
+try:
+    cur.execute("select 1")
+except sqlite3.ProgrammingError as e:
+    print("ProgrammingError:", e)
+try:
+    conn.execute("select 1")
+except sqlite3.ProgrammingError as e:
+    print("ProgrammingError:", e)
+
+# a file, and autocommit mode
+db = sqlite3.connect("test.db")
+db.execute("create table kv (k text primary key, v integer)")
+db.execute("insert into kv values ('x', 1)")
+db.commit()
+db.close()
+auto = sqlite3.connect("test.db", isolation_level=None)
+auto.execute("insert into kv values ('y', 2)")
+print(auto.in_transaction, auto.isolation_level)
+auto.close()
+again = sqlite3.connect("test.db")
+kv: list[tuple[str, int]] = again.execute("select k, v from kv order by k").fetchall()
+print(kv, again.isolation_level, len(sqlite3.sqlite_version) > 0)
+try:
+    sqlite3.connect("/nonexistent/dir/x.db")
+except sqlite3.OperationalError as e:
+    print("OperationalError:", e)

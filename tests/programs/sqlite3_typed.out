@@ -1,0 +1,8 @@
+[(True, False), (None, True)]
+[(1, 'one', 1.5, b'\xff'), (None, None, 2.0, None)]
+NULL into int -> TypeError: column 0 (n) holds NULL, not int; declare it as int | None
+int as str -> TypeError: column 0 (n) holds an integer, not str
+[(1.0,)]
+int as float ok
+three columns for two -> TypeError: the query has 2 columns, but the row type has 3
+blob as str -> TypeError: column 0 (b) holds a blob, not str

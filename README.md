@@ -220,6 +220,7 @@ def work():
 | `shlex` | `split`, `quote`, `join` (POSIX mode) |
 | `uuid` | `UUID` values (ordered, hashable), `uuid1`/`uuid3`/`uuid4`/`uuid5`, the namespaces; not yet: `u.int` (128 bits) and `getnode()` |
 | `json` | typed: `json.loads` straight into your dataclasses, lists and dicts; `json.Value` for dynamic JSON |
+| `sqlite3` | `connect`, `Connection` and `Cursor` with `execute`/`executemany`/`executescript`, `?` and `:name` parameters, `commit`/`rollback`/`with conn:`, `rowcount`, `lastrowid`, `description`, and Python's exception classes and messages; rows are typed like `json.loads` (`rows: list[tuple[int, str]] = cur.fetchall()`). Not yet: `row_factory`/`sqlite3.Row`, `create_function`, iterating a cursor directly |
 | `os`, `os.path` | files, directories, environment; file descriptors (`os.open`/`read`/`write`/`close`/`dup`/`pipe`, `os.fdopen`, `open(fd)`, `f.fileno()`) |
 | `sys` | `argv`, `exit`, `stdin`/`stdout`/`stderr`, `platform`, `maxsize` |
 | `csv` | `reader`, `writer`, `DictReader`, `DictWriter` with every dialect option and quoting mode; a port of CPython's parser, so quoting edge cases match |
@@ -256,6 +257,7 @@ seadash borrows Python's syntax, not all of its semantics:
 - **Generators** don't support `send()`/`throw()`, and nested functions can't be generators yet. (Generators, generator expressions, `map`, `filter`, `zip` and `enumerate` are all lazy, as in Python.)
 - **Strings are UTF-8 bytes.** Indexes and lengths count bytes.
 - **Format specs** (`f"{x:>10,.2f}"`, `format(x, spec)`, `"{:>10}".format(x)`) work on ints, floats, bools, strings and dates (a `strftime` format), and a spec that doesn't suit the value is a compile error. For other values, including `json.Value`, convert first: `{str(x):>10}`. A literal format string is checked when compiling (missing arguments, bad fields); one made at run time can't look up attributes or items (`{0.name}`, `{0[1]}`).
+- **`sqlite3` rows are typed by the program.** `fetchone`/`fetchmany`/`fetchall` take their row type from the annotation (`row: tuple[int, str | None] | None = cur.fetchone()`), and a column that doesn't fit is a `TypeError` at run time; a column declared `bool` comes back as a bool, where Python gives 0/1.
 - **`csv.DictReader` rows are `dict[str, str]`.** A short row's missing fields get `restval` (`""` by default) rather than `None`, and extra fields are dropped.
 - **`urlopen` reads the whole body up front**, so it isn't for streaming large downloads; the connection is closed once the response arrives. `URLError.reason` is always a `str`.
 - **`match` checks exhaustiveness only simply.** A match counts as covering every value when a case is a plain capture or `_`, or `case None:` plus a pattern covering the rest of an optional, or a class pattern covering the subject's type. Otherwise the checker assumes no case might match (so a function may need a final `return`). An `int(n) | float(n)` capture is a `float` whichever matches.

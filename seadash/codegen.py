@@ -38,7 +38,7 @@ from .checker import CallTarget, Dunder, ModuleInfo
 from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T, CODEC_TYPES,
+    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T, CODEC_TYPES, SQLITE_CONNECTION, SQLITE_CURSOR,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
@@ -265,6 +265,10 @@ class CodeGen:
                 return "sd::uuid::UUID"
             case _ if t in CODEC_TYPES:
                 return CODEC_TYPES[t]
+            case _ if t == SQLITE_CONNECTION:
+                return "sd::sqlite3::Connection"
+            case _ if t == SQLITE_CURSOR:
+                return "sd::sqlite3::Cursor"
             case _ if t == HASH:
                 return "sd::hashlib::Hash"
             case _ if t == EXECUTOR:
@@ -1069,6 +1073,8 @@ class CodeGen:
             enter, exit_call = ctx, f"{ctx}.shutdown(true, false)"
         elif info.kind == "response":
             enter, exit_call = ctx, f"{ctx}.close()"
+        elif info.kind == "connection":
+            enter, exit_call = ctx, f"{ctx}.sd_exit(false)"  # commit; the catch below rolls back
         else:
             st: StructType = item.context.ty
             arrow = "->" if st.kind == "class" else "."
@@ -1081,7 +1087,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind not in ("file", "socket", "process", "tempdir", "executor", "response"):  # still call __enter__ for its effects
+        elif info.kind not in ("file", "socket", "process", "tempdir", "executor", "response", "connection"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -1103,7 +1109,11 @@ class CodeGen:
             self.depth -= 1
         self.line("} catch (...) {")
         self.depth += 1
-        self.line(f"{guard}.run_now();")
+        if info.kind == "connection":
+            self.line(f"{guard}.disarm();")
+            self.line(f"{ctx}.sd_exit(true);")
+        else:
+            self.line(f"{guard}.run_now();")
         self.line("throw;")
         self.close()
         self.close()
@@ -2641,6 +2651,11 @@ class CodeGen:
             return f"{r}.add_done_callback({self.expr_as(e.args[0], FuncType((recv_type,), NONE))})"
         if recv_type in (HASH, HMAC_T) and name == "update":
             return f"{r}.update({self.expr(e.args[0])})"
+        if recv_type in (SQLITE_CONNECTION, SQLITE_CURSOR):
+            if name in ("fetchone", "fetchmany", "fetchall"):  # the row type comes from the context
+                return f"{r}.{name}<{self.cpp_type(e.sqlite_row)}>({', '.join(self.expr(a) for a in e.args)})"
+            args = [self.expr(a) for a in e.args] + [self.expr(k.value) for k in e.keywords]
+            return f"{r}.{name}({', '.join(args)})"
         if recv_type in (CSV_WRITER, CSV_DICT_WRITER):
             return f"{r}.{name}({', '.join(self.expr(a) for a in e.args)})"
         if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType)) or recv_type in (EXECUTOR, LOGGER, LOG_HANDLER) or recv_type in (

@@ -39,7 +39,7 @@ from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
-    DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T,
+    DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION,
     SYNC_ARITY, ClassRefType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
@@ -1522,6 +1522,8 @@ class Checker:
             return WithInfo("executor", t, None, False)
         if t == TEMPDIR:  # `with TemporaryDirectory() as tmp:` gives its name, removed at the end
             return WithInfo("tempdir", STR, None, False)
+        if t == SQLITE_CONNECTION:  # `with conn:` commits, or rolls back if the block raised
+            return WithInfo("connection", t, None, False)
         if isinstance(t, ProcessType) and t.kind == "Popen":  # waits for the child at the end
             return WithInfo("process", t, None, False)
         if isinstance(t, SyncType) and t.kind == "Mutex":

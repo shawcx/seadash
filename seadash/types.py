@@ -37,6 +37,8 @@ PATH = Prim("Path")  # pathlib.Path: an immutable path value
 TEXT_WRAPPER = Prim("TextWrapper")  # textwrap.TextWrapper
 STR_TEMPLATE = Prim("Template")  # string.Template
 UUID_T = Prim("UUID")  # uuid.UUID: an immutable 16-byte value
+SQLITE_CONNECTION = Prim("sqlite3.Connection")  # handles: copies share the connection / cursor
+SQLITE_CURSOR = Prim("sqlite3.Cursor")
 
 # Incremental (de)compressors: handles (copies share the state) whose methods and attributes
 # are in builtins.CODEC_METHODS and CODEC_ATTRIBUTES. Maps each type to its C++ class.

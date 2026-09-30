@@ -1,0 +1,47 @@
+# seadash-only: rows are typed by the program, so a column that doesn't fit is a TypeError,
+# and a column declared bool is a bool (Python gives 0/1).
+import sqlite3
+from typing import Callable
+
+conn = sqlite3.connect(":memory:")
+conn.execute("create table t (n integer, s text, f real, b blob)")
+conn.execute("insert into t values (1, 'one', 1.5, x'ff')")
+conn.execute("insert into t values (null, null, 2, null)")
+
+flags: list[tuple[bool | None, bool]] = conn.execute("select n > 0, n is null from t").fetchall()
+print(flags)
+whole: list[tuple[int | None, str | None, float, bytes | None]] = conn.execute("select * from t").fetchall()
+print(whole)
+
+def attempt(what: str, fn: Callable[[], None]):
+    try:
+        fn()
+        print(what, "ok")
+    except TypeError as e:
+        print(what, "-> TypeError:", e)
+
+def as_int() -> None:
+    rows: list[tuple[int, str]] = conn.execute("select n, s from t").fetchall()
+    print(rows)
+
+def as_str() -> None:
+    rows: list[tuple[str]] = conn.execute("select n from t where n is not null").fetchall()
+    print(rows)
+
+def as_float() -> None:
+    rows: list[tuple[float]] = conn.execute("select n from t where n is not null").fetchall()
+    print(rows)
+
+def wrong_width() -> None:
+    row: tuple[int, str, float] | None = conn.execute("select n, s from t").fetchone()
+    print(row)
+
+def blob_as_str() -> None:
+    row: tuple[str] | None = conn.execute("select b from t where b is not null").fetchone()
+    print(row)
+
+attempt("NULL into int", as_int)
+attempt("int as str", as_str)
+attempt("int as float", as_float)
+attempt("three columns for two", wrong_width)
+attempt("blob as str", blob_as_str)
