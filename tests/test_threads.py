@@ -24,6 +24,8 @@ SAFE = {
     "copies in args": """
         def work(xs: list[int], d: dict[str, int]):
             xs.append(1)
+            xs.sort()
+            print(xs[0], d)
         data = [1, 2]
         threading.Thread(target=work, args=(data, {"a": 1})).start()
     """,
@@ -95,6 +97,37 @@ SAFE = {
         log = Log([])
         threading.Thread(target=log.write, args=("x",)).start()
     """,
+    "closures get copies of what they capture": """
+        def keep(xs: list[int]) -> list[int]:
+            return xs
+        def main():
+            for i in range(3):
+                threading.Thread(target=lambda: print(i)).start()
+            items: list[int] = []
+            def run():
+                items.append(0)
+                print(len(items))
+            threading.Thread(target=run).start()
+            items.append(1)
+            keep(items)
+            match [1, 2]:
+                case [*items]:
+                    pass
+        main()
+    """,
+    "changing a copy and using it": """
+        from concurrent.futures import ThreadPoolExecutor
+        def grow(xs: list[int]) -> list[int]:
+            xs.append(1)
+            return xs
+        def fill(q: queue.Queue[list[int]], xs: list[int]):
+            xs.append(2)
+            q.put(xs)
+        with ThreadPoolExecutor() as pool:
+            pool.submit(grow, [0])
+        results: queue.Queue[list[int]] = queue.Queue()
+        threading.Thread(target=fill, args=(results, [0])).start()
+    """,
     "reading nested lists through aliases": """
         GRID = [[1, 2], [3]]
         def work():
@@ -147,21 +180,6 @@ UNSAFE = [
         threading.Thread(target=work, args=(Node(1),)).start()
      """, "can't pass this to a thread: a Node is a class instance, shared by reference (make it a threading.Synchronized class)"),
     ("""
-        def main():
-            for i in range(3):
-                threading.Thread(target=lambda: print(i)).start()
-        main()
-     """, "the thread's function uses 'i' from the enclosing function, but the enclosing function changes 'i'"),
-    ("""
-        def main():
-            items: list[int] = []
-            def run():
-                print(len(items))
-            threading.Thread(target=run).start()
-            items.append(1)
-        main()
-     """, "the thread's function uses 'items' from the enclosing function, but the enclosing function changes 'items'"),
-    ("""
         def work():
             pass
         f = work
@@ -198,17 +216,66 @@ UNSAFE = [
             pass
         threading.Thread(target=work, args=("x",))
      """, "target takes (int), but args gives (str)"),
+    # a closure run by a thread gets copies of what it captures: changing them is lost
     ("""
         def main():
-            items: list[int] = []
-            def run():
-                print(len(items))
-            threading.Thread(target=run).start()
-            match [1, 2]:
-                case [*items]:
-                    pass
+            results: list[int] = []
+            threading.Thread(target=lambda: results.append(1)).start()
         main()
-     """, "the thread's function uses 'items' from the enclosing function, but the enclosing function changes 'items'"),
+     """, "the thread's function changes 'results', but a thread works on its own copy of the variables it uses"),
+    ("""
+        def main():
+            seen: set[int] = set()
+            def run():
+                seen.add(1)
+            threading.Thread(target=run).start()
+        main()
+     """, "the thread's function changes 'seen', but a thread works on its own copy"),
+    ("""
+        def main():
+            items = [1]
+            def run(n: int):
+                if n > 0:
+                    run(n - 1)
+                print(len(items))
+            threading.Thread(target=run, args=(3,)).start()
+            items.append(2)
+        main()
+     """, "the thread's function uses 'items' from the enclosing function, but the enclosing function changes 'items' (and a recursive nested def"),
+    ("""
+        def main(loud: bool):
+            items = [1]
+            if loud:
+                def run():
+                    print(items, "!")
+            else:
+                def run():
+                    print(items)
+            threading.Thread(target=run).start()
+            items.append(2)
+        main(True)
+     """, "the thread's function uses 'items' from the enclosing function, but the enclosing function changes 'items' (and a recursive nested def, or one defined more than once"),
+    # a thread's arguments are copies: changing one and never using it is lost work
+    ("""
+        results: list[int] = []
+        def work(out: list[int]):
+            out.append(1)
+        threading.Thread(target=work, args=(results,)).start()
+     """, "work() changes its copy of 'out' but never uses it: a thread gets its own copy of each argument"),
+    ("""
+        def work(n: int, table: dict[str, list[int]]):
+            table["a"] = [n]
+            table["a"][0] += 1
+        threading.Thread(target=work, args=(1, {"a": [0]})).start()
+     """, "work() changes its copy of 'table' but never uses it"),
+    ("""
+        from concurrent.futures import ThreadPoolExecutor
+        def work(xs: list[int]) -> int:
+            xs.clear()
+            return 0
+        with ThreadPoolExecutor() as pool:
+            pool.submit(work, [1])
+     """, "work() changes its copy of 'xs' but never uses it"),
     # lists are shared references: aliases, and functions they're passed to, can change them
     ("""
         LIMITS = [1, 2]
@@ -234,17 +301,6 @@ UNSAFE = [
                 row.append(0)
         threading.Thread(target=work).start()
      """, "thread code uses the module-level 'GRID' (list[list[int]]), but it's modified"),
-    ("""
-        def keep(xs: list[int]) -> list[int]:
-            return xs
-        def main():
-            items = [1]
-            def run():
-                print(len(items))
-            threading.Thread(target=run).start()
-            keep(items)
-        main()
-     """, "the thread's function uses 'items' from the enclosing function, but the enclosing function changes 'items'"),
 ]
 
 
@@ -286,3 +342,19 @@ def test_mutex_view_cant_escape(body, msg):
             {body}
     """)
     assert msg in e.message
+
+
+@pytest.mark.parametrize("body,moved", [
+    ("q.put(xs)", True),                                        # never used again
+    ("q.put(xs)\n    print(xs)", False),                        # read afterwards
+    ("q.put(xs)\n    xs = [2]\n    print(xs)", True),           # replaced before any read
+    ("for i in range(3):\n        xs = [i]\n        q.put(xs)", True),   # each iteration makes a new one
+    ("for i in range(3):\n        q.put(xs)", False),           # the next iteration sends it again
+    ("for i in range(3):\n        xs.append(i)\n        q.put(xs)", False),
+    ("while True:\n        q.put(xs)\n        if len(xs) > 0:\n            continue\n        xs = []", False),
+    ("try:\n        q.put(xs)\n    except ValueError:\n        print(xs)", False),
+    ("if len(xs) > 1:\n        q.put(xs)\n    else:\n        print(xs)", True),   # the other branch doesn't run after
+])
+def test_last_use_moves_instead_of_copying(body, moved):
+    cpp = translate(PRELUDE + "def send(q: queue.Queue[list[int]]):\n    xs = [1]\n    " + body + "\n").cpp
+    assert ("std::move(xs)" in cpp) == moved

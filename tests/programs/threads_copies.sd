@@ -76,3 +76,42 @@ with ThreadPoolExecutor(max_workers=2) as pool:
     r1 = f.result()
     r1.append(-1)
     print(base, r1, f.result())
+
+
+# a closure run by a thread gets copies of what it uses from the enclosing function, made
+# when the thread is created: later changes aren't seen, and nothing is shared
+def closures(verbose: bool):
+    labels: list[str] = []
+    for i in range(3):
+        labels.append(f"#{i}")
+        t = threading.Thread(target=lambda: print("lambda sees", i, labels))
+        t.start()
+        t.join()
+    if verbose:
+        def report():
+            labels.append("thread's own")
+            print("report sees", labels)
+        worker = threading.Thread(target=report)
+        labels.append("after")
+        worker.start()
+        worker.join()
+        report()  # the enclosing function's own report() shares labels as usual
+    print(labels)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(lambda: len(labels))
+        labels.append("more")
+        seen: queue.Queue[int] = queue.Queue()
+        future.add_done_callback(lambda f: seen.put(f.result() + len(labels)))
+        print(future.result(), seen.get())
+
+
+closures(True)
+
+# a copy keeps lists that appear twice shared, like copy.deepcopy
+row = [0]
+shared_rows = [row, row]
+q2: queue.Queue[list[list[int]]] = queue.Queue()
+q2.put(shared_rows)
+got = q2.get()
+got[0].append(1)
+print(got, shared_rows, got[0] is got[1], got[0] is row)

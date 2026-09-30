@@ -4,3 +4,11 @@
 {'a': [1, 3, 4]}
 ['x', 'changed', 'again'] ['x', 'changed'] ['x', 'changed', 'local']
 [0] [0, 1, -1] [0, 1]
+lambda sees 0 ['#0']
+lambda sees 1 ['#0', '#1']
+lambda sees 2 ['#0', '#1', '#2']
+report sees ['#0', '#1', '#2', "thread's own"]
+report sees ['#0', '#1', '#2', 'after', "thread's own"]
+['#0', '#1', '#2', 'after', "thread's own"]
+5 11
+[[0, 1], [0, 1]] [[0], [0]] True False

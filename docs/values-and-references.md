@@ -88,15 +88,18 @@ A value crosses into another thread when it is:
 
 Copying moves the old surprise to the boundary: a worker that appends to its copy and
 expects the parent to see it. So if a thread's code **modifies a value it received as a
-copy**, the checker reports an error:
+copy and never uses it**, the checker reports an error:
 
 ```
-error: worker() appends to 'results', but each thread gets its own copy of it, so the
-change never reaches the caller. Share it with threading.Mutex(results), send results
-through a queue.Queue, or return them from the thread.
+error: work() changes its copy of 'out' but never uses it: a thread gets its own copy of
+each argument, so the change never reaches the caller. Share the data with
+threading.Mutex, send results back through a queue.Queue, or return them
+(ThreadPoolExecutor)
 ```
 
-Reading a copied value is always fine.
+A copy that is changed and then used (sorted and printed, put on a queue, returned) is fine,
+and so is reading a copied value. The same rule applies to the variables a thread's closure
+captures: each thread gets copies, made when the thread is created.
 
 ## Sharing a non-thread-safe object: `Mutex[T]`
 
@@ -278,8 +281,15 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
    threads may still read a shared global or captured list and copy its handle; classes
    stay on `std::shared_ptr`. Both are left to the performance phase. Deep copies don't
    keep aliasing inside the copied data yet (two entries sharing a list become two lists).
-2. Thread boundary: moves, keeping aliasing in deep copies, the "modifying a copy in a
-   thread" error.
+2. **Done.** Deep copies keep aliasing (`CopyMemo`). Moves: codegen passes a list with
+   `std::move` at a thread boundary when it's the sender's last use (`last_use`: no read
+   afterwards, or replaced first, including at the top of the next loop iteration), and
+   `sd::send` hands it over only if nothing else references it (else copies). A thread
+   changing a copy it never uses is an error (arguments and captured variables). Captured
+   variables are copied when the thread is created: a nested def run by a thread is built
+   by a maker from copies of what it captures; a lambda captures copies. A recursive
+   nested def, or one defined more than once, keeps the older rule (the enclosing function
+   mustn't change what it shares). Not done: `Future.result()` still copies on every call.
 3. `Mutex` ownership; `RWMutex`.
 4. Struct rules: value fields only, list fields, the modified-copy check.
 5. Frozen types and `dataclasses.replace`; sharing deeply immutable values across threads.

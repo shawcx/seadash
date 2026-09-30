@@ -169,7 +169,7 @@ class Mutex {
 public:
     Mutex() : s_(std::make_shared<State>()) {}
     // Every way in and out copies (lists, dicts and sets are shared references otherwise).
-    explicit Mutex(const T& value) : s_(std::make_shared<State>()) { s_->value = value_copy(value); }
+    explicit Mutex(T value) : s_(std::make_shared<State>()) { s_->value = send(std::move(value)); }
     struct Guard {
         std::unique_lock<std::mutex> lk;
         T* v;
@@ -180,8 +180,8 @@ public:
         std::lock_guard lk(s_->mu);
         return value_copy(s_->value);
     }
-    void set(const T& value) {
-        T copy = value_copy(value);
+    void set(T value) {
+        T copy = send(std::move(value));
         std::lock_guard lk(s_->mu);
         s_->value = std::move(copy);
     }

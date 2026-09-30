@@ -420,6 +420,8 @@ public:
     }
     operator vector_type&() const { return vec(); }
     list copy() const { return list(vec()); }
+    using sd_is_handle = void;
+    bool sd_unique() const { return p_.use_count() <= 1; }
     bool is(const list& o) const { return &vec() == &o.vec(); }
     const void* identity() const { return &vec(); }
 
@@ -504,6 +506,8 @@ public:
     }
     operator set_type&() const { return std_set(); }
     set copy() const { return set(std_set()); }
+    using sd_is_handle = void;
+    bool sd_unique() const { return p_.use_count() <= 1; }
     bool is(const set& o) const { return &std_set() == &o.std_set(); }
     const void* identity() const { return &std_set(); }
 
@@ -729,6 +733,9 @@ public:
         return out;
     }
     bool is(const dict& o) const { return &data() == &o.data(); }
+    using sd_is_handle = void;
+    using mapped_type = V;
+    bool sd_unique() const { return p_.use_count() <= 1; }
     const void* identity() const { return &data(); }
     // `for k in d`: the keys, raising (as Python does) if the dict changes size meanwhile.
     struct key_range {
@@ -884,33 +891,124 @@ public:
 // Used where seadash promises a copy: struct fields, and values crossing into
 // another thread.
 
+struct bytes;
+
+// Does a T hold lists, dicts or sets (so copying it must copy them)?
 template <class T>
-T value_copy(const T& x) {
-    if constexpr (requires { x.sd_value_copy(); }) {
-        return x.sd_value_copy();
+constexpr bool holds_handles() {
+    if constexpr (requires { typename T::sd_is_handle; }) {
+        return true;
+    } else if constexpr (is_optional<T>::value) {
+        return holds_handles<typename T::value_type>();
+    } else if constexpr (is_tuple<T>::value) {
+        return []<class... A>(std::tuple<A...>*) { return (holds_handles<A>() || ...); }(static_cast<T*>(nullptr));
+    } else {
+        return false;
+    }
+}
+
+// What value_copy has copied so far, so that two references to one list come out as two
+// references to one new list (like copy.deepcopy).
+struct CopyMemo {
+    std::unordered_map<const void*, std::shared_ptr<void>> done;
+    template <class T>
+    const T* find(const T& x) const {
+        auto it = done.find(x.identity());
+        return it == done.end() ? nullptr : static_cast<const T*>(it->second.get());
+    }
+    template <class T>
+    void add(const T& original, const T& copy) {
+        done.emplace(original.identity(), std::make_shared<T>(copy));
+    }
+};
+
+template <class T>
+T value_copy(const T& x, CopyMemo& memo) {
+    if constexpr (requires { x.sd_value_copy(memo); }) {
+        return x.sd_value_copy(memo);
     } else if constexpr (is_list<T>::value) {
+        if (const T* seen = memo.find(x)) return *seen;
         T out;
+        memo.add(x, out);
         out.reserve(x.size());
-        for (const auto& e : x) out.push_back(value_copy(e));
+        for (const auto& e : x) out.push_back(value_copy(e, memo));
         return out;
-    } else if constexpr (is_set<T>::value) {
-        if constexpr (requires { x.copy(); }) {
-            return x.copy();
-        } else {
-            return x;
-        }
+    } else if constexpr (is_sd_set<T>::value) {
+        if (const T* seen = memo.find(x)) return *seen;
+        T out = x.copy();  // (items are hashable, so never lists)
+        memo.add(x, out);
+        return out;
     } else if constexpr (is_dict_like<T>::value) {
+        if (const T* seen = memo.find(x)) return *seen;
         T out = x;
         out.detach();
-        out.for_each_value([](auto& v) { v = value_copy(v); });
+        memo.add(x, out);
+        out.for_each_value([&](auto& v) { v = value_copy(v, memo); });
         return out;
     } else if constexpr (is_optional<T>::value) {
-        return x ? T(value_copy(*x)) : T();
+        return x ? T(value_copy(*x, memo)) : T();
     } else if constexpr (is_tuple<T>::value) {
-        return std::apply([](const auto&... e) { return T(value_copy(e)...); }, x);
+        return std::apply([&](const auto&... e) { return T(value_copy(e, memo)...); }, x);
+    } else {
+        return x;  // a struct copies itself; a class instance is shared
+    }
+}
+
+template <class T>
+T value_copy(const T& x) {
+    if constexpr (is_list<T>::value) {
+        if constexpr (!holds_handles<typename T::value_type>()) {
+            return x.copy();  // the common case: a flat list, nothing inside can be shared
+        } else {
+            CopyMemo memo;
+            return value_copy(x, memo);
+        }
+    } else if constexpr (holds_handles<T>()) {
+        CopyMemo memo;
+        return value_copy(x, memo);
     } else {
         return x;
     }
+}
+
+// Is x the only reference to everything in it (so it can be handed to another thread
+// without copying)? Structs say no: they copy themselves.
+template <class T>
+bool exclusive(const T& x) {
+    if constexpr (requires { typename T::sd_is_handle; }) {
+        if (!x.sd_unique()) return false;
+        if constexpr (is_list<T>::value) {
+            if constexpr (holds_handles<typename T::value_type>())
+                for (const auto& e : x)
+                    if (!exclusive(e)) return false;
+        } else if constexpr (is_dict_like<T>::value) {
+            if constexpr (holds_handles<typename T::mapped_type>()) {
+                bool ok = true;
+                x.for_each_value([&](const auto& v) { ok = ok && exclusive(v); });
+                return ok;
+            }
+        } else if constexpr (requires { x.sd_exclusive_items(); }) {
+            return x.sd_exclusive_items();
+        }
+        return true;
+    } else if constexpr (is_optional<T>::value) {
+        return !x || exclusive(*x);
+    } else if constexpr (is_tuple<T>::value) {
+        return std::apply([](const auto&... e) { return (exclusive(e) && ...); }, x);
+    } else {
+        return std::is_arithmetic_v<T> || std::is_same_v<T, std::string> || std::is_same_v<T, bytes> || is_shared<T>::value;
+    }
+}
+
+// Crossing into another thread: the value itself when nothing else can reach it (the
+// sender's last use of a list it built), otherwise a copy.
+template <class T>
+std::remove_cvref_t<T> send(T&& x) {
+    using U = std::remove_cvref_t<T>;
+    if constexpr (std::is_rvalue_reference_v<T&&> && !std::is_const_v<std::remove_reference_t<T>>) {
+        if (exclusive(x)) return U(std::move(x));
+    }
+    return value_copy(static_cast<const U&>(x));
 }
 
 // xs *= 2, s |= t: Python changes the container in place (every reference to it sees

@@ -226,9 +226,19 @@ public:
         out.st() = st();
         return out;
     }
-    deque sd_value_copy() const {
+    using sd_is_handle = void;
+    bool sd_unique() const { return s_.use_count() <= 1; }
+    bool sd_exclusive_items() const {
+        if constexpr (holds_handles<T>())
+            for (const auto& x : st().d)
+                if (!exclusive(x)) return false;
+        return true;
+    }
+    deque sd_value_copy(CopyMemo& memo) const {
+        if (const deque* seen = memo.find(*this)) return *seen;
         deque out(st().maxlen);
-        for (const auto& x : st().d) out.st().d.push_back(value_copy(x));
+        memo.add(*this, out);
+        for (const auto& x : st().d) out.st().d.push_back(value_copy(x, memo));
         return out;
     }
 

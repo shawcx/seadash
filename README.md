@@ -71,6 +71,7 @@ Python you write and gives you the C++ you'd want underneath.
 | `lists_dicts`: building and querying lists and dicts | 2.08s | 0.28s | **7.5x** |
 | `objects`: classes, virtual methods, floats, recursion | 2.51s | 0.03s | **73x** |
 | `threads`: parallel CPU work, queues, locks | 7.45s | 0.21s | **35x** |
+| `queue_batches`: a producer thread sending big batches through a queue | 3.70s | 0.07s | **50x** |
 | `hashing`: hashlib/hmac on small messages, bulk data, pbkdf2 | 1.22s | 0.90s | 1.4x |
 | `sockets`: localhost TCP round trips, bulk transfer, connections | 2.00s | 1.74s | 1.2x |
 
@@ -182,11 +183,13 @@ match shape:                         # a json.Value
 
 **Threads without a GIL, checked for data races.** Threads are real OS threads running in
 parallel. Anything that crosses into another thread (`Thread` arguments, `queue.Queue`
-items, `executor.submit` arguments and results, what goes into and out of a `Mutex`) is
-copied, lists and all, unless it's a thread-safe object (`Lock`, `queue.Queue`,
-`threading.Mutex[T]`, `threading.Atomic`, `threading.Synchronized` classes). Threads may
-read module globals and captured variables that nothing changes; changing a list through
-another name, or passing it to a function that could change it, counts:
+items, `executor.submit` arguments and results, what goes into and out of a `Mutex`, and
+the variables a thread's closure uses from its enclosing function) is copied, lists and
+all, unless it's a thread-safe object (`Lock`, `queue.Queue`, `threading.Mutex[T]`,
+`threading.Atomic`, `threading.Synchronized` classes). A list the sender never uses again
+is moved rather than copied. A thread that changes its copy and never uses it is an error
+(the change would be lost). Threads may read module globals that nothing changes; changing
+a list through another name, or passing it to a function that could change it, counts:
 
 ```python
 total = 0
@@ -234,7 +237,7 @@ def work():
 
 seadash borrows Python's syntax, not all of its semantics:
 
-- **Threads get copies.** A list, dict or set passed to a thread, put on a queue, returned from a `Future` or stored in a `Mutex` or `Synchronized` object is copied (all the way down), so changes made on one side aren't seen on the other. Share with a `threading.Mutex` or send results back through a `queue.Queue`. Inside `with m as data:`, `data` can't escape the block.
+- **Threads get copies.** A list, dict or set passed to a thread, put on a queue, returned from a `Future` or stored in a `Mutex` or `Synchronized` object is copied (all the way down, keeping lists that appear twice shared, like `copy.deepcopy`), so changes made on one side aren't seen on the other. A closure run on a thread gets copies of the enclosing function's variables, made when the thread is created, so `Thread(target=lambda: print(i))` in a loop prints each `i`. Share with a `threading.Mutex` or send results back through a `queue.Queue`. Inside `with m as data:`, `data` can't escape the block.
 - **A struct's lists are part of its value**, copied with the struct and when stored in it (`struct` isn't Python).
 - **Static types.** Containers hold one type (`list[int]`, not a mix), and there's no dynamic typing or `eval`. Mixed numbers widen, so `[1, 2.5]` is a `list[float]`.
 - **Generators** don't support `send()`/`throw()`, and nested functions can't be generators yet. (Generators, generator expressions, `map`, `filter`, `zip` and `enumerate` are all lazy, as in Python.)

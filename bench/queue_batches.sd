@@ -1,0 +1,41 @@
+# Runs unchanged under python3 and seadash.
+# A producer thread sends big batches to a consumer through a queue. In seadash each
+# batch is the producer's last use of it, so it's moved to the consumer, not copied.
+import queue
+import threading
+
+BATCHES = 400
+SIZE = 50_000
+
+
+def produce(out: queue.Queue[list[int]]):
+    seed = 7
+    for b in range(BATCHES):
+        batch: list[int] = []
+        for i in range(SIZE):
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            batch.append(seed % 1000)
+        out.put(batch)
+    out.put([])
+
+
+def consume(inbox: queue.Queue[list[int]], totals: queue.Queue[int]):
+    total = 0
+    count = 0
+    while True:
+        batch = inbox.get()
+        if not batch:
+            break
+        total += sum(batch)
+        count += len(batch)
+    totals.put(total)
+    totals.put(count)
+
+
+inbox: queue.Queue[list[int]] = queue.Queue(maxsize=8)
+totals: queue.Queue[int] = queue.Queue()
+consumer = threading.Thread(target=consume, args=(inbox, totals))
+consumer.start()
+produce(inbox)
+consumer.join()
+print(totals.get(), totals.get())

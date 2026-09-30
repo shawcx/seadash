@@ -266,7 +266,7 @@ public:
         {
             std::lock_guard lk(s_->mu);
             if (s_->shutting_down) raise("RuntimeError", "cannot schedule new futures after shutdown");
-            s_->tasks.push_back([fut, fn = std::move(fn), args = std::make_tuple(value_copy(args)...)]() mutable {
+            s_->tasks.push_back([fut, fn = std::move(fn), args = std::make_tuple(send(std::move(args))...)]() mutable {
                 if (!fut.start()) return;  // cancelled while queued
                 fut.run([&]() -> R { return std::apply(fn, args); });
             });

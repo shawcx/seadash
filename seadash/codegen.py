@@ -464,7 +464,7 @@ class CodeGen:
         elif st.fields:
             params = ", ".join(f"{self.cpp_type(f.type)} sd_{f.name}" for f in st.fields.values())
             inits = ", ".join(
-                f"{ident(f.name)}(sd::value_copy(sd_{f.name}))" if holds_references(f.type) else f"{ident(f.name)}(std::move(sd_{f.name}))"
+                f"{ident(f.name)}(sd::send(std::move(sd_{f.name})))" if holds_references(f.type) else f"{ident(f.name)}(std::move(sd_{f.name}))"
                 for f in st.fields.values()
             )
             self.line(f"{name}({params}) : {inits} {{}}")
@@ -637,7 +637,7 @@ class CodeGen:
             fields_all = list(st.all_fields().values())
             params = ", ".join(f"{self.cpp_type(f.type)} sd_a{i}" for i, f in enumerate(fields_all))
             sets = " ".join(
-                f"this->{ident(f.name)} = sd::value_copy(sd_a{i});" if is_synchronized(st) and holds_references(f.type)
+                f"this->{ident(f.name)} = sd::send(std::move(sd_a{i}));" if is_synchronized(st) and holds_references(f.type)
                 else f"this->{ident(f.name)} = std::move(sd_a{i});"
                 for i, f in enumerate(fields_all)
             )
@@ -764,6 +764,7 @@ class CodeGen:
         if coroutine_self:  # a generator method's body reaches its object through sd_self
             self.lambda_self += 1
         self.hoist(fn.locals)
+        self.hoist_makers(fn.node.body)
         self.cell_params(fn)
         self.block(fn.node.body)
         if coroutine_self:
@@ -881,6 +882,29 @@ class CodeGen:
             case _:
                 raise NotImplementedError(f"codegen for {type(s).__name__}")
 
+    def maker_signature(self, s: A.FunctionDef) -> tuple[str, str]:
+        """A nested def that a thread runs is built by a maker from the variables it captures,
+        so the thread's copy can be built from copies of them (threads.Spawn.check_captures)."""
+        info: FuncInfo = s.sym
+        cells = ", ".join(f"std::shared_ptr<{self.cpp_type(v.type)}>" for v in s.snapshot)
+        return f"sd_mk_{ident(info.var.cpp_name)}", f"std::function<{self.cpp_type(info.var.type)}({cells})>"
+
+    def hoist_makers(self, body: list[A.Stmt]) -> None:
+        todo = list(body)
+        while todo:
+            stmt = todo.pop()
+            if isinstance(stmt, A.FunctionDef) and getattr(stmt, "snapshot", None) is not None:
+                name, t = self.maker_signature(stmt)
+                self.line(f"{t} {name};")
+            for sub in sub_blocks(stmt):
+                todo.extend(sub)
+
+    def snapshot_call(self, s: A.FunctionDef) -> str:
+        """The thread's own copy of a nested def: rebuilt around copies of what it captures."""
+        name, _ = self.maker_signature(s)
+        cells = ", ".join(f"std::make_shared<{self.cpp_type(v.type)}>(sd::value_copy({self.var_ref(v)}))" for v in s.snapshot)
+        return f"{name}({cells})"
+
     def nested_def(self, s: A.FunctionDef) -> None:
         """A nested def becomes a C++ lambda stored in its (std::function) variable.
 
@@ -900,10 +924,16 @@ class CodeGen:
             capture = f"[=, sd_self = {self.var_code(self_names[0].sym, self_names[0].sym.type)}]"
         recursive = any(isinstance(n, A.Call) and isinstance(n.sym, CallTarget) and n.sym.kind == "self_call"
                         and n.sym.target is info for n in walk(s.body))
+        snapshot = getattr(s, "snapshot", None)
         if recursive:
             fn, rec = self.fresh("fn"), self.fresh("rec")
             self.recursion.append((info, rec))
             header = f"auto {fn} = {capture}(auto& {rec}{''.join(', ' + p for p in params)}) mutable -> {ret}"
+        elif snapshot is not None:  # built by a maker, so a thread can have one built from copies
+            maker, _ = self.maker_signature(s)
+            cells = ", ".join(f"std::shared_ptr<{self.cpp_type(v.type)}> {ident(v.cpp_name)}" for v in snapshot)
+            header = (f"{maker} = {capture}({cells}) -> {self.cpp_type(info.var.type)} {{ return "
+                      f"[=]({', '.join(params)}) mutable -> {ret}")
         else:
             header = f"{self.var_ref(info.var)} = {capture}({', '.join(params)}) mutable -> {ret}"
         saved = (self.func, self.loop_labels, self.lambda_self)
@@ -912,12 +942,16 @@ class CodeGen:
             self.lambda_self += 1
         self.open(header)
         self.hoist(info.locals)
+        self.hoist_makers(s.body)
         self.cell_params(info)
         self.block(s.body)
         if isinstance(info.ret, OptionalType) and not ends_with_return(s.body):
             self.line("return std::nullopt;")
-        self.close(";")
+        self.close("; };" if snapshot is not None and not recursive else ";")
         self.func, self.loop_labels, self.lambda_self = saved
+        if snapshot is not None and not recursive:
+            maker, _ = self.maker_signature(s)
+            self.line(f"{self.var_ref(info.var)} = {maker}({', '.join(ident(v.cpp_name) for v in snapshot)});")
         if recursive:
             self.recursion.pop()
             names = [self.fresh("p") for _ in info.params]
@@ -1563,6 +1597,8 @@ class CodeGen:
 
     def name(self, e: A.Name) -> str:
         sym = e.sym
+        if (fn_def := getattr(e, "snapshot_of", None)) is not None and getattr(fn_def, "snapshot", None) is not None:
+            return self.snapshot_call(fn_def)  # a thread's target: built from copies of what it captures
         if isinstance(sym, Var):
             return self.var_code(sym, e.ty)
         if isinstance(sym, FuncInfo):
@@ -1600,12 +1636,15 @@ class CodeGen:
         used = {id(n.sym) for n in walk_expr(e.body) if isinstance(n, A.Name)}
         params = ", ".join(f"{'' if id(p.sym) in used else '[[maybe_unused]] '}{self.cpp_type(pt)} {ident(p.sym.cpp_name)}"
                            for p, pt in zip(e.params, t.params))
-        capture = "[=]"
+        captures = ["="]
         uses_self = any(isinstance(n, A.Name) and is_self(n) for n in walk_expr(e.body))
         if uses_self:
             self_var = next(n.sym for n in walk_expr(e.body) if isinstance(n, A.Name) and is_self(n))
-            capture = f"[=, sd_self = {self.var_code(self_var, self_var.type)}]"
+            captures.append(f"sd_self = {self.var_code(self_var, self_var.type)}")
             self.lambda_self += 1
+        for v in getattr(e, "snapshot", None) or []:  # run on another thread: its own copies of what it uses
+            captures.append(f"{ident(v.cpp_name)} = std::make_shared<{self.cpp_type(v.type)}>(sd::value_copy({self.var_ref(v)}))")
+        capture = f"[{', '.join(captures)}]"
         try:
             body = self.expr_as(e.body, t.ret)
         finally:
@@ -2291,21 +2330,21 @@ class CodeGen:
             if node is None:
                 return f"{cpp}()"
             want = t.args[0] if t.kind == "Mutex" else INT
-            return f"{cpp}({self.expr_as(node, want)})"
+            return f"{cpp}({self.sent(node, self.expr_as(node, want))})"
         if t.kind != "Thread":
             return f"{cpp}()"
         # The thread gets its own copies of the target and its arguments.
         ft: FuncType = extra["target_type"]
         args = extra["args"]
         if isinstance(args, A.TupleLit):
-            packed = f"std::make_tuple({', '.join(self.expr_as(a, p) for a, p in zip(args.elts, ft.params))})"
+            packed = f"std::make_tuple({', '.join(self.sent(a, self.expr_as(a, p)) for a, p in zip(args.elts, ft.params))})"
         elif args is not None:
             packed = self.coerce(self.expr(args), args.ty, TupleType(ft.params))
         else:
             packed = "std::make_tuple()"
         name = self.expr(extra["name"]) if extra["name"] is not None else "std::nullopt"
         daemon = self.expr(extra["daemon"]) if extra["daemon"] is not None else "false"
-        body = f"[sd_f = {self.expr(extra['target'])}, sd_a = sd::value_copy({packed})]() mutable {{ std::apply(sd_f, sd_a); }}"
+        body = f"[sd_f = {self.expr(extra['target'])}, sd_a = sd::send({packed})]() mutable {{ std::apply(sd_f, sd_a); }}"
         return f"sd::threading::Thread({body}, {name}, {cpp_string(extra['target_name'])}, {daemon})"
 
     def call_args(self, slots: list[A.Expr | None], fn: FuncInfo) -> str:
@@ -2468,6 +2507,17 @@ class CodeGen:
                 lines.append(f"s.{name} = {self.expr(kw[name])};")
         return f"[&] {{ sd::argparse::Spec s; {' '.join(lines)} return s; }}()"
 
+    def sent(self, node: A.Expr, code: str) -> str:
+        """An argument that another thread receives (sd::send copies it): moved instead, when
+        it's a local list the sender never reads again."""
+        if (
+            isinstance(node, A.Name) and isinstance(node.sym, Var) and node.sym.kind == "local" and not node.sym.captured
+            and holds_references(node.sym.type) and code == self.expr(node) and self.func is not None
+            and last_use(self.func.node.body, node)
+        ):
+            return f"std::move({code})"
+        return code
+
     def str_format(self, e: A.Call) -> str:
         """"...".format(...). A literal format string was compiled into an f-string over the
         arguments: evaluate each once (self.call did them in order if that matters), then build
@@ -2548,7 +2598,7 @@ class CodeGen:
             params, result = e.work_types
             fn = self.expr_as(e.args[0], FuncType(params, result))
             if name == "submit":
-                args = ", ".join([fn, *(self.expr_as(a, p) for a, p in zip(e.args[1:], params))])
+                args = ", ".join([fn, *(self.sent(a, self.expr_as(a, p)) for a, p in zip(e.args[1:], params))])
                 return f"{r}.submit<{self.cpp_type(result)}>({args})"
             timeout = self.keyword(e, "timeout")
             t = self.expr_as(timeout, OptionalType(FLOAT)) if timeout is not None else "std::nullopt"
@@ -2571,7 +2621,10 @@ class CodeGen:
                 if node is None:
                     codes.append(default[0])
                 else:
-                    codes.append(self.expr_as(node, want) if isinstance(want, Type) else self.expr(node))
+                    code = self.expr_as(node, want) if isinstance(want, Type) else self.expr(node)
+                    if isinstance(recv_type, SyncType) and (recv_type.kind, name) in (("Queue", "put"), ("Queue", "put_nowait"), ("Mutex", "set")):
+                        code = self.sent(node, code)  # the receiving thread gets it: moved if we're done with it
+                    codes.append(code)
             dot = "->" if isinstance(recv_type, StructType) else "."  # (a built-in exception: HTTPError.read())
             return f"{r}{dot}{name}({', '.join(codes)})"
         match recv_type:
@@ -2811,6 +2864,92 @@ def holds_references(t: Type) -> bool:
         case TupleType(elts):
             return any(holds_references(e) for e in elts)
     return False
+
+
+# ---- last use: when handing a list to another thread can move it instead of copying ----
+
+
+def sub_blocks(stmt: A.Stmt) -> list[list[A.Stmt]]:
+    match stmt:
+        case A.If(_, body, orelse) | A.While(_, body, orelse) | A.For(_, _, body, orelse):
+            return [body, orelse]
+        case A.With(_, body):
+            return [body]
+        case A.Try(body, handlers, orelse, finalbody):
+            return [body, *(h.body for h in handlers), orelse, finalbody]
+        case A.Match(_, cases):
+            return [c.body for c in cases]
+    return []  # (a nested def's body belongs to another function)
+
+
+def statement_path(block: list[A.Stmt], node: A.Node) -> list[tuple[list[A.Stmt], int]] | None:
+    """The blocks and statement indexes leading from `block` down to the innermost
+    statement containing `node`."""
+    from .checker import walk
+
+    for i, stmt in enumerate(block):
+        for sub in sub_blocks(stmt):
+            if (path := statement_path(sub, node)) is not None:
+                return [(block, i), *path]
+        if not isinstance(stmt, A.FunctionDef) and any(n is node for n in walk(stmt)):
+            return [(block, i)]
+    return None
+
+
+def mentions(node: A.Node, var: Var) -> int:
+    from .checker import walk
+
+    return sum(1 for n in walk(node) if isinstance(n, A.Name) and n.sym is var)
+
+
+def jumps(stmt: A.Stmt) -> bool:
+    """Could this statement leave its block early (other than by returning)?"""
+    from .checker import walk
+
+    return any(isinstance(n, (A.Break, A.Continue, A.Raise)) for n in walk(stmt))
+
+
+def rebinds(stmt: A.Stmt, var: Var) -> bool:
+    """`x = ...` / `x: T = ...` replacing var's value without reading it."""
+    match stmt:
+        case A.Assign([A.Name() as t], value) | A.AnnAssign(A.Name() as t, _, value) if value is not None:
+            return t.sym is var and not mentions(value, var)
+    return False
+
+
+def last_use(body: list[A.Stmt], node: A.Name) -> bool:
+    """Is `node` the last time its (local) variable is read: after this, the variable is
+    reassigned or never mentioned again? Conservative: loops, jumps and exception handlers
+    that could reach another read say no."""
+    var = node.sym
+    path = statement_path(body, node)
+    if path is None:
+        return False
+    block, i = path[-1]
+    if mentions(block[i], var) != 1 or isinstance(block[i], (A.For, A.While)):
+        return False  # read again in the same statement, or in a loop header
+    for depth in range(len(path) - 1, -1, -1):
+        block, i = path[depth]
+        for stmt in block[i + 1:]:
+            if mentions(stmt, var):
+                return rebinds(stmt, var)  # `batch = []`: the old list is never read again
+            if jumps(stmt):
+                return False  # (a continue, break or exception could reach a read elsewhere)
+        if depth > 0:
+            outer, j = path[depth - 1]
+            owner = outer[j]
+            if isinstance(owner, (A.For, A.While)):
+                # The next iteration reads it unless the loop body replaces it first, before any read.
+                header = owner.test if isinstance(owner, A.While) else A.TupleLit([owner.target, owner.iter])
+                if block is not owner.body or mentions(header, var) or any(mentions(s, var) for s in owner.orelse):
+                    return False
+                before = next((s for s in owner.body[:i] if mentions(s, var)), None)
+                if before is None or not rebinds(before, var):
+                    return False
+            if isinstance(owner, A.Try) and any(mentions(s, var) for s in [*owner.orelse, *owner.finalbody]
+                                                 + [s for h in owner.handlers for s in h.body]):
+                return False
+    return True
 
 
 def synchronized_copy(fn: FuncInfo | None, t: Type) -> bool:

@@ -13,8 +13,11 @@ module globals. This module checks each Thread(...) call:
   * its args must be sendable (copyable values or thread-safe objects);
   * its target is followed through every function/method it can call, and every module
     global it touches must be thread-safe, or a sendable value that nothing modifies;
-  * if the target is a closure, each captured variable must be thread-safe, or a
-    sendable value the enclosing function never changes.
+  * if the target is a closure, each captured variable must be thread-safe or sendable;
+    the thread gets copies of them, made when it's created (codegen rebuilds the closure
+    from copies: `snapshot`), so the thread changing its copy without using it is an error;
+  * a parameter the thread's function changes but never uses is an error too (the change
+    would be lost: the thread got a copy).
 
 Lists, dicts and sets are shared references, so "modifies" includes changing one through
 another name (`other = xs; other.append(1)`, `for row in grid: row.append(0)`) and
@@ -148,6 +151,11 @@ def walk(node):
     yield node
     for c in children(node):
         yield from walk(c)
+
+
+def walk_all(nodes):
+    for n in nodes:
+        yield from walk(n)
 
 
 def base_var(e: A.Expr) -> Var | None:
@@ -343,6 +351,48 @@ def uses(nodes) -> tuple[dict[int, int], dict[int, Loc], dict[int, Loc]]:
 
 
 @dataclasses.dataclass
+class _At:
+    loc: Loc
+
+
+def lost_change(body: list, var: Var) -> Loc | None:
+    """Where `var` is first changed, if every mention of it only changes it (xs.append(1),
+    xs[i] = v, xs += ys) and nothing ever reads it."""
+    changing: set[int] = set()  # Name nodes that are the thing being changed
+    first: Loc | None = None
+
+    def base_name(e: A.Expr) -> A.Name | None:
+        while isinstance(e, (A.Index, A.Attribute)):
+            e = e.value
+        return e if isinstance(e, A.Name) and e.sym is var else None
+
+    for n in (x for stmt in body for x in walk(stmt)):
+        name = None
+        match n:
+            case A.ExprStmt(A.Call(A.Attribute(recv, attr))) if n.value.sym is not None and (
+                (n.value.sym.kind == "builtin_method" and attr in MUTATING_METHODS)
+                or (n.value.sym.kind == "method" and getattr(n.value.sym.target.owner, "kind", None) == "struct")
+            ):
+                name = base_name(recv)
+            case A.Assign(targets):
+                for t in targets:
+                    if isinstance(t, (A.Index, A.Attribute)) and (b := base_name(t)) is not None:
+                        changing.add(id(b))
+                        first = first or t.loc
+            case A.AugAssign(t):
+                name = base_name(t)
+        if name is not None:
+            changing.add(id(name))
+            first = first or n.loc
+    if first is None:
+        return None
+    for n in (x for stmt in body for x in walk(stmt)):
+        if isinstance(n, A.Name) and n.sym is var and id(n) not in changing:
+            return None  # read somewhere
+    return first
+
+
+@dataclasses.dataclass
 class Program:
     """Everything the check needs from the checked modules."""
 
@@ -408,8 +458,35 @@ class Spawn:
                 f"or thread-safe objects", self.extra["target"],
             )
         roots, captured = self.roots(self.extra["target"])
+        self.check_lost_changes()
         self.check_captures(captured, roots)
         self.check_reachable(roots)
+
+    def check_lost_changes(self) -> None:
+        """A thread gets its own copy of each argument. Changing that copy and never using it
+        is almost certainly a mistake: the caller never sees the change."""
+        if self.extra["args"] is None:
+            return
+        target = self.extra["target"]
+        node = None
+        if isinstance(target.sym, FuncInfo):
+            node = target.sym.node
+        elif isinstance(target.sym, Var) and isinstance(target.sym.type, FuncType):
+            node = self.nested_def(target.sym)
+        if not isinstance(node, A.FunctionDef):
+            return
+        fn = node.sym
+        params = node.params[1:] if fn.owner is not None and fn.kind != "static" else node.params
+        for param in params:
+            var = param.sym
+            if not (holds_references(var.type) or (isinstance(var.type, StructType) and var.type.kind == "struct")):
+                continue
+            if (loc := lost_change(node.body, var)) is not None:
+                raise self.fail(
+                    f"{fn.name}() changes its copy of '{var.name}' but never uses it: a thread gets its own copy of "
+                    f"each argument, so the change never reaches the caller. Share the data with threading.Mutex, "
+                    f"send results back through a queue.Queue, or return them (ThreadPoolExecutor)", _At(loc),
+                )
 
     def roots(self, target: A.Expr) -> tuple[list[A.Node], list[A.Node]]:
         """The code the thread starts in, and the closure bodies whose captures must be checked."""
@@ -450,11 +527,29 @@ class Spawn:
         return []
 
     def check_captures(self, closures: list[A.Node], roots: list[A.Node]) -> None:
+        """A closure run on another thread gets its own copy of the variables it uses from the
+        enclosing function, made when the thread is created (codegen reads `snapshot`). So the
+        enclosing function may go on changing them, but the thread changing its copy is lost.
+        A recursive nested def can't be rebuilt around copies: it shares, so nothing may change."""
         if not closures:
             return
+        closure = closures[0]
+        recursive = isinstance(closure, A.FunctionDef) and any(
+            isinstance(n, A.Call) and getattr(n.sym, "kind", None) == "self_call" and n.sym.target is closure.sym
+            for n in walk_all(closure.body)
+        )
         enclosing = self.scope.info.node.body if self.scope.info is not None else self.module_body()
         assigned, modified = changes(enclosing)
+        if isinstance(closure, A.FunctionDef):
+            # Rebuilt from copies only when the name means just this def (not `if a: def f()... else: def f()...`).
+            fn_var = closure.sym.var
+            defs = [n for n in walk_all(enclosing) if isinstance(n, A.FunctionDef) and n.sym.var is fn_var]
+            recursive = recursive or len(defs) != 1 or assigned.get(id(fn_var), 0) > 0
+        inside_assigned, _ = changes(roots)
+        # (a lambda's body is an expression; its value is thrown away, like a statement's)
+        body = [A.ExprStmt(r, loc=r.loc) if isinstance(r, A.Expr) else r for r in roots]
         own = {id(p.sym) for c in closures if isinstance(c, (A.Lambda, A.FunctionDef)) for p in c.params}
+        snapshot: list[Var] = []
         for root in roots:
             for n in walk(root):
                 if not (isinstance(n, A.Name) and isinstance(n.sym, Var)):
@@ -462,17 +557,35 @@ class Spawn:
                 var = n.sym
                 if var.kind not in ("local", "param") or id(var) in own or not var.captured:
                     continue
+                if var not in snapshot:
+                    snapshot.append(var)
                 if shareable(var.type):
                     continue
-                reason = unsendable(var.type)
-                changed = assigned.get(id(var), 0) > (0 if var.kind == "param" else 1) or id(var) in modified
-                if reason or changed:
-                    why = reason or f"the enclosing function changes '{var.name}'"
+                if reason := unsendable(var.type):
                     raise self.fail(
-                        f"the thread's function uses '{var.name}' from the enclosing function, but {why}. "
-                        f"Pass it in args= instead (the thread gets its own copy), or use a thread-safe type "
+                        f"the thread's function uses '{var.name}' from the enclosing function, but {reason}. "
+                        f"Pass it in args= instead, or use a thread-safe type "
                         f"(queue.Queue, threading.Mutex, threading.Atomic)", n,
                     )
+                if inside_assigned.get(id(var), 0) or lost_change(body, var) is not None:
+                    raise self.fail(
+                        f"the thread's function changes '{var.name}', but a thread works on its own copy of the "
+                        f"variables it uses from the enclosing function (made when the thread is created), so the "
+                        f"change is lost. Share it with threading.Mutex, or send results back through a queue.Queue",
+                        n,
+                    )
+                if recursive and (assigned.get(id(var), 0) > (0 if var.kind == "param" else 1) or id(var) in modified):
+                    raise self.fail(
+                        f"the thread's function uses '{var.name}' from the enclosing function, but the enclosing "
+                        f"function changes '{var.name}' (and a recursive nested def, or one defined more than once, "
+                        f"shares it rather than getting a copy). Pass it in args= instead, or use a thread-safe "
+                        f"type (queue.Queue, threading.Mutex, threading.Atomic)", n,
+                    )
+        if not recursive and snapshot:  # (nothing captured: nothing to copy)
+            closure.snapshot = snapshot
+            target = self.extra["target"]
+            if isinstance(closure, A.FunctionDef) and isinstance(target, A.Name):
+                target.snapshot_of = closure  # codegen: build the thread's closure from copies
 
     def check_reachable(self, roots: list[A.Node]) -> None:
         """Follow calls from the thread's code; every global it touches must be safe to share."""
