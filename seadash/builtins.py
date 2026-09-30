@@ -16,7 +16,7 @@ from .errors import Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE,
-    CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo,
+    CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -198,7 +198,7 @@ def sized(t: Type) -> bool:
 
 
 def ordered(t: Type) -> bool:
-    return t in (INT, FLOAT, STR, BYTES) or isinstance(t, (TupleType, ListType)) or bool(user_dunder(t, "__lt__"))
+    return t in (INT, FLOAT, STR, BYTES, PATH) or isinstance(t, (TupleType, ListType)) or bool(user_dunder(t, "__lt__"))
 
 
 def bytes_like(t: Type) -> bool:
@@ -223,8 +223,12 @@ OPEN_MODES = set("rwaxb+t")
 
 def b_open(ctx: CallContext) -> Type:
     n = ctx.arity(1, 2, keywords=("mode", "encoding"))
-    ctx.expect(0, STR)
-    mode_node = ctx.args[1] if n == 2 else ctx.keyword_arg("mode")
+    ctx.need(0, lambda t: t in (STR, PATH), "a str or Path")
+    return open_mode(ctx, ctx.args[1] if n == 2 else ctx.keyword_arg("mode"))
+
+
+def open_mode(ctx: CallContext, mode_node: A.Expr | None) -> Type:
+    """open()'s mode decides the file type: TextIO or BinaryIO."""
     mode = "r"
     if mode_node is not None:
         if not isinstance(mode_node, A.StrLit):
@@ -757,6 +761,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = LIST_METHODS
         case DequeType():
             table = DEQUE_METHODS
+        case _ if t == PATH:
+            return PATH_METHODS.get(name)
         case ProcessType(kind):
             table = PROCESS_METHODS[kind]
         case PatternType():
@@ -1258,6 +1264,11 @@ def sync_method(result, *params):
                     raise ctx.error(f"{ctx.what} is missing argument '{p[0]}'")
                 continue
             want = resolve(p[1], ctx.receiver)
+            if want is PATH_LIKE:
+                actual = ctx.checker.check_expr(node)
+                if actual not in (STR, PATH):
+                    raise ctx.error(f"{ctx.what} argument '{p[0]}' must be a str or Path, not {actual}", node)
+                continue
             if want is BYTES_OR_STR:
                 actual = ctx.checker.check_expr(node)
                 if not bytes_like(actual):
@@ -1574,6 +1585,8 @@ MATCH_ATTRIBUTES = {
 
 
 def type_attributes(t: Type) -> dict | None:
+    if t == PATH:
+        return PATH_ATTRIBUTES
     if isinstance(t, PatternType):
         return PATTERN_ATTRIBUTES
     if isinstance(t, MatchType):
@@ -1581,6 +1594,71 @@ def type_attributes(t: Type) -> dict | None:
     if isinstance(t, ProcessType):
         return COMPLETED_ATTRIBUTES if t.kind == "CompletedProcess" else POPEN_ATTRIBUTES
     return None
+
+
+# ---- pathlib ------------------------------------------------------------------------
+
+PATH_LIKE = object()  # a parameter taking a str or a Path (sync_method checks it)
+
+PATH_ATTRIBUTES = {
+    "name": lambda t: STR, "stem": lambda t: STR, "suffix": lambda t: STR, "anchor": lambda t: STR,
+    "suffixes": lambda t: ListType(STR), "parts": lambda t: ListType(STR),
+    "parent": lambda t: PATH, "parents": lambda t: ListType(PATH),
+}
+
+
+def path_parts(ctx: CallContext) -> Type:
+    """Path(*parts) and p.joinpath(*parts): each a str or a Path."""
+    ctx.arity(0, MANY)
+    for i in range(len(ctx.args)):
+        ctx.need(i, lambda t: t in (STR, PATH), "a str or Path")
+    return PATH
+
+
+def path_open(ctx: CallContext) -> Type:
+    n = ctx.arity(0, 1, keywords=("mode", "encoding"))
+    return open_mode(ctx, ctx.args[0] if n == 1 else ctx.keyword_arg("mode"))
+
+
+STAT_RESULT = StructType("stat_result", "struct", None, builtin=True, cpp_name="sd::pathlib::StatResult")
+for _field, _t in (("st_size", INT), ("st_mode", INT), ("st_uid", INT), ("st_gid", INT), ("st_nlink", INT),
+                   ("st_ino", INT), ("st_mtime", FLOAT), ("st_atime", FLOAT), ("st_ctime", FLOAT)):
+    STAT_RESULT.fields[_field] = Field(_field, _t, None, Loc(0, 0))
+
+PATH_METHODS = {
+    **{name: sync_method(BOOL) for name in ("exists", "is_file", "is_dir", "is_symlink", "is_absolute")},
+    **{name: sync_method(PATH) for name in ("absolute", "resolve", "expanduser")},
+    "as_posix": sync_method(STR),
+    "stat": sync_method(STAT_RESULT),
+    "read_text": sync_method(STR, ("encoding", OptionalType(STR), "std::nullopt")),
+    "read_bytes": sync_method(BYTES),
+    "write_text": sync_method(INT, ("data", STR), ("encoding", OptionalType(STR), "std::nullopt")),
+    "write_bytes": sync_method(INT, ("data", BYTES)),
+    "mkdir": sync_method(NONE, ("mode", INT, "0777"), ("parents", BOOL, "false"), ("exist_ok", BOOL, "false")),
+    "rmdir": sync_method(NONE),
+    "unlink": sync_method(NONE, ("missing_ok", BOOL, "false")),
+    "touch": sync_method(NONE, ("mode", INT, "0666"), ("exist_ok", BOOL, "true")),
+    "rename": sync_method(PATH, ("target", PATH_LIKE)),
+    "replace": sync_method(PATH, ("target", PATH_LIKE)),
+    "iterdir": sync_method(ListType(PATH)),
+    "glob": sync_method(ListType(PATH), ("pattern", STR)),
+    "rglob": sync_method(ListType(PATH), ("pattern", STR)),
+    "with_name": sync_method(PATH, ("name", STR)),
+    "with_suffix": sync_method(PATH, ("suffix", STR)),
+    "with_stem": sync_method(PATH, ("stem", STR)),
+    "relative_to": sync_method(PATH, ("other", PATH_LIKE)),
+    "is_relative_to": sync_method(BOOL, ("other", PATH_LIKE)),
+    "match": sync_method(BOOL, ("pattern", STR)),
+    "joinpath": path_parts,
+    "open": path_open,
+}
+
+MODULES["pathlib"] = Module("pathlib", {
+    "Path": Function("Path", path_parts, "sd::pathlib::Path", as_type=PATH),
+    "PosixPath": Function("PosixPath", path_parts, "sd::pathlib::Path", as_type=PATH),
+    "Path.cwd": Function("Path.cwd", returns(PATH), "sd::pathlib::Path::cwd"),
+    "Path.home": Function("Path.home", returns(PATH), "sd::pathlib::Path::home"),
+}, "modules/pathlib.hpp")
 
 
 class AttributeUnavailable(Exception):

@@ -1,0 +1,71 @@
+# pathlib: Path values, joining with /, and file system operations.
+import pathlib
+from pathlib import Path
+
+p = Path("docs") / "guide" / "intro.tar.gz"
+print(p, repr(p), p.name, p.stem, p.suffix, p.suffixes)
+print(p.parent, p.parent.parent, list(p.parts), [str(x) for x in p.parents])
+print(Path("a//b/./c/"), Path(), Path("/"), Path("a") / "/abs", "top" / Path("x"))
+print(Path("a", "b", Path("c")), Path("a").joinpath("b", "c"), pathlib.Path("/usr/bin").is_absolute())
+print(p.with_name("setup.py"), p.with_suffix(".zip"), Path("a/b.py").with_stem("c"))
+print(Path("/usr/local/bin").relative_to("/usr"), Path("/usr/bin").is_relative_to(Path("/usr")))
+print(Path("a/b.py").match("*.py"), Path("a/b.py").match("a/*.txt"), Path("a") < Path("b"))
+print(sorted({Path("b"), Path("a"), Path("a/./")}), {Path("x"): 1}[Path("x")])
+try:
+    Path("a/b").relative_to("c")
+except ValueError as e:
+    print("error:", e)
+try:
+    Path("a").with_suffix("txt")
+except ValueError as e:
+    print("error:", e)
+
+root = Path("/tmp") / "seadash_pathlib_test"
+if root.exists():
+    for old in sorted(root.rglob("*"), reverse=True):
+        if old.is_dir():
+            old.rmdir()
+        else:
+            old.unlink()
+    root.rmdir()
+root.mkdir()
+(root / "src" / "pkg").mkdir(parents=True)
+(root / "src" / "pkg").mkdir(parents=True, exist_ok=True)
+notes = root / "notes.txt"
+print(notes.write_text("line one\nline two\n"), notes.read_text().splitlines())
+(root / "data.bin").write_bytes(b"\x00\x01\x02")
+print((root / "data.bin").read_bytes(), (root / "data.bin").stat().st_size)
+(root / "src" / "main.py").write_text("print('hi')\n")
+(root / "src" / "pkg" / "util.py").write_text("")
+(root / "src" / ".hidden").touch()
+print(notes.exists(), notes.is_file(), notes.is_dir(), root.is_dir(), (root / "nope").exists())
+print(sorted(x.name for x in root.iterdir()))
+print(sorted(str(x.relative_to(root)) for x in root.glob("*.txt")))
+print(sorted(str(x.relative_to(root)) for x in root.rglob("*.py")))
+print(sorted(str(x.relative_to(root)) for x in root.glob("src/*")))
+print(sorted(str(x.relative_to(root)) for x in root.glob("**/*.py")))
+with notes.open() as f:
+    print(f.readline().strip())
+with open(notes, "a") as f:
+    f.write("line three\n")
+print(len(notes.read_text().splitlines()))
+moved = notes.rename(root / "moved.txt")
+print(moved.name, notes.exists(), moved.exists())
+try:
+    root.mkdir()
+except FileExistsError as e:
+    print("FileExistsError:", str(e).startswith("[Errno 17] File exists"))
+try:
+    (root / "missing.txt").read_text()
+except FileNotFoundError:
+    print("FileNotFoundError")
+(root / "missing.txt").unlink(missing_ok=True)
+print(Path.cwd().is_absolute(), Path.home().is_absolute(), Path("~/x").expanduser().is_absolute())
+print((root / "src" / ".." / "moved.txt").resolve() == moved.resolve())
+for old in sorted(root.rglob("*"), reverse=True):
+    if old.is_dir():
+        old.rmdir()
+    else:
+        old.unlink()
+root.rmdir()
+print(root.exists())

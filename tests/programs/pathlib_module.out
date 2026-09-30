@@ -1,0 +1,26 @@
+docs/guide/intro.tar.gz PosixPath('docs/guide/intro.tar.gz') intro.tar.gz intro.tar .gz ['.tar', '.gz']
+docs/guide docs ['docs', 'guide', 'intro.tar.gz'] ['docs/guide', 'docs', '.']
+a/b/c . / /abs top/x
+a/b/c a/b/c True
+docs/guide/setup.py docs/guide/intro.tar.zip a/c.py
+local/bin True
+True False True
+[PosixPath('a'), PosixPath('b')] 1
+error: 'a/b' is not in the subpath of 'c'
+error: Invalid suffix 'txt'
+18 ['line one', 'line two']
+b'\x00\x01\x02' 3
+True True False True False
+['data.bin', 'notes.txt', 'src']
+['notes.txt']
+['src/main.py', 'src/pkg/util.py']
+['src/.hidden', 'src/main.py', 'src/pkg']
+['src/main.py', 'src/pkg/util.py']
+line one
+3
+moved.txt False True
+FileExistsError: True
+FileNotFoundError
+True True True
+True
+False

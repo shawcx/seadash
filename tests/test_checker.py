@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, queue, random, re, socket, subprocess, sys, threading, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, pathlib, queue, random, re, socket, subprocess, sys, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -1422,4 +1422,20 @@ def test_subprocess_errors():
     )
     assert err("import subprocess\nr = subprocess.check_output(['ls'], stdout=subprocess.PIPE)\n").message == (
         "subprocess.check_output() got an unexpected keyword argument 'stdout'"
+    )
+
+
+def test_pathlib_types():
+    info = ok(
+        "from pathlib import Path\n"
+        "p = Path('a') / 'b'\nq = 'x' / Path('y')\nn = p.name\nkids = p.iterdir()\nsize = p.stat().st_size\n"
+        "here = Path.cwd()\nf = p.open('rb')\ns = {p, q}\n"
+    )
+    assert {"p: Path", "q: Path", "n: str", "kids: list[Path]", "size: int", "here: Path", "f: BinaryIO",
+            "s: set[Path]"} <= set(variables(info))
+    assert err("from pathlib import Path\nx = Path('a') / 3\n").message == (
+        "unsupported operand types for /: Path and int"
+    )
+    assert err("from pathlib import Path\nx = Path('a').rename(3)\n").message == (
+        "Path.rename() argument 'target' must be a str or Path, not int"
     )

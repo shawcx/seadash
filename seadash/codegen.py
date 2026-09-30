@@ -36,7 +36,7 @@ from . import ast as A
 from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
-    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, SyncType,
+    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType,
     CounterType, DefaultDictType, DequeType, DictType, MatchType, PatternType, ProcessType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
@@ -52,7 +52,8 @@ CPP_KEYWORDS = frozenset(
     static_assert static_cast struct switch template this thread_local throw true try
     typedef typeid typename union unsigned using virtual void volatile wchar_t while xor
     xor_eq main std sd prog module_main NULL
-    """.split()
+    stdin stdout stderr errno st_atime st_mtime st_ctime
+    """.split()  # (the last line: C library names that are macros on some systems)
 )
 
 # Built-in methods that modify their receiver (so a parameter used this way is passed by value).
@@ -242,6 +243,8 @@ class CodeGen:
                 return "sd::json::Value"
             case _ if t == SOCKET:
                 return "sd::socket::Socket"
+            case _ if t == PATH:
+                return "sd::pathlib::Path"
             case _ if t == NONE:
                 return "void"
             case ListType(elem):
@@ -1770,12 +1773,8 @@ class CodeGen:
                     return f"sd::print_to({', '.join([self.expr(file), *head, *args])})"
                 return f"sd::print({', '.join(head + args)})"
             case "open":
-                mode = e.args[1] if len(e.args) > 1 else self.keyword(e, "mode")
-                mode_code = self.expr(mode) if mode else '"r"s'
-                if e.ty.binary:
-                    return f"sd::open_binary({a}, {mode_code})"
-                encoding = self.keyword(e, "encoding")
-                return f"sd::open_text({', '.join([a, mode_code, *([self.expr(encoding)] if encoding else [])])})"
+                path = f"{a}.str()" if e.args[0].ty == PATH else a
+                return self.open_call(path, e.args[1] if len(e.args) > 1 else self.keyword(e, "mode"), e)
             case "len" if (m := user_dunder(e.args[0].ty, "__len__")):
                 return self.dunder_call(Dunder(m), a, e.args[0].ty, [])
             case "len":
@@ -1838,6 +1837,13 @@ class CodeGen:
                 return f"sd::round({', '.join(args)})"
         raise NotImplementedError(f"codegen for builtin {name}()")
 
+    def open_call(self, path: str, mode: A.Expr | None, e: A.Call) -> str:
+        mode_code = self.expr(mode) if mode else '"r"s'
+        if e.ty.binary:
+            return f"sd::open_binary({path}, {mode_code})"
+        encoding = self.keyword(e, "encoding")
+        return f"sd::open_text({', '.join([path, mode_code, *([self.expr(encoding)] if encoding else [])])})"
+
     def method_call(self, recv_type: Type, name: str, e: A.Call) -> str:
         r = self.expr(e.func.value)
         args = [self.expr(a) for a in e.args]
@@ -1850,7 +1856,11 @@ class CodeGen:
             return f"{r}->{name}({', '.join(args)})"
         if recv_type == JSON_VALUE:
             return f"{r}.{name}({', '.join(args)})"
-        if isinstance(recv_type, SyncType) or recv_type == SOCKET:
+        if recv_type == PATH and name == "joinpath":
+            return f"{r}.joinpath({', '.join(args)})"
+        if recv_type == PATH and name == "open":
+            return self.open_call(f"{r}.str()", e.args[0] if e.args else self.keyword(e, "mode"), e)
+        if isinstance(recv_type, SyncType) or recv_type in (SOCKET, PATH):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):

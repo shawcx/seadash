@@ -175,10 +175,11 @@ def work():
 | `collections` | `defaultdict`, `Counter`, `deque` |
 | `re` | Python's regular expressions on PCRE2; literal patterns are checked at compile time, and `m.group(1)` is a `str` when the group always matches |
 | `subprocess` | `run`, `check_output`, `call`, `Popen` (streaming, `communicate`, timeouts); `r.stdout` is `str` or `bytes` depending on `text=`, and reading an uncaptured stream is a compile error |
+| `pathlib` | `Path` values: `/` joins, `name`/`stem`/`suffix`/`parent`, `read_text`/`write_text`, `mkdir`, `iterdir`, `glob`/`rglob`, `resolve`...; `open()` takes a `Path` too |
 | `dataclasses`, `functools` | `@dataclass`, `field()`, `@cache`, `@lru_cache` |
 | `typing` | `Callable`, `Optional`, `Iterator`... (so the same code also runs under Python) |
 
-In progress: `pathlib`, `shutil`, `datetime`, `argparse`.
+In progress: `shutil`, `datetime`, `argparse`.
 
 ## Differences from Python
 

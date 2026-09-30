@@ -34,7 +34,7 @@ std::string shown(const Args& a);  // how Python's messages show a command
 struct CalledProcessError : SubprocessError {
     std::int64_t returncode = 0;
     list<std::string> cmd;
-    std::optional<std::string> output, stdout, stderr;
+    std::optional<std::string> output, stdout_, stderr_;  // stdout/stderr are C macros
     CalledProcessError(std::int64_t code, const Args& args, std::optional<std::string> out, std::optional<std::string> err);
     static std::string describe(std::int64_t code, const std::string& shown_cmd) {
         std::string what = "Command '" + shown_cmd + "'";
@@ -53,7 +53,7 @@ struct CalledProcessError : SubprocessError {
 struct TimeoutExpired : SubprocessError {
     list<std::string> cmd;
     double timeout = 0;
-    std::optional<std::string> output, stdout, stderr;
+    std::optional<std::string> output, stdout_, stderr_;  // stdout/stderr are C macros
     TimeoutExpired(const Args& args, double t, std::optional<std::string> out, std::optional<std::string> err);
     std::string sd_type() const override { return "subprocess.TimeoutExpired"; }
 };
@@ -84,13 +84,13 @@ inline std::string shown(const Args& a) { return a.str_ ? *a.str_ : repr(a.list_
 
 inline CalledProcessError::CalledProcessError(std::int64_t code, const Args& args, std::optional<std::string> out,
                                               std::optional<std::string> err)
-    : SubprocessError(describe(code, shown(args))), returncode(code), cmd(args.as_list()), output(out), stdout(out),
-      stderr(std::move(err)) {}
+    : SubprocessError(describe(code, shown(args))), returncode(code), cmd(args.as_list()), output(out), stdout_(out),
+      stderr_(std::move(err)) {}
 
 inline TimeoutExpired::TimeoutExpired(const Args& args, double t, std::optional<std::string> out,
                                       std::optional<std::string> err)
     : SubprocessError("Command '" + shown(args) + "' timed out after " + float_repr(t) + " seconds"),
-      cmd(args.as_list()), timeout(t), output(out), stdout(out), stderr(std::move(err)) {}
+      cmd(args.as_list()), timeout(t), output(out), stdout_(out), stderr_(std::move(err)) {}
 
 // Where a child's stdin/stdout/stderr goes: inherited, a pipe to us, /dev/null,
 // the child's stdout (for stderr), or an open file.

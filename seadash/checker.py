@@ -37,7 +37,7 @@ from . import builtins, threads
 from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
-    BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PRIMITIVES, SOCKET, STR, TEXT_FILE,
+    BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEXT_FILE,
     SYNC_ARITY, ClassRefType, CounterType, MatchType, PatternType, ProcessType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
@@ -1512,7 +1512,7 @@ class Checker:
         return state
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
-        ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE) or isinstance(
+        ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE, PATH) or isinstance(
             t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType, MatchType)
         ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__"))
         if not ok:
@@ -1883,6 +1883,8 @@ class Checker:
         widened = FLOAT if FLOAT in (l, r) else INT
         if op in ("+", "-", "|", "&") and l == r and isinstance(l, CounterType):
             return l  # Counter arithmetic keeps positive counts
+        if op == "/" and PATH in (l, r) and {l, r} <= {PATH, STR}:
+            return PATH  # Path("docs") / "logo.svg"
         match op:
             case "+":
                 if numeric:
@@ -1983,7 +1985,7 @@ class Checker:
     def check_comparison(self, op: str, lt: Type, rt: Type, left: A.Expr, right: A.Expr, e: A.Compare) -> None:
         if op in ("<", ">", "<=", ">="):
             ordered = (is_numeric(lt) and is_numeric(rt)) or (
-                lt == rt and (lt in (STR, BYTES) or isinstance(lt, (TupleType, ListType)))
+                lt == rt and (lt in (STR, BYTES, PATH) or isinstance(lt, (TupleType, ListType)))
             )
             if not ordered:
                 owner = lt if isinstance(lt, StructType) else rt
@@ -2202,6 +2204,10 @@ class Checker:
                 ctx = builtins.CallContext(self, e, f"{name}()", expected)
                 e.sym = CallTarget("builtin", name)
                 return builtins.FUNCTIONS[name](ctx)
+        if isinstance(func, A.Attribute) and func.attr in ("cwd", "home") and self.is_path_class(func.value):
+            mod = builtins.MODULES["pathlib"]  # Path.cwd(), pathlib.Path.home()
+            e.sym = CallTarget("module_func", (mod, f"Path.{func.attr}"))
+            return mod.members[f"Path.{func.attr}"].check(builtins.CallContext(self, e, f"Path.{func.attr}()", expected))
         if isinstance(func, A.Attribute):
             if (
                 isinstance(func.value, A.Name) and func.value.id not in self.state.names
@@ -2270,6 +2276,16 @@ class Checker:
         if isinstance(e, A.Attribute) and (path := attr_path(e)):
             return self.sync_kind_named(".".join(path))
         return None
+
+    def is_path_class(self, e: A.Expr) -> bool:
+        """`Path` imported from pathlib, or `pathlib.Path`."""
+        path = builtins.MODULES["pathlib"].members["Path"]
+        if isinstance(e, A.Name) and e.id not in self.state.names and e.id in self.imported:
+            mod, member = self.imported[e.id]
+            return mod.members.get(member) is path
+        if isinstance(e, A.Attribute) and isinstance(e.value, A.Name) and e.value.id in self.modules:
+            return self.modules[e.value.id].members.get(e.attr) is path
+        return False
 
     # ---- collections ----------------------------------------------------------------
 
