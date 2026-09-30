@@ -1,0 +1,6 @@
+Dog(name='rex', legs=4, breed='lab') says woof
+Bird(name='tweety', legs=2, can_fly=True) says tweet
+Animal(name='thing', legs=0) says ...
+fido is a mutt
+polly has 2 legs
+loudest: Bird(name='tweety', legs=2, can_fly=True)

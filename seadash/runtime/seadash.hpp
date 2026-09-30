@@ -173,6 +173,23 @@ T unwrap(std::optional<T>&& o, const char* what) {
     return std::move(*o);
 }
 
+// isinstance(x, Dog) for classes (all seadash classes are polymorphic).
+template <class C, class P>
+bool isinstance_of(const std::shared_ptr<P>& p) {
+    return dynamic_cast<const C*>(p.get()) != nullptr;
+}
+template <class C, class P>
+bool isinstance_of(const std::optional<std::shared_ptr<P>>& p) {
+    return p && isinstance_of<C>(*p);
+}
+// An attribute narrowed by isinstance(); checked, like unwrap().
+template <class C, class P>
+std::shared_ptr<C> downcast(const std::shared_ptr<P>& p, const char* what) {
+    auto out = std::dynamic_pointer_cast<C>(p);
+    if (!out) raise<TypeError>(std::string("'") + what + "' is no longer the narrowed class");
+    return out;
+}
+
 // Tag for constructors generated from a user-written __init__.
 struct init_t {};
 inline constexpr init_t init{};

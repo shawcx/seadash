@@ -1,0 +1,16 @@
+rect with area 6.00
+a square: square with area 4.00
+circle with area 3.14
+blob with area 0.00
+13.14159
+biggest: rect
+rect is a rect with width 2.0
+square is a rect with width 2.0
+square is round or square
+circle is round or square
+[True, True, True, True] [False, True, False, False]
+tick 1
+tick 2
+3 2
+rect with area 1.00 | circle
+((1 + 2 = 3) + 3 = 6)

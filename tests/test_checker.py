@@ -617,7 +617,8 @@ def test_unknown_module_member():
 @pytest.mark.parametrize("src,msg", [
     ("def f[T](x: T) -> T:\n    return x", "generic functions are not supported yet"),
     ("x: int | str = 1", "union types are not supported yet (T? for 'T or None' is)"),
-    ("class A: pass\nclass B(A): pass", "inheritance is only supported for exception classes (for now), e.g. `class B(Exception):`"),
+    ("struct A: pass\nstruct B(A): pass", "structs can't inherit (they're values; use a class): `class B(A):`"),
+    ("struct A: pass\nclass B(A): pass", "can't inherit from struct 'A'; only classes can be inherited from"),
     ("def f():\n    class C: pass", "a class can only be defined at the top level of a module"),
 ])
 def test_not_yet_supported(src, msg):
@@ -1033,3 +1034,54 @@ def test_attribute_narrowing(body):
 def test_attribute_narrowing_is_undone(body):
     e = err(NARROW_PRELUDE + "def f(u: User):\n" + textwrap.indent(body, "    ") + "\n")
     assert "Address? might be None" in e.message
+
+
+# ---- inheritance ----------------------------------------------------------------
+
+ANIMALS = """
+class Animal:
+    name: str
+    def speak(self) -> str:
+        return "..."
+class Dog(Animal):
+    def fetch(self) -> str:
+        return "ball"
+class Cat(Animal):
+    pass
+"""
+
+
+def test_subclasses_are_assignable_and_join_to_their_base():
+    info = ok(ANIMALS + """
+a: Animal = Dog("rex")
+pets = [Dog("a"), Cat("b")]
+first = pets[0].speak()
+""")
+    assert variables(info) == ["a: Animal", "pets: list[Animal]", "first: str"]
+
+
+@pytest.mark.parametrize("body", [
+    "if isinstance(a, Dog):\n    print(a.fetch())",
+    "if isinstance(a, (Dog, Cat)):\n    print(a.name)",
+    "if not isinstance(a, Dog):\n    return\nprint(a.fetch())",
+    "if a is not None and isinstance(a, Dog):\n    print(a.fetch())",
+])
+def test_isinstance_narrows(body):
+    ok(ANIMALS + "def f(a: Animal?):\n" + textwrap.indent(body, "    ") + "\n")
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("def f(a: Animal):\n    a.fetch()", "Animal has no method 'fetch'"),
+    ("def f(d: Dog):\n    print(isinstance(d, Cat))", "a Dog can never be a Cat (they're unrelated classes)"),
+    ("def f(n: int):\n    print(isinstance(n, Dog))", "isinstance() only works on class instances; a int always has the type int"),
+    ("def f(a: Animal):\n    print(isinstance(a, int))", "isinstance() needs a class (or a tuple of classes) as its second argument"),
+    ("class Bad(Animal):\n    def speak(self) -> int:\n        return 1", "Bad.speak() overrides Animal.speak(), so it must have the same parameter and return types: def speak() -> str"),
+    ("class Bad(Animal):\n    def name(self) -> str:\n        return ''", "'name' is a field in Animal; a method can't reuse the name"),
+    ("class Bad(Animal):\n    name: int", "field 'name' is already defined"),
+    ("def f():\n    super().speak()", "super() only works as `super().method(...)` directly inside a method"),
+    ("class Solo:\n    def f(self):\n        super().f()", "Solo has no base class to call with super()"),
+    ("class D2(Animal):\n    def f(self):\n        super().nope()", "Animal has no method 'nope'"),
+    ("class A1(B1): pass\nclass B1(A1): pass", "'B1' can't inherit from itself"),
+])
+def test_inheritance_errors(src, msg):
+    assert err(ANIMALS + src).message == msg

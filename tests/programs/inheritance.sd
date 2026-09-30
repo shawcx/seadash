@@ -1,0 +1,106 @@
+class Shape:
+    name: str
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def area(self) -> float:
+        return 0.0
+
+    def describe(self) -> str:
+        return f"{self.name} with area {self.area():.2f}"
+
+class Rect(Shape):
+    w: float
+    h: float
+
+    def __init__(self, w: float, h: float):
+        super().__init__("rect")
+        self.w = w
+        self.h = h
+
+    def area(self) -> float:
+        return self.w * self.h
+
+class Square(Rect):
+    def __init__(self, side: float):
+        super().__init__(side, side)
+        self.name = "square"
+
+    def describe(self) -> str:
+        return "a square: " + super().describe()
+
+class Circle(Shape):
+    r: float
+
+    def __init__(self, r: float):
+        super().__init__("circle")
+        self.r = r
+
+    def area(self) -> float:
+        return 3.14159 * self.r * self.r
+
+shapes: list[Shape] = [Rect(2, 3), Square(2), Circle(1), Shape("blob")]
+for s in shapes:
+    print(s.describe())
+print(sum(s.area() for s in shapes))
+
+biggest = max(shapes, key=lambda s: s.area())
+print("biggest:", biggest.name)
+
+for s in shapes:
+    if isinstance(s, Rect):
+        print(s.name, "is a rect with width", s.w)
+    if isinstance(s, (Circle, Square)):
+        print(s.name, "is round or square")
+print([isinstance(s, Shape) for s in shapes], [isinstance(s, Square) for s in shapes])
+
+class Counter:
+    count: int
+
+    def __init__(self):
+        self.count = 0
+
+    def tick(self) -> int:
+        self.count += 1
+        return self.count
+
+class LoudCounter(Counter):
+    def tick(self) -> int:
+        n = super().tick()
+        print("tick", n)
+        return n
+
+def run(c: Counter, times: int) -> int:
+    for i in range(times):
+        c.tick()
+    return c.count
+
+print(run(Counter(), 3), run(LoudCounter(), 2))
+
+mixed = [Rect(1, 1), Circle(2)]
+print(mixed[0].describe(), "|", mixed[1].name)
+
+class Node:
+    value: int
+
+    def __init__(self, value: int):
+        self.value = value
+
+    def render(self) -> str:
+        return str(self.value)
+
+class Pair(Node):
+    left: Node
+    right: Node
+
+    def __init__(self, left: Node, right: Node):
+        super().__init__(left.value + right.value)
+        self.left = left
+        self.right = right
+
+    def render(self) -> str:
+        return f"({self.left.render()} + {self.right.render()} = {self.value})"
+
+tree = Pair(Pair(Node(1), Node(2)), Node(3))
+print(tree.render())

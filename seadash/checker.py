@@ -234,8 +234,11 @@ class Checker:
 
         for node in struct_nodes:
             self.resolve_base(node.sym)
-        for node in struct_nodes:
+        # Bases before subclasses, so a subclass can see what it inherits.
+        for node in sorted(struct_nodes, key=lambda n: len(n.sym.ancestors())):
             self.resolve_struct_members(node.sym)
+        for node in struct_nodes:
+            self.check_overrides(node.sym)
         for node in func_nodes:
             self.functions[node.name] = self.resolve_signature(node, owner=None)
         for node in struct_nodes:
@@ -326,21 +329,37 @@ class Checker:
         return None
 
     def resolve_base(self, st: StructType) -> None:
-        """Only exception classes can inherit (for now): `class NotFound(ValueError): ...`"""
+        """`class Dog(Animal):` Classes inherit from one class; structs (values) can't inherit."""
         if not st.node.bases:
             return
         base_expr = st.node.bases[0]
         base = self.resolve_type(base_expr)
-        if not (isinstance(base, StructType) and base.is_exception):
-            raise self.error(
-                f"inheritance is only supported for exception classes (for now), e.g. `class {st.name}(Exception):`",
-                base_expr,
-            )
+        if not isinstance(base, StructType):
+            raise self.error(f"a class can only inherit from another class, not {base}", base_expr)
         if st.kind != "class":
-            raise self.error(f"exceptions must be classes, not structs: `class {st.name}({base.name}):`", st.node)
+            what = "exceptions must be classes, not structs" if base.is_exception else "structs can't inherit (they're values; use a class)"
+            raise self.error(f"{what}: `class {st.name}({base.name}):`", st.node)
+        if base.kind != "class":
+            raise self.error(f"can't inherit from struct '{base.name}'; only classes can be inherited from", base_expr)
         if base.is_subclass_of(st):
             raise self.error(f"'{st.name}' can't inherit from itself", base_expr)
         st.base = base
+
+    def check_overrides(self, st: StructType) -> None:
+        """An override must match the base method's signature (it becomes a C++ virtual override)."""
+        if st.base is None:
+            return
+        for name, m in st.methods.items():
+            if st.base.find_field(name):
+                raise self.error(f"'{name}' is a field in {st.base.name}; a method can't reuse the name", m.node)
+            base_m = st.base.find_method(name)
+            if base_m is None or name == "__init__":
+                continue
+            if [p.type for p in m.params] != [p.type for p in base_m.params] or m.ret != base_m.ret:
+                raise self.error(
+                    f"{st.name}.{name}() overrides {base_m.owner.name}.{name}(), so it must have the same "
+                    f"parameter and return types: {base_m}", m.node,
+                )
 
     def resolve_struct_members(self, st: StructType) -> None:
         for stmt in st.node.body:
@@ -1047,6 +1066,9 @@ class Checker:
                 right_true, right_false = self.check_condition(right)
                 e.ty = BOOL
                 return merge([left_true, right_true]), right_false
+            case A.Call(A.Name("isinstance")) if self.is_builtin_name(e.func, "isinstance"):
+                self.check_expr(e)
+                return self.isinstance_narrowing(e), self.state.copy()
             case A.Compare(subject, [op], [A.NoneLit()]) if op in ("is", "is not", "==", "!="):
                 self.check_expr(e)
                 narrowed = self.narrowed(subject)
@@ -1558,8 +1580,8 @@ class Checker:
         if isinstance(vt, StructType):
             if f := vt.find_field(attr):
                 e.sym = f
-                if isinstance(f.type, OptionalType) and (path := attr_path(e)) in self.state.attrs:
-                    return self.state.attrs[path]  # narrowed: `if u.address is not None:`
+                if (path := attr_path(e)) in self.state.attrs:
+                    return self.state.attrs[path]  # narrowed: `if u.address is not None:`, isinstance()
                 return f.type
             if (method := vt.find_method(attr)) and method.name != "__init__":
                 e.sym = method  # a bound method: remembers its object
@@ -1641,6 +1663,10 @@ class Checker:
 
     def check_call(self, e: A.Call, expected: Type | None) -> Type:
         func = e.func
+        if self.is_builtin_name(func, "isinstance"):
+            return self.check_isinstance(e)
+        if isinstance(func, A.Attribute) and isinstance(func.value, A.Call) and self.is_builtin_name(func.value.func, "super"):
+            return self.check_super_call(e, func.value, func.attr)
         own = self.scope.info.var if self.scope.info is not None else None
         if own is not None and isinstance(func, A.Name) and (entry := self.state.names.get(func.id)):
             if isinstance(entry, Bound) and entry.var is own:
@@ -1692,6 +1718,73 @@ class Checker:
             e.sym = CallTarget("builtin_method", (owner, func.attr))
             return handler(ctx)
         return self.call_value(e, self.check_expr(func))
+
+    def is_builtin_name(self, e: A.Expr, name: str) -> bool:
+        return (
+            isinstance(e, A.Name) and e.id == name and name not in self.state.names
+            and name not in self.scope.assigned and name not in self.functions
+        )
+
+    def check_isinstance(self, e: A.Call) -> Type:
+        """isinstance(x, Dog) or isinstance(x, (Dog, Cat)), for class hierarchies."""
+        if len(e.args) != 2 or e.keywords:
+            raise self.error("isinstance() takes exactly 2 arguments: a value and a class (or a tuple of classes)", e)
+        subject, spec = e.args
+        t = self.check_expr(subject)
+        base = strip_optional(t)
+        if not isinstance(base, StructType) or base.kind != "class":
+            raise self.error(
+                f"isinstance() only works on class instances; a {t} always has the type {t}", subject
+            )
+        exprs = spec.elts if isinstance(spec, A.TupleLit) else [spec]
+        classes: list[StructType] = []
+        for x in exprs:
+            st = (self.lookup_struct(x.id) if isinstance(x, A.Name) else self.module_struct(x))
+            if st is None:
+                raise self.error("isinstance() needs a class (or a tuple of classes) as its second argument", x)
+            if not (st.is_subclass_of(base) or base.is_subclass_of(st)):
+                raise self.error(f"a {base.name} can never be a {st.name} (they're unrelated classes)", x)
+            classes.append(st)
+        e.sym = CallTarget("isinstance", classes)
+        return BOOL
+
+    def isinstance_narrowing(self, e: A.Call) -> State:
+        """The state where isinstance(subject, classes) is true: subject is the narrower class."""
+        subject = e.args[0]
+        classes: list[StructType] = e.sym.target
+        declared = strip_optional(subject.ty)
+        narrow = classes[0]
+        for c in classes[1:]:
+            narrow = join(narrow, c)
+        if not narrow.is_subclass_of(declared):
+            narrow = declared  # isinstance(dog, Animal): nothing new to learn beyond "not None"
+        state = self.state.copy()
+        if isinstance(subject, A.Name):
+            entry = state.names.get(subject.id)
+            if isinstance(entry, Bound):
+                state.names[subject.id] = Bound(entry.var, narrow)
+        elif path := attr_path(subject):
+            state.attrs[path] = narrow
+        return state
+
+    def check_super_call(self, e: A.Call, sup: A.Call, method_name: str) -> Type:
+        """super().method(...) calls the base class's version; super().__init__(...) its initializer."""
+        info = self.scope.info
+        if sup.args or sup.keywords or info is None or info.owner is None or self.lambda_depth:
+            raise self.error("super() only works as `super().method(...)` directly inside a method", sup)
+        base = info.owner.base
+        if base is None or base.builtin:
+            raise self.error(f"{info.owner.name} has no base class to call with super()", sup)
+        if method_name == "__init__":
+            params = self.constructor_params(base, e)
+            owner = base.init.owner if base.init is not None else base
+            e.sym = CallTarget("super_init", owner, self.match_args(e, params, f"{base.name}.__init__()"), params)
+            return NONE
+        method = base.find_method(method_name)
+        if method is None:
+            raise self.error(f"{base.name} has no method '{method_name}'", e.func)
+        e.sym = CallTarget("super_method", method, self.match_args(e, method.params, f"{method_name}()"))
+        return method.ret
 
     def call_value(self, e: A.Call, t: Type) -> Type:
         """Calling a function *value*: a variable, parameter, field or expression of function type."""

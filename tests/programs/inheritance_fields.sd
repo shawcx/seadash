@@ -1,0 +1,46 @@
+# seadash: field-wise constructors and dataclass-style printing work through inheritance
+class Animal:
+    name: str
+    legs: int = 4
+
+    def speak(self) -> str:
+        return "..."
+
+class Dog(Animal):
+    breed: str = "mutt"
+
+    def speak(self) -> str:
+        return "woof"
+
+class Bird(Animal):
+    can_fly: bool = True
+
+    def __init__(self, name: str):
+        super().__init__(name, 2)     # Animal has no __init__: its fields, in order
+
+    def speak(self) -> str:
+        return "tweet"
+
+pets: list[Animal] = [Dog("rex", breed="lab"), Bird("tweety"), Animal("thing", 0)]
+for p in pets:
+    print(p, "says", p.speak())
+
+class Owner:
+    pet: Animal?
+
+o = Owner(Dog("fido"))
+if isinstance(o.pet, Dog):
+    print(o.pet.name, "is a", o.pet.breed)    # narrowed attribute (checked downcast)
+o.pet = Bird("polly")
+if not isinstance(o.pet, Dog):          # o.pet was just assigned, so it is known not to be None
+    print(o.pet.name, "has", o.pet.legs, "legs")
+
+def loudest(animals: list[Animal]) -> Animal?:
+    best: Animal? = None
+    for a in animals:
+        if best is None or len(a.speak()) > len(best.speak()):
+            best = a
+    return best
+
+if (w := loudest(pets)) is not None:
+    print("loudest:", w)

@@ -297,6 +297,9 @@ class CodeGen:
         if st.is_exception:
             self.exception_definition(st)
             return
+        if st.kind == "class":
+            self.class_definition(st)
+            return
         name = ident(st.name)
         base = f" : std::enable_shared_from_this<{name}>" if st.kind == "class" else ""
         self.open(f"struct {name}{base}")
@@ -321,6 +324,56 @@ class CodeGen:
             self.line(f"bool operator==(const {name}&) const = default;")
         if self.json_hooks(st):
             self.line("sd::json::Value sd_to_json() const;")
+            self.line(f"static {self.cpp_type(st)} sd_from_json(const sd::json::Value& v, const std::string& path);")
+        self.close(";")
+        self.line()
+
+    def ctor_params(self, st: StructType) -> list[Type]:
+        if st.init is not None:
+            return [p.type for p in st.init.params]
+        return [f.type for f in st.all_fields().values()]
+
+    def own_init(self, st: StructType) -> bool:
+        """Does this class define sd_init itself (its __init__, or generated field assignments)?"""
+        return "__init__" in st.methods or st.init is None
+
+    def class_definition(self, st: StructType) -> None:
+        """A class: shared (std::shared_ptr) and polymorphic. Methods are virtual so calls
+        through a base class reach overrides; construction runs sd_init (the __init__ body,
+        or field assignments), which super().__init__(...) can call directly."""
+        name = ident(st.name)
+        base = f" : public {class_name(st.base)}" if st.base else f" : public std::enable_shared_from_this<{name}>"
+        self.open(f"struct {name}{base}")
+        for f in st.fields.values():
+            init = f" = {self.expr_as(f.default, f.type)}" if f.default is not None else "{}"
+            self.line(f"{self.cpp_type(f.type)} {ident(f.name)}{init};")
+        if st.fields:
+            self.line()
+        self.line(f"{name}() = default;")
+        if st.base is None:
+            self.line(f"virtual ~{name}() = default;")
+        types = self.ctor_params(st)
+        names = [f"sd_a{i}" for i in range(len(types))]
+        owner = st if self.own_init(st) else st.init.owner
+        params = ", ".join(["sd::init_t", *(f"{self.cpp_type(t)} {n}" for t, n in zip(types, names))])
+        forward = ", ".join(f"std::move({n})" for n in names)
+        self.line(f"{name}({params}) {{ this->{class_name(owner)}::sd_init({forward}); }}")
+        if self.own_init(st):
+            if "__init__" in st.methods:
+                self.line(f"void sd_init({', '.join(self.params(st.methods['__init__']))});")
+            else:
+                self.line(f"void sd_init({', '.join(f'{self.cpp_type(t)} {n}' for t, n in zip(types, names))});")
+        for m in st.methods.values():
+            if m.name == "__init__":
+                continue
+            overrides = st.base is not None and st.base.find_method(m.name) is not None
+            decl = f"{self.cpp_type(m.ret)} {ident(m.name)}({', '.join(self.params(m))})"
+            self.line(f"{decl} override;" if overrides else f"virtual {decl};")
+        self.line("std::string sd_repr() const override;" if st.base else "virtual std::string sd_repr() const;")
+        if self.json_hooks(st):
+            virtual = "" if st.base and self.json_hooks(st.base) else "virtual "
+            suffix = " override" if st.base and self.json_hooks(st.base) else ""
+            self.line(f"{virtual}sd::json::Value sd_to_json() const{suffix};")
             self.line(f"static {self.cpp_type(st)} sd_from_json(const sd::json::Value& v, const std::string& path);")
         self.close(";")
         self.line()
@@ -356,7 +409,7 @@ class CodeGen:
                 else:
                     self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{ident(m.name)}({', '.join(self.params(m))})")
             return
-        fields = list(st.fields.values())
+        fields = list(st.all_fields().values())
         parts = [cpp_string(f"{st.name}(")]
         for i, f in enumerate(fields):
             parts.append(cpp_string(("" if i == 0 else ", ") + f"{f.name}="))
@@ -366,8 +419,16 @@ class CodeGen:
         self.line()
         if self.json_hooks(st):
             self.json_members(st)
+        if st.kind == "class" and self.own_init(st) and "__init__" not in st.methods:
+            fields_all = list(st.all_fields().values())
+            params = ", ".join(f"{self.cpp_type(f.type)} sd_a{i}" for i, f in enumerate(fields_all))
+            sets = " ".join(f"this->{ident(f.name)} = std::move(sd_a{i});" for i, f in enumerate(fields_all))
+            self.line(f"void {name}::sd_init({params}) {{ {sets} }}")
+            self.line()
         for m in st.methods.values():
-            if m.name == "__init__":
+            if m.name == "__init__" and st.kind == "class":
+                self.function_body(m, f"void {name}::sd_init({', '.join(self.params(m))})")
+            elif m.name == "__init__":
                 params = ", ".join(["sd::init_t", *self.params(m)])
                 self.function_body(m, f"{name}::{name}({params})")
             else:
@@ -415,15 +476,19 @@ class CodeGen:
         return f"{self.cpp_type(fn.ret)} {ident(fn.name)}({', '.join(self.params(fn))})"
 
     def params(self, fn: FuncInfo) -> list[str]:
-        modified = modified_names(fn.node.body)
+        """C++ parameters. The signature depends only on the types (so an override always
+        matches its base method): small values by value, the rest by const reference.
+        A body that modifies or captures a const& parameter works on its own copy
+        (see local_params)."""
         out = []
         for p, var in zip(fn.params, self.param_vars(fn)):
             t = self.cpp_type(p.type)
-            name = f"sd_arg_{var.cpp_name}" if var.captured else ident(p.name)
-            by_value = p.name in modified or p.type in (INT, FLOAT, BOOL) or (
-                isinstance(p.type, StructType) and p.type.kind == "class"
-            )
-            out.append(f"{t} {name}" if by_value else f"const {t}& {name}")
+            if by_value(p.type):
+                name = f"sd_arg_{var.cpp_name}" if var.captured else ident(p.name)
+                out.append(f"{t} {name}")
+            else:
+                own_copy = var.captured or p.name in modified_names(fn.node.body)
+                out.append(f"const {t}& {f'sd_arg_{var.cpp_name}' if own_copy else ident(p.name)}")
         return out
 
     def function(self, fn: FuncInfo) -> None:
@@ -455,11 +520,15 @@ class CodeGen:
         return [p.sym for p in nodes]
 
     def cell_params(self, fn: FuncInfo) -> None:
-        """Parameters captured by a closure are copied into cells on entry."""
+        """Parameters captured by a closure are copied into cells on entry; parameters the
+        body modifies get a local copy (the caller's value is untouched: values semantics)."""
+        modified = modified_names(fn.node.body)
         for var in self.param_vars(fn):
+            t = self.cpp_type(var.type)
             if var.captured:
-                t = self.cpp_type(var.type)
                 self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>(sd_arg_{var.cpp_name});")
+            elif var.name in modified and not by_value(var.type):
+                self.line(f"{t} {ident(var.cpp_name)} = sd_arg_{var.cpp_name};")
 
     # =========================================================================
     # Statements
@@ -890,9 +959,12 @@ class CodeGen:
         raise NotImplementedError(f"codegen for {type(e).__name__}")
 
     def view(self, code: str, declared: Type, seen: Type) -> str:
-        """Unwrap an optional that the checker has narrowed to its inner type."""
+        """A variable as the checker currently sees it: unwrap a narrowed optional, and
+        cast to a subclass after isinstance()."""
         if isinstance(declared, OptionalType) and not isinstance(seen, OptionalType) and seen != NONE:
-            return f"(*{code})"
+            code, declared = f"(*{code})", declared.inner
+        if isinstance(seen, StructType) and isinstance(declared, StructType) and seen is not declared:
+            return f"std::static_pointer_cast<{class_name(seen)}>({code})"
         return code
 
     def var_ref(self, var: Var) -> str:
@@ -906,7 +978,7 @@ class CodeGen:
                 return "sd_self"
             if var.type.kind == "struct":
                 return "(*this)"
-            if var.type.is_exception:  # shared_from_this() gives the BaseException pointer
+            if var.type.base is not None:  # shared_from_this() gives the root class's pointer
                 return f"std::static_pointer_cast<{class_name(var.type)}>(this->shared_from_this())"
             return "this->shared_from_this()"
         return self.view(self.var_ref(var), var.type, seen)
@@ -997,9 +1069,11 @@ class CodeGen:
             arrow = "->" if isinstance(obj.ty, StructType) and obj.ty.kind == "class" else "."
             code = f"{self.expr(obj)}{arrow}{field}"
         declared = e.sym.type if hasattr(e.sym, "type") else e.ty
+        path = cpp_string(".".join(attr_chain(e)))[:-1]
         if isinstance(declared, OptionalType) and e.ty is not None and not isinstance(e.ty, OptionalType) and e.ty != NONE:
-            path = ".".join(attr_chain(e))
-            return f"sd::unwrap({code}, {cpp_string(path)[:-1]})"  # narrowed, but checked
+            code, declared = f"sd::unwrap({code}, {path})", declared.inner  # narrowed, but checked
+        if isinstance(e.ty, StructType) and isinstance(declared, StructType) and e.ty is not declared:
+            code = f"sd::downcast<{class_name(e.ty)}>({code}, {path})"  # after isinstance(); checked too
         return code
 
     def index(self, e: A.Index) -> str:
@@ -1151,11 +1225,23 @@ class CodeGen:
             case "ctor":
                 st: StructType = target.target
                 args = self.slot_codes(target.args, target.params)
-                if st.init is not None:
+                if st.init is not None or (st.kind == "class" and not st.is_exception):
                     args = ["sd::init", *args]
                 if st.kind == "class":
                     return f"std::make_shared<{class_name(st)}>({', '.join(args)})"
                 return f"{class_name(st)}({', '.join(args)})"
+            case "super_method":
+                fn = target.target
+                prefix = self.self_prefix(self.func.owner)
+                args = self.call_args(target.args, fn)
+                return f"{prefix}{class_name(fn.owner)}::{ident(fn.name)}({args})"
+            case "super_init":
+                owner = target.target
+                prefix = self.self_prefix(self.func.owner)
+                return f"{prefix}{class_name(owner)}::sd_init({', '.join(self.slot_codes(target.args, target.params))})"
+            case "isinstance":
+                tests = " || ".join(f"sd::isinstance_of<{class_name(c)}>(sd_obj)" for c in target.target)
+                return f"[&](const auto& sd_obj) {{ return {tests}; }}({self.expr(e.args[0])})"
             case "self_call":
                 fn: FuncInfo = target.target
                 rec = next(r for info, r in reversed(self.recursion) if info is fn)
@@ -1367,6 +1453,11 @@ def constant_int(e: A.Expr) -> int | None:
         case A.UnaryOp("-", A.IntLit(v)):
             return -v
     return None
+
+
+def by_value(t: Type) -> bool:
+    """Passed by value: small scalars, and classes (a shared pointer)."""
+    return t in (INT, FLOAT, BOOL) or isinstance(t, (FuncType,)) or (isinstance(t, StructType) and t.kind == "class")
 
 
 def attr_chain(e: A.Expr) -> list[str]:
