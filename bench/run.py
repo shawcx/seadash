@@ -1,7 +1,7 @@
 """Benchmark seadash against CPython.
 
 Every bench/*.sd must also be a valid Python program. Each one is compiled with
-`sd build` (-O2), run with both, checked for identical output, and timed (best
+`sd build` (-O3), run with both, checked for identical output, and timed (best
 of N runs, wall clock).
 
     .venv/bin/python bench/run.py            # all benchmarks
@@ -53,7 +53,7 @@ def main() -> int:
             ok = ok and same
             note = "" if same else "   OUTPUT DIFFERS"
             print(f"{prog.stem:<16} {py_time:>8.2f}s {sd_time:>8.2f}s {py_time / sd_time:>7.1f}x   {compile_time:>6.1f}s{note}")
-    print(f"(best of {RUNS} runs; seadash built with -O2)")
+    print(f"(best of {RUNS} runs; seadash built with -O3)")
     return 0 if ok else 1
 
 

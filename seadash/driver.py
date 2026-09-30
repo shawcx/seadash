@@ -223,7 +223,7 @@ def compile_cpp(cpp_path: Path, output: Path, options: BuildOptions, libs: list[
         "-std=c++23",
         "-fwrapv",  # int overflow wraps instead of being undefined behaviour
         "-ffp-contract=off",  # a * b + c rounds twice, as in Python (arm64 would fuse it)
-        "-O2" if options.optimize else "-O0",
+        "-O3" if options.optimize else "-O0",  # (-O3 measured faster than -O2 on the benchmarks; bench/)
     ]
     link = [f"-l{lib}" for lib in libs]
     if libs:

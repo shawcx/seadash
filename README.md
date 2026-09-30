@@ -69,18 +69,20 @@ python3, `bench/python/seadash.py` stands in for `@value`):
 
 | benchmark | python3 | seadash | speedup |
 |---|---:|---:|---:|
-| `lists_dicts`: building and querying lists and dicts | 2.12s | 0.30s | **7.1x** |
-| `small_lists`: many small lists, lists through functions (merge sort), dicts of lists | 2.66s | 0.49s | **5.4x** |
-| `particles`: a `@value` class holding a list, rebuilt every step and looped over | 1.66s | 0.15s | **11x** |
+| `lists_dicts`: building and querying lists and dicts | 2.10s | 0.29s | **7.2x** |
+| `small_lists`: many small lists, lists through functions (merge sort), dicts of lists | 2.66s | 0.47s | **5.7x** |
+| `particles`: a `@value` class holding a list, rebuilt every step and looped over | 1.67s | 0.16s | **10x** |
 | `objects`: classes, virtual methods, floats, recursion | 2.52s | 0.04s | **67x** |
-| `threads`: parallel CPU work, queues, locks | 7.49s | 0.21s | **36x** |
-| `queue_batches`: a producer thread sending big batches through a queue | 3.53s | 0.08s | **46x** |
-| `hashing`: hashlib/hmac on small messages, bulk data, pbkdf2 | 1.22s | 0.91s | 1.3x |
-| `sockets`: localhost TCP round trips, bulk transfer, connections | 1.96s | 1.69s | 1.2x |
+| `threads`: parallel CPU work, queues, locks | 7.49s | 0.20s | **37x** |
+| `queue_batches`: a producer thread sending big batches through a queue | 3.53s | 0.09s | **41x** |
+| `hashing`: hashlib/hmac on small messages, bulk data, pbkdf2 | 1.22s | 0.89s | 1.4x |
+| `sockets`: localhost TCP round trips, bulk transfer, connections | 1.87s | 1.75s | 1.1x |
+| `json_load`: `json.loads` on large documents and many small ones | 3.24s | 3.28s | 1.0x |
 
 The threads benchmark shows what real parallelism looks like: on CPython, 8 threads take
-exactly as long as 1. The last two are honest about where seadash can't help much: most
-of their time is spent in OpenSSL and in the kernel, the same code for both languages.
+exactly as long as 1. The last three are honest about where seadash can't help much: most
+of their time is spent in OpenSSL, in the kernel, or (for JSON) in a parser that is native
+code in both languages. seadash builds with `-O3`.
 
 ## Getting started
 
