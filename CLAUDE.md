@@ -79,6 +79,19 @@ headers (Homebrew's `pcre2` and `openssl@3` on macOS).
 - Keep the README's standard-library table and "Differences from Python" section current.
 - When reporting results, say what differs from Python and what isn't supported yet.
 
+## Working with the user
+
+- Build step by step together: discuss a design before coding it, and give a recommendation
+  rather than a survey of options. "Go with your recommendations" means proceed.
+- The user loves Python's ergonomics and dislikes C++'s template syntax, `std::` verbosity and
+  cast spellings: seadash code should never need them.
+- Terminology: "structs" means seadash's `@value` classes; "python struct" means Python's
+  `struct` module.
+- Another Claude session may be pushing to the same remote (usually new standard-library
+  modules). "Rebase" means: `git stash push -u`, `git fetch`, `git rebase origin/main`,
+  `git stash pop`, then run the tests. Push only when asked.
+- Plans and open questions are in `docs/roadmap.md`; keep it current as work finishes.
+
 ## Gotchas
 
 - Coroutines (generators, lazy builtins, itertools) outlive the call that made them: pass
