@@ -37,7 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, SyncType,
-    DictType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
+    CounterType, DefaultDictType, DequeType, DictType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
 
@@ -57,7 +57,8 @@ CPP_KEYWORDS = frozenset(
 
 # Built-in methods that modify their receiver (so a parameter used this way is passed by value).
 MUTATING_METHODS = frozenset(
-    "append insert pop remove extend sort reverse clear update setdefault add discard".split()
+    "append insert pop remove extend sort reverse clear update setdefault add discard "
+    "appendleft popleft extendleft rotate subtract".split()
 )
 
 MATH_FLOAT_1 = {"sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log2", "log10", "fabs"}
@@ -247,6 +248,12 @@ class CodeGen:
                 return f"sd::list<{self.cpp_type(elem)}>"
             case SetType(elem):
                 return f"std::set<{self.cpp_type(elem)}>"
+            case DequeType(elem):
+                return f"sd::deque<{self.cpp_type(elem)}>"
+            case CounterType(key):
+                return f"sd::Counter<{self.cpp_type(key)}>"
+            case DefaultDictType(key, value):
+                return f"sd::defaultdict<{self.cpp_type(key)}, {self.cpp_type(value)}>"
             case DictType(key, value):
                 return f"sd::dict<{self.cpp_type(key)}, {self.cpp_type(value)}>"
             case TupleType(elts):
@@ -1042,7 +1049,11 @@ class CodeGen:
             self.close()
             return
         ref = self.fresh("ref")
-        lvalue = self.attribute(target) if isinstance(target, A.Attribute) else self.index(target)
+        if isinstance(target, A.Index) and isinstance(target.value.ty, (CounterType, DefaultDictType)):
+            # c[k] += 1 starts from 0 (Counter) or factory() (defaultdict) for a new key
+            lvalue = f"{self.expr(target.value)}[{self.expr_as(target.index, target.value.ty.key)}]"
+        else:
+            lvalue = self.attribute(target) if isinstance(target, A.Attribute) else self.index(target)
         self.open("")
         self.line(f"auto& {ref} = {lvalue};")
         new = self.binop_code(op, ref, read_type, self.expr(value), value.ty, result, s.dunder)
@@ -1496,6 +1507,8 @@ class CodeGen:
                 return f"[&](const auto& sd_obj) {{ return {tests}; }}({self.expr(e.args[0])})"
             case "sync_new":
                 return self.sync_new(e, *target.target)
+            case "collection_new":
+                return self.collection_new(e, *target.target)
             case "self_call":
                 fn: FuncInfo = target.target
                 rec = next(r for info, r in reversed(self.recursion) if info is fn)
@@ -1515,6 +1528,35 @@ class CodeGen:
                 mod, name = target.target
                 return self.module_call(mod, name, e)
         raise NotImplementedError(f"codegen for call kind {target.kind}")
+
+    def collection_new(self, e: A.Call, t: Type, extra: dict) -> str:
+        cpp = self.cpp_type(t)
+        match t:
+            case DefaultDictType(key, value):
+                if not e.args:
+                    return f"{cpp}()"  # no factory: d[k] raises KeyError, like Python
+                factory = extra["factory"]
+                if factory is None:  # defaultdict(list): the value type's empty value
+                    code = f"[]() -> {self.cpp_type(value)} {{ return {{}}; }}"
+                else:
+                    code = self.expr_as(factory, FuncType((), value))
+                args = [code, cpp_string(extra["factory_repr"])]
+                if len(e.args) == 2:
+                    args.append(self.expr_as(e.args[1], DictType(key, value)))
+                return f"{cpp}({', '.join(args)})"
+            case CounterType(key):
+                if not e.args:
+                    return f"{cpp}()"
+                if extra.get("counts"):
+                    return f"{cpp}(sd::dict<{self.cpp_type(key)}, std::int64_t>({self.expr(e.args[0])}))"
+                return f"{cpp}::from_items({self.expr(e.args[0])})"
+            case DequeType(elem):
+                maxlen = extra["maxlen"]
+                ml = "std::nullopt" if maxlen is None else self.expr_as(maxlen, OptionalType(INT))
+                if extra["items"] is None:
+                    return f"{cpp}({ml})"
+                return f"{cpp}({self.expr(extra['items'])}, {ml})"
+        raise NotImplementedError(f"codegen for {t}()")
 
     def sync_new(self, e: A.Call, t: SyncType, extra: dict) -> str:
         cpp = self.cpp_type(t)
@@ -1622,6 +1664,11 @@ class CodeGen:
                 return f"sd::to_list({a})"
             case "set":
                 return f"sd::to_set({a})" if a else f"{self.cpp_type(e.ty)}{{}}"
+            case "dict" if getattr(e, "pairs", False):
+                k, v = e.ty.key, e.ty.value
+                return f"sd::dict_from_pairs<{self.cpp_type(k)}, {self.cpp_type(v)}>({a})"
+            case "dict" if a:
+                return f"{self.cpp_type(e.ty)}({a})"  # a copy (of a plain dict, defaultdict or Counter)
             case "dict":
                 return f"{self.cpp_type(e.ty)}{{}}"
             case "input":
@@ -1656,6 +1703,19 @@ class CodeGen:
                     codes.append(self.expr_as(node, want) if isinstance(want, Type) else self.expr(node))
             return f"{r}.{name}({', '.join(codes)})"
         match recv_type:
+            case DequeType(elem):
+                if name == "copy":
+                    return f"{self.cpp_type(recv_type)}({r})"
+                if name in ("append", "appendleft", "count", "index", "remove"):
+                    return f"{r}.{name}({self.expr_as(e.args[0], elem)})"
+                if name == "insert":
+                    return f"{r}.insert({args[0]}, {self.expr_as(e.args[1], elem)})"
+                return f"{r}.{name}({', '.join(args)})"
+            case CounterType() if name in ("most_common", "elements", "total"):
+                return f"{r}.{name}({', '.join(args)})"
+            case CounterType() if name in ("update", "subtract"):
+                how = "counts" if getattr(e, "counts", False) else "items"
+                return f"{r}.{name}_{how}({args[0]})"
             case ListType():
                 match name:
                     case "append":

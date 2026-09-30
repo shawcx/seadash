@@ -28,11 +28,12 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
-    DictType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
+    DefaultDictType, DequeType, DictType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
 MUTATING_METHODS = frozenset(
-    "append insert pop remove extend sort reverse clear update setdefault add discard".split()
+    "append insert pop remove extend sort reverse clear update setdefault add discard "
+    "appendleft popleft extendleft rotate subtract".split()
 )
 
 
@@ -55,8 +56,10 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
             return None
         case _ if t == SOCKET:
             return None
-        case ListType(x) | SetType(x) | OptionalType(x):
+        case ListType(x) | SetType(x) | OptionalType(x) | DequeType(x):
             return unsendable(x, seen)
+        case DefaultDictType():
+            return "a defaultdict (its factory function could share variables it captured; pass dict(d) instead)"
         case DictType(k, v):
             return unsendable(k, seen) or unsendable(v, seen)
         case TupleType(xs):

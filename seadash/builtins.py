@@ -16,6 +16,7 @@ from .errors import Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE,
+    CounterType, DefaultDictType, DequeType,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -191,7 +192,7 @@ def printable(t: Type) -> bool:
 
 
 def sized(t: Type) -> bool:
-    return t in (STR, BYTES, JSON_VALUE) or isinstance(t, (ListType, DictType, SetType, TupleType)) or bool(
+    return t in (STR, BYTES, JSON_VALUE) or isinstance(t, (ListType, DictType, SetType, TupleType, DequeType)) or bool(
         user_dunder(t, "__len__")
     )
 
@@ -401,7 +402,18 @@ def b_set(ctx: CallContext) -> Type:
 
 
 def b_dict(ctx: CallContext) -> Type:
-    ctx.arity(0)
+    if ctx.arity(0, 1):  # dict(other_dict) copies; dict(pairs) builds from (key, value) tuples
+        hint = ctx.expected if type(ctx.expected) is DictType else None
+        t = ctx.arg(0, hint)
+        if isinstance(t, DictType):
+            return DictType(t.key, t.value)
+        pair = ctx.iterable(0)
+        if not (isinstance(pair, TupleType) and len(pair.elts) == 2):
+            raise ctx.error(f"dict() needs a dict or (key, value) pairs, not {t}", ctx.args[0])
+        if not is_hashable(pair.elts[0]):
+            raise ctx.error(f"dict keys must be int, float, str, bool, or a tuple of those; not {pair.elts[0]}")
+        ctx.call.pairs = True
+        return DictType(*pair.elts)
     if isinstance(ctx.expected, DictType):
         return ctx.expected
     raise ctx.error("can't tell what type of dict this is; annotate the variable, e.g. `d: dict[str, int] = {}`")
@@ -627,6 +639,55 @@ DICT_METHODS = {
     "copy": returns(same),
 }
 
+def counter_counts(ctx: CallContext) -> Type:
+    """Counter.update / subtract: items to count, or another mapping of counts."""
+    c: CounterType = ctx.receiver
+    ctx.arity(1)
+    t = ctx.arg(0)
+    if isinstance(t, DictType) and t.value == INT and t.key == c.key:
+        ctx.call.counts = True  # codegen: add counts, don't count keys
+        return NONE
+    elem = ctx.iterable(0)
+    if not assignable(elem, c.key):
+        raise ctx.error(f"{ctx.what} needs {c.key} items (or a Counter), not {elem}", ctx.args[0])
+    return NONE
+
+
+COUNTER_METHODS = {
+    **DICT_METHODS,
+    "most_common": returns(lambda c: ListType(TupleType((c.key, INT))), 0, 1, (INT,)),
+    "elements": returns(lambda c: ListType(c.key)),
+    "total": returns(INT),
+    "update": counter_counts,
+    "subtract": counter_counts,
+}
+
+
+def deque_extend(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    elem = ctx.iterable(0)
+    if not assignable(elem, ctx.receiver.elem):
+        raise ctx.error(f"can't extend a {ctx.receiver} with {elem} items", ctx.args[0])
+    return NONE
+
+
+DEQUE_METHODS = {
+    "append": returns(NONE, args=(elem_of,)),
+    "appendleft": returns(NONE, args=(elem_of,)),
+    "pop": returns(elem_of),
+    "popleft": returns(elem_of),
+    "extend": deque_extend,
+    "extendleft": deque_extend,
+    "rotate": returns(NONE, 0, 1, (INT,)),
+    "insert": returns(NONE, args=(INT, elem_of)),
+    "remove": returns(NONE, args=(elem_of,)),
+    "index": returns(INT, args=(elem_of,)),
+    "count": returns(INT, args=(elem_of,)),
+    "reverse": returns(NONE),
+    "clear": returns(NONE),
+    "copy": returns(same),
+}
+
 SET_METHODS = {
     "add": returns(NONE, args=(elem_of,)),
     "remove": returns(NONE, args=(elem_of,)),
@@ -694,6 +755,10 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             return FILE_METHODS.get(name)
         case ListType():
             table = LIST_METHODS
+        case DequeType():
+            table = DEQUE_METHODS
+        case CounterType():
+            table = COUNTER_METHODS
         case DictType():
             table = DICT_METHODS
         case SetType():
@@ -1264,6 +1329,17 @@ MODULES["threading"] = Module("threading", {
     **{kind: SyncTypeDef(kind) for kind in ("Thread", "Lock", "RLock", "Event", "Atomic", "Mutex")},
     "Synchronized": SYNCHRONIZED,
 }, "modules/threading.hpp", ("pthread",))
+
+@dataclass
+class CollectionTypeDef:
+    """collections.defaultdict / Counter / deque: callable to make one, and a type name."""
+
+    kind: str
+
+
+MODULES["collections"] = Module("collections", {
+    name: CollectionTypeDef(name) for name in ("defaultdict", "Counter", "deque")
+}, "modules/collections.hpp")
 
 MODULES["queue"] = Module("queue", {
     "Queue": SyncTypeDef("Queue"),

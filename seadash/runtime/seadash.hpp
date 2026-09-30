@@ -248,6 +248,10 @@ template <class T> struct is_set : std::false_type {};
 template <class T, class C, class A> struct is_set<std::set<T, C, A>> : std::true_type {};
 template <class T> struct is_dict : std::false_type {};
 template <class K, class V> struct is_dict<dict<K, V>> : std::true_type {};
+// A dict or a type built on one (collections.defaultdict / Counter).
+template <class K, class V> std::true_type dict_base_test(const dict<K, V>*);
+std::false_type dict_base_test(...);
+template <class T> struct is_dict_like : decltype(dict_base_test(std::declval<T*>())) {};
 template <class T> struct is_optional : std::false_type {};
 template <class T> struct is_optional<std::optional<T>> : std::true_type {};
 template <class T> struct is_tuple : std::false_type {};
@@ -962,7 +966,7 @@ decltype(auto) iter(T&& x) {
         std::vector<std::int64_t> out;  // looping over bytes gives ints, like Python
         for (unsigned char c : x.data) out.push_back(c);
         return out;
-    } else if constexpr (is_dict<U>::value) {
+    } else if constexpr (is_dict_like<U>::value) {
         return x.keys();
     } else if constexpr (requires { file_lines(x); }) {
         return file_lines(x);
@@ -1740,6 +1744,12 @@ template <class K, class V>
 V dict_get_or(const dict<K, V>& d, const std::type_identity_t<K>& k, const std::type_identity_t<V>& dflt) {
     const V* v = d.find(k);
     return v ? *v : dflt;
+}
+template <class K, class V, class It>
+dict<K, V> dict_from_pairs(const It& pairs) {  // dict([(k, v), ...])
+    dict<K, V> out;
+    for (auto&& [k, v] : iter(pairs)) out[k] = v;
+    return out;
 }
 template <class K, class V>
 V dict_pop(dict<K, V>& d, const std::type_identity_t<K>& k) {

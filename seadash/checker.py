@@ -38,7 +38,7 @@ from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PRIMITIVES, SOCKET, STR, TEXT_FILE,
-    SYNC_ARITY, ClassRefType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
+    SYNC_ARITY, ClassRefType, CounterType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
@@ -886,6 +886,8 @@ class Checker:
             t = SyncType(kind, tuple(self.resolve_type(a) for a in args))
             self.check_sync_contents(t, node)
             return t
+        if (kind := self.collection_kind_named(name)) is not None:  # deque[int], defaultdict[str, int]
+            return self.collection_type(kind, [self.resolve_type(a) for a in args], node)
         gen = self.generics.get(name)
         if gen is None and name in self.imported:
             mod, member = self.imported[name]
@@ -1123,6 +1125,9 @@ class Checker:
                         if isinstance(index, A.Slice):
                             raise self.error("assigning to a slice is not supported yet", index)
                         self.expect_type(index, INT, "list index")
+                        slot = elem
+                    case DequeType(elem):
+                        self.expect_type(index, INT, "deque index")
                         slot = elem
                     case DictType(key, val):
                         self.expect_type(index, key, "dict key")
@@ -1506,7 +1511,7 @@ class Checker:
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
         ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE) or isinstance(
-            t, (ListType, DictType, SetType, TupleType, OptionalType, FileType)
+            t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType)
         ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__"))
         if not ok:
             raise self.error(f"{t} can't be used as a condition", e)
@@ -1874,6 +1879,8 @@ class Checker:
             raise self.error(f"unsupported operand types for {op}: {l} and {r}{self.dunder_hint(owner, f'__{name}__')}", e)
         numeric = is_numeric(l) and is_numeric(r)
         widened = FLOAT if FLOAT in (l, r) else INT
+        if op in ("+", "-", "|", "&") and l == r and isinstance(l, CounterType):
+            return l  # Counter arithmetic keeps positive counts
         match op:
             case "+":
                 if numeric:
@@ -1985,7 +1992,7 @@ class Checker:
                 raise self.error(f"comparing {lt} with {rt} using '{op}' is always {op == '!='}", e)
         elif op in ("in", "not in"):
             match rt:
-                case ListType(elem) | SetType(elem) | IterType(elem, "range"):
+                case ListType(elem) | SetType(elem) | DequeType(elem) | IterType(elem, "range"):
                     ok = assignable(lt, elem)
                 case DictType(key):
                     ok = assignable(lt, key)
@@ -2099,6 +2106,9 @@ class Checker:
             case ListType(elem):
                 self.expect_type(index, INT, "list index")
                 return elem
+            case DequeType(elem):
+                self.expect_type(index, INT, "deque index")
+                return elem
             case DictType(key, val):
                 self.expect_type(index, key, "dict key")
                 return val
@@ -2142,6 +2152,9 @@ class Checker:
         if isinstance(func, A.Index) and (kind := self.sync_kind_of(func.value)) is not None:
             explicit = tuple(self.resolve_type(expr_to_type(x)) for x in type_arg_exprs(func.index))
             return self.construct_sync(e, kind, explicit, expected)  # queue.Queue[int]()
+        if isinstance(func, A.Index) and (kind := self.collection_kind_of(func.value)) is not None:
+            args = [self.resolve_type(expr_to_type(x)) for x in type_arg_exprs(func.index)]
+            return self.construct_collection(e, self.collection_type(kind, args, func), expected)  # deque[int]()
         if (gen := self.generic_named(func)) is not None:
             return self.call_generic(e, gen, None, expected)
         if isinstance(func, A.Index) and (gen := self.generic_named(func.value)) is not None:
@@ -2243,6 +2256,147 @@ class Checker:
         if isinstance(e, A.Attribute) and (path := attr_path(e)):
             return self.sync_kind_named(".".join(path))
         return None
+
+    # ---- collections ----------------------------------------------------------------
+
+    def collection_kind_named(self, name: str) -> str | None:
+        """`deque` (imported from collections) or `collections.deque` as a name."""
+        if "." in name:
+            mod_name, _, member = name.rpartition(".")
+            mod = self.modules.get(mod_name)
+            m = mod.members.get(member) if mod is not None else None
+        elif name in self.imported:
+            mod, member = self.imported[name]
+            m = mod.members.get(member)
+        else:
+            return None
+        return m.kind if isinstance(m, builtins.CollectionTypeDef) else None
+
+    def collection_kind_of(self, e: A.Expr) -> str | None:
+        if isinstance(e, A.Name) and e.id not in self.state.names:
+            return self.collection_kind_named(e.id)
+        if isinstance(e, A.Attribute) and (path := attr_path(e)):
+            return self.collection_kind_named(".".join(path))
+        return None
+
+    def collection_type(self, kind: str, args: list[Type], node: A.Node) -> Type:
+        arity = {"defaultdict": 2, "Counter": 1, "deque": 1}[kind]
+        example = {"defaultdict": "defaultdict[str, list[int]]", "Counter": "Counter[str]", "deque": "deque[int]"}[kind]
+        if len(args) != arity:
+            raise self.error(f"{kind} takes {plural(arity, 'type argument')}, e.g. {example}", node)
+        if kind == "deque":
+            return DequeType(args[0])
+        self.check_hashable(args[0], f"{kind} keys", node)
+        return DefaultDictType(args[0], args[1]) if kind == "defaultdict" else CounterType(args[0], INT)
+
+    def construct_collection(self, e: A.Call, kind_or_type: str | Type, expected: Type | None) -> Type:
+        """defaultdict(list), Counter(words), deque(items, maxlen=3) -- and their [T] forms.
+        The type comes from explicit type arguments, the expected type, or the contents."""
+        if isinstance(kind_or_type, str):
+            kind, t = kind_or_type, None
+        else:
+            t = kind_or_type
+            kind = {DefaultDictType: "defaultdict", CounterType: "Counter", DequeType: "deque"}[type(t)]
+        want = strip_optional(expected) if expected is not None else None
+        if t is None:  # from the variable's annotation (a plain dict annotation also works)
+            match kind, want:
+                case "defaultdict", DictType(k, v) if not isinstance(want, CounterType):
+                    t = DefaultDictType(k, v)
+                case "Counter", DictType(k, v) if v == INT:
+                    t = CounterType(k, INT)
+                case "deque", DequeType():
+                    t = want
+        kw = {k.name: k.value for k in e.keywords}
+        extra: dict = {}
+        if kind == "defaultdict":
+            if kw:
+                raise self.error("defaultdict() takes positional arguments: defaultdict(factory[, initial dict])", e)
+            if len(e.args) > 2:
+                raise self.error(f"defaultdict() takes at most 2 arguments ({len(e.args)} given)", e)
+            if t is None:
+                raise self.error(
+                    "a defaultdict needs its key and value types: annotate the variable, "
+                    "e.g. `d: defaultdict[str, list[int]] = defaultdict(list)`", e,
+                )
+            if e.args:
+                extra.update(self.check_default_factory(e.args[0], t.value))
+            if len(e.args) == 2:
+                self.expect_type(e.args[1], DictType(t.key, t.value), "defaultdict's initial contents")
+        elif kind == "Counter":
+            if kw:
+                raise self.error("Counter(a=1) isn't supported; use Counter({'a': 1})", e)
+            if len(e.args) > 1:
+                raise self.error(f"Counter() takes at most 1 argument ({len(e.args)} given)", e)
+            if e.args:
+                arg = e.args[0]
+                at = self.check_expr(arg, DictType(t.key, INT) if t is not None else None)
+                if isinstance(at, DictType) and at.value == INT and not isinstance(at, CounterType) or (
+                    isinstance(at, CounterType)
+                ):
+                    extra["counts"] = True  # Counter({'a': 2}): copy the counts
+                    key = at.key
+                else:
+                    key = self.loop_element(arg, at)
+                    self.check_hashable(key, "Counter keys", arg)
+                if t is None:
+                    t = CounterType(key, INT)
+                elif not assignable(key, t.key):
+                    raise self.error(f"this Counter counts {t.key}, not {key}", arg)
+            if t is None:
+                raise self.error(
+                    "a Counter needs to know what it counts: `Counter(words)`, or annotate the variable "
+                    "(`c: Counter[str] = Counter()`)", e,
+                )
+        else:  # deque
+            for name in kw:
+                if name not in ("maxlen",):
+                    raise self.error(f"deque() got an unexpected keyword argument '{name}'", e)
+            if len(e.args) > 2:
+                raise self.error(f"deque() takes at most 2 arguments ({len(e.args)} given)", e)
+            items = e.args[0] if e.args else kw.get("iterable")
+            maxlen = e.args[1] if len(e.args) > 1 else kw.get("maxlen")
+            if items is not None:
+                it = self.check_expr(items, ListType(t.elem) if t is not None else None)
+                elem = self.loop_element(items, it)
+                if t is None:
+                    t = DequeType(elem)
+                elif not assignable(elem, t.elem):
+                    raise self.error(f"this deque holds {t.elem}, not {elem}", items)
+            if maxlen is not None and not isinstance(maxlen, A.NoneLit):
+                self.expect_type(maxlen, INT, "deque maxlen")
+            extra["items"], extra["maxlen"] = items, maxlen
+            if t is None:
+                raise self.error(
+                    "a deque needs to know what it holds: `deque(items)`, `deque[int]()`, or annotate the "
+                    "variable (`d: deque[int] = deque()`)", e,
+                )
+        e.sym = CallTarget("collection_new", (t, extra))
+        return t
+
+    def check_default_factory(self, node: A.Expr, value: Type) -> dict:
+        """defaultdict(list) / (int) / (Point) / (lambda: ...): something making a `value`."""
+        if isinstance(node, A.Name) and node.id in ("list", "dict", "set", "int", "float", "str", "bool") and (
+            node.id not in self.state.names and node.id not in self.scope.assigned
+        ):
+            fits = {"list": ListType, "dict": DictType, "set": SetType}.get(node.id)
+            if fits is not None and not isinstance(value, fits) or fits is None and node.id not in (
+                "float" if value == FLOAT else str(value),
+            ):
+                raise self.error(f"this defaultdict holds {value}, but {node.id}() doesn't make one", node)
+            made = self.check_expr(A.Call(A.Name(node.id, loc=node.loc), [], loc=node.loc), value)
+            if not assignable(made, value):
+                raise self.error(f"{node.id}() makes {made}, but this defaultdict holds {value}", node)
+            return {"factory": None, "factory_repr": f"<class '{node.id}'>"}  # the value type's default
+        ft = self.check_expr(node, FuncType((), value))
+        if not isinstance(ft, FuncType) or ft.params or not assignable(ft.ret, value):
+            raise self.error(f"a defaultdict factory must take no arguments and return {value}, not {ft}", node)
+        if isinstance(node, A.Name) and (st := self.lookup_struct(node.id)):
+            shown = f"<class '{self.module_name}.{st.name}'>"
+        elif isinstance(node, A.Name):
+            shown = f"<function {node.id}>"
+        else:
+            shown = "<function <lambda>>"
+        return {"factory": node, "factory_repr": shown}
 
     def construct_sync(self, e: A.Call, kind: str, explicit: tuple | None, expected: Type | None) -> Type:
         """Lock(), Atomic(0), Mutex(value), Queue[int](maxsize=10), Thread(target=f, args=(...))."""
@@ -2596,6 +2750,8 @@ class Checker:
             return self.check_constructor(e, f)  # utils.Point(...), raise zlib.error("...")
         if isinstance(f, builtins.SyncTypeDef):  # threading.Lock(), queue.Queue(...)
             return self.construct_sync(e, f.kind, None, expected)
+        if isinstance(f, builtins.CollectionTypeDef):  # collections.deque(...), Counter(...)
+            return self.construct_collection(e, f.kind, expected)
         if isinstance(f, GenericDef):  # utils.first(xs) / utils.Stack()
             return self.call_generic(e, f, None, expected)
         if isinstance(f, Var) and isinstance(f.type, FuncType):  # a decorated function from another module

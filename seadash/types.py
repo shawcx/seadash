@@ -63,6 +63,32 @@ class DictType(Type):
 
 
 @dataclass(frozen=True)
+class DefaultDictType(DictType):
+    """collections.defaultdict: a dict whose d[k] adds factory() for a missing key."""
+
+    def __str__(self) -> str:
+        return f"defaultdict[{self.key}, {self.value}]"
+
+
+@dataclass(frozen=True)
+class CounterType(DictType):
+    """collections.Counter: a dict of counts (value is always int); c[k] is 0 if missing."""
+
+    def __str__(self) -> str:
+        return f"Counter[{self.key}]"
+
+
+@dataclass(frozen=True)
+class DequeType(Type):
+    """collections.deque: a sequence with fast appends and pops at both ends."""
+
+    elem: Type
+
+    def __str__(self) -> str:
+        return f"deque[{self.elem}]"
+
+
+@dataclass(frozen=True)
 class TupleType(Type):
     elts: tuple[Type, ...]
 
@@ -306,6 +332,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return True
     if isinstance(src, StructType) and isinstance(dst, StructType):
         return src.is_subclass_of(dst)
+    if isinstance(src, DictType) and type(dst) is DictType:  # defaultdict/Counter -> dict (a copy)
+        return src.key == dst.key and src.value == dst.value
     if isinstance(src, FuncType) and isinstance(dst, FuncType):
         # Same parameters; any result is fine where the result is ignored (-> None).
         return src.params == dst.params and (dst.ret == NONE or assignable(src.ret, dst.ret))
@@ -345,7 +373,7 @@ def strip_optional(t: Type) -> Type:
 def element_type(t: Type) -> Type | None:
     """What `for x in t` gives you, or None if `t` isn't iterable."""
     match t:
-        case ListType(elem) | SetType(elem) | IterType(elem):
+        case ListType(elem) | SetType(elem) | IterType(elem) | DequeType(elem):
             return elem
         case DictType(key):
             return key

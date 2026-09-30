@@ -1,0 +1,107 @@
+# collections: defaultdict, Counter and deque (values, like list and dict).
+from collections import Counter, defaultdict, deque
+import collections
+
+# ---- defaultdict -------------------------------------------------------------
+groups: defaultdict[str, list[str]] = defaultdict(list)
+for word in ["apple", "avocado", "banana", "blueberry", "cherry"]:
+    groups[word[0]].append(word)
+print(groups)
+print(groups["a"], len(groups), "z" in groups)
+
+counts: defaultdict[str, int] = defaultdict(int)
+for ch in "mississippi":
+    counts[ch] += 1
+print(dict(counts), counts["s"], counts.get("q"))
+print(sorted(counts.items()), max(counts.values()))
+
+nested: defaultdict[str, set[int]] = defaultdict(set)
+nested["x"].add(1)
+nested["x"].add(2)
+nested["y"]
+print(nested)
+
+scores: defaultdict[str, float] = defaultdict(lambda: 1.5)
+scores["bob"] += 1.0
+print(scores["bob"], scores["new"], sorted(scores))
+
+seeded: defaultdict[str, int] = defaultdict(int, {"a": 5})
+seeded["a"] += 1
+seeded["b"] += 1
+print(seeded)
+plain: dict[str, int] = dict(seeded)
+print(plain)
+
+# ---- Counter -----------------------------------------------------------------
+words = "the cat and the hat and the bat".split()
+c = Counter(words)
+print(c)
+print(c["the"], c["dog"], len(c), "dog" in c)
+print(c.most_common(2), c.most_common()[-1])
+print(c.total(), sorted(c.elements())[:4])
+
+letters = Counter("abracadabra")
+print(letters.most_common(3))
+letters.update("aaz")
+letters.subtract(["b", "b"])
+print(letters)
+
+inventory: Counter[str] = Counter()
+inventory["apple"] += 3
+inventory["pear"] += 1
+more = Counter({"apple": 1, "fig": 2})
+print(inventory + more, inventory - more)
+print(inventory | more, inventory & more)
+inventory.update(more)
+print(inventory, inventory == Counter({"apple": 4, "pear": 1, "fig": 2}))
+for fruit, n in inventory.most_common():
+    print(fruit, n)
+
+# ---- deque -------------------------------------------------------------------
+d = deque([1, 2, 3])
+d.append(4)
+d.appendleft(0)
+print(d, len(d), d[0], d[-1], 3 in d)
+print(d.pop(), d.popleft(), d)
+d.extend([7, 8])
+d.extendleft([-1, -2])
+print(d)
+d.rotate(2)
+print(d)
+d.rotate(-3)
+print(d)
+d[0] = 100
+print(d, d.index(7), d.count(8))
+d.remove(100)
+d.reverse()
+print(d, list(d), sum(d), sorted(d))
+
+recent: deque[str] = deque(maxlen=3)
+for line in ["a", "b", "c", "d", "e"]:
+    recent.append(line)
+print(recent, list(recent))
+recent.appendleft("z")
+print(recent)
+
+window = collections.deque(range(5), maxlen=2)
+print(window, window == deque([3, 4]))
+
+queue: deque[tuple[int, int]] = deque()
+queue.append((0, 0))
+seen = {(0, 0)}
+while queue:
+    x, y = queue.popleft()
+    for nx, ny in ((x + 1, y), (x, y + 1)):
+        if nx <= 2 and ny <= 2 and (nx, ny) not in seen:
+            seen.add((nx, ny))
+            queue.append((nx, ny))
+print(len(seen))
+
+try:
+    deque[int]().pop()
+except IndexError as e:
+    print("error:", e)
+
+# ---- dict() from pairs --------------------------------------------------------
+pairs = dict([("one", 1), ("two", 2)])
+print(pairs, dict(zip(["a", "b"], [1, 2])))

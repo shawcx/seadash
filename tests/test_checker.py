@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, dataclasses, functools, json, math, os, queue, random, socket, sys, threading, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, queue, random, socket, sys, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -1324,3 +1324,35 @@ def test_looping_over_tuples():
         "can't loop over tuple[int, str] (its items have different types, so there's no single type for the loop variable)"
     )
     assert err("x = sorted((1, 'a'))\n").message.startswith("sorted() argument must be something you can loop over")
+
+
+COLLECTIONS = "from collections import Counter, defaultdict, deque\n"
+
+
+def test_collections_types():
+    info = ok(
+        COLLECTIONS
+        + "c = Counter('abc')\nd = deque([1, 2])\ng: defaultdict[str, list[int]] = defaultdict(list)\n"
+        + "e = deque[str]()\nm = c.most_common(1)\nw = Counter({'a': 2})\np = dict([('a', 1)])\n"
+    )
+    assert set(variables(info)) >= {
+        "c: Counter[str]", "d: deque[int]", "g: defaultdict[str, list[int]]", "e: deque[str]",
+        "m: list[tuple[str, int]]", "w: Counter[str]", "p: dict[str, int]",
+    }
+
+
+def test_collections_errors():
+    assert err(COLLECTIONS + "d = defaultdict(list)\n").message.startswith("a defaultdict needs its key and value types")
+    assert err(COLLECTIONS + "d: defaultdict[str, int] = defaultdict(list)\n").message == (
+        "this defaultdict holds int, but list() doesn't make one"
+    )
+    assert err(COLLECTIONS + "c = Counter()\n").message.startswith("a Counter needs to know what it counts")
+    assert err(COLLECTIONS + "d = deque[int](['a'])\n").message == "this deque holds int, not str"
+    assert err(COLLECTIONS + "d = deque([1])\nx = d[0:1]\n").message == "deque[int] can't be sliced"
+    assert err(COLLECTIONS + "c: Counter[str, int] = Counter()\n").message == (
+        "Counter takes 1 type argument, e.g. Counter[str]"
+    )
+    assert err(COLLECTIONS + "c = Counter('ab') + {'a': 1}\n").message == (
+        "unsupported operand types for +: Counter[str] and dict[str, int]"
+    )
+    assert err("x = dict([1, 2])\n").message == "dict() needs a dict or (key, value) pairs, not list[int]"
