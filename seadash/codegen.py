@@ -2676,6 +2676,19 @@ class CodeGen:
         if mod == "urllib.parse" and name == "urlencode":
             doseq = e.args[1] if len(e.args) > 1 else self.keyword(e, "doseq")
             return f"sd::urlparse::urlencode({self.expr(e.args[0])}, {self.expr(doseq) if doseq is not None else 'false'})"
+        if mod == "gzip" and name == "open":
+            path = self.expr(e.args[0]) + (".str()" if e.args[0].ty == PATH else "")
+            mode = e.args[1] if len(e.args) > 1 else self.keyword(e, "mode")
+            level = e.args[2] if len(e.args) > 2 else self.keyword(e, "compresslevel")
+            args = [path, self.expr(mode) if mode else '"rb"s', self.expr(level) if level else "9_i"]
+            if e.ty.binary:
+                return f"sd::gzip::open_binary({', '.join(args)})"
+            encoding, newline = self.keyword(e, "encoding"), self.keyword(e, "newline")
+            if encoding or newline:
+                args.append(self.expr(encoding) if encoding else '"utf-8"s')
+            if newline is not None and not isinstance(newline, A.NoneLit):
+                args.append(f"std::optional<std::string>({self.expr(newline)})")
+            return f"sd::gzip::open_text({', '.join(args)})"
         if mod == "csv" and name in ("reader", "writer", "DictReader", "DictWriter"):
             return self.csv_call(name, e)
         if mod == "logging" and hasattr(e, "log_call"):

@@ -907,6 +907,8 @@ def test_file_types(src, ty):
 
 @pytest.mark.parametrize("src,msg", [
     ('m = "r"\nf = open("x", m)', "open() mode must be a string literal like 'r', 'w' or 'rb' (it decides whether you get str or bytes)"),
+    ('import gzip\nm = "rt"\nf = gzip.open("x.gz", m)', "open() mode must be a string literal like 'r', 'w' or 'rb' (it decides whether you get str or bytes)"),
+    ('import gzip\nf = gzip.open("x.gz", "rb")\ns: str = f.read()', "'s' is declared as str, but the value is bytes"),
     ('f = open("x", "rw")', "invalid mode: 'rw'"),
     ('f = open("x", "rb", encoding="utf-8")', "binary mode doesn't take an encoding argument"),
     ('open("x", "wb").write("x")', "BinaryIO.write() argument must be bytes, not str"),

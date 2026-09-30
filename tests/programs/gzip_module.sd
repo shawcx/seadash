@@ -1,0 +1,61 @@
+import gzip
+import os
+
+text = ("the quick brown fox jumps over the lazy dog. " * 200).encode()
+packed = gzip.compress(text, mtime=0)
+print(len(text), len(packed) < 200, packed[:10], gzip.decompress(packed) == text)
+print(gzip.compress(b"hello hello hello", mtime=0))
+print(gzip.compress(b"hello hello hello", 1, mtime=12345))
+print(gzip.compress(b"", mtime=0), gzip.decompress(gzip.compress(b"")))
+print(len(gzip.compress(text, 1, mtime=0)) > len(gzip.compress(text, 9, mtime=0)), len(gzip.compress(text)) == len(packed))
+print(gzip.decompress(gzip.compress(b"ab", mtime=0) + gzip.compress(b"cd", mtime=0) + b"\x00\x00"))  # two members, padded
+
+for bad in [b"nope", packed[:30], gzip.compress(b"abc", mtime=0)[:-3], gzip.compress(b"ab", mtime=0) + b"xx"]:
+    try:
+        print(gzip.decompress(bad))
+    except gzip.BadGzipFile as e:
+        print("BadGzipFile:", e, isinstance(e, OSError))
+    except EOFError as e:
+        print("EOFError:", e)
+good = gzip.compress(b"abcdef", mtime=0)
+damaged = good[:-5] + bytes([good[-5] ^ 1]) + good[-4:]  # a bit flipped in the checksum
+try:
+    print(gzip.decompress(damaged))
+except gzip.BadGzipFile as e:
+    print("BadGzipFile:", e)
+
+with gzip.open("log.txt.gz", "wt") as f:
+    f.write("first line\n")
+    for i in range(3):
+        print("line", i, file=f)
+with gzip.open("log.txt.gz", "at", compresslevel=1) as f:
+    f.write("appended\n")
+with gzip.open("log.txt.gz", "rt") as f:
+    for line in f:
+        print(repr(line))
+with gzip.open("log.txt.gz") as f:  # binary by default
+    raw = f.read()
+print(raw, gzip.decompress(open("log.txt.gz", "rb").read()) == raw)
+with gzip.open("data.bin.gz", "wb", 6) as f:
+    print(f.write(bytes(range(256)) * 100))
+with gzip.open("data.bin.gz", "rb") as f:
+    print(f.read(3), len(f.read()))
+print(os.path.getsize("data.bin.gz") < 1000)
+with open("plain.txt", "w") as f:
+    f.write("not compressed\n")
+try:
+    with gzip.open("plain.txt", "rt") as f:
+        print(f.read())
+except gzip.BadGzipFile as e:
+    print("BadGzipFile:", e)
+try:
+    gzip.open("missing.gz")
+except FileNotFoundError as e:
+    print("FileNotFoundError:", e)
+try:
+    gzip.open("log.txt.gz", "xb")
+except FileExistsError as e:
+    print("FileExistsError:", e)
+open("empty.gz", "wb").close()
+with gzip.open("empty.gz", "rb") as f:
+    print(f.read())

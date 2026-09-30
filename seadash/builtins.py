@@ -2575,6 +2575,36 @@ MODULES["binascii"] = module_with_params(runtime_module(
 ))
 
 
+# ---- gzip ----------------------------------------------------------------------------
+
+def gzip_open(ctx: CallContext) -> Type:
+    """gzip.open(filename, mode="rb", compresslevel=9, encoding=None, errors=None, newline=None):
+    binary unless the mode says 't', like Python's gzip (and unlike open())."""
+    n = ctx.arity(1, 3, keywords=("mode", "compresslevel", "encoding", "newline"))
+    ctx.need(0, lambda t: t in (STR, PATH), "a str or Path")
+    mode_node = ctx.args[1] if n >= 2 else ctx.keyword_arg("mode")
+    if n == 3:
+        ctx.expect(2, INT)
+    else:
+        ctx.keyword("compresslevel", INT)
+    if (nl := ctx.keyword_arg("newline")) is not None:
+        ctx.checker.check_expr(nl)
+    if mode_node is None:
+        return BINARY_FILE
+    open_mode(ctx, mode_node)
+    return TEXT_FILE if "t" in mode_node.value else BINARY_FILE
+
+
+MODULES["gzip"] = module_with_params(runtime_module(
+    "gzip", "modules/gzip.hpp", ("z",),
+    compress=(signature(BYTES, ("data", BYTES), ("compresslevel", INT, "9_i"), ("mtime", OptionalType(INT), "std::nullopt")),
+              "sd::gzip::compress"),
+    decompress=(signature(BYTES, ("data", BYTES)), "sd::gzip::decompress"),
+    open=(gzip_open, None),
+    BadGzipFile=exception_class("BadGzipFile", "sd::gzip::BadGzipFile", "OSError"),
+))
+
+
 # ---- shlex ----------------------------------------------------------------------------
 
 MODULES["shlex"] = module_with_params(runtime_module(
