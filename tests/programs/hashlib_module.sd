@@ -29,3 +29,5 @@ try:
     hashlib.new("nope")
 except ValueError as e:
     print("error:", e)
+# (a call among the arguments, with a hashlib constructor as digestmod)
+print(hmac.new(b"k", str(42).encode(), hashlib.sha256).hexdigest()[:8], hmac.digest(b"k", str(7).encode(), hashlib.md5).hex()[:8])

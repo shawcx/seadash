@@ -1635,9 +1635,10 @@ class CodeGen:
     # =========================================================================
 
     def call(self, e: A.Call) -> str:
-        # (add_argument's type=int is an instruction to the compiler, not a value)
-        keywords = [k.value for k in e.keywords if not (hasattr(e, "argparse") and k.name == "type")]
-        return self.in_order([*e.args, *keywords], lambda: self.call_inner(e), keep_refs=True)
+        # (arguments like add_argument's type=int or hmac's digestmod=hashlib.sha256 are
+        # instructions to the compiler, not values to evaluate)
+        operands = [x for x in [*e.args, *(k.value for k in e.keywords)] if not getattr(x, "compile_time", False)]
+        return self.in_order(operands, lambda: self.call_inner(e), keep_refs=True)
 
     def call_inner(self, e: A.Call) -> str:
         target: CallTarget = e.sym

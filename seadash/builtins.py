@@ -1995,6 +1995,7 @@ def argument_kind(ctx: CallContext, node: A.Expr | None) -> tuple[str, Type]:
     """type=int / float / str / Path -> (runtime kind, value type)."""
     if node is None:
         return "STR", STR
+    node.compile_time = True
     if isinstance(node, A.Name) and node.id in ("int", "float", "str") and not ctx.checker.state.names.get(node.id):
         return node.id.upper(), {"int": INT, "float": FLOAT, "str": STR}[node.id]
     if ctx.checker.builtin_class(node) == PATH or (
@@ -2443,6 +2444,7 @@ def digest_name(ctx: CallContext, node: A.Expr) -> None:
         target = ctx.checker.imported[node.id][1]
     if target in HASH_NAMES:
         node.hash_name = target
+        node.compile_time = True
         node.ty = STR
         return
     ctx.checker.expect_type(node, STR, f"{ctx.what} digest")

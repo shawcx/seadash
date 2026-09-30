@@ -6,6 +6,9 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 
+#include <mutex>
+#include <unordered_map>
+
 namespace sd::hashlib {
 
 // Python's algorithm names -> OpenSSL's.
@@ -38,6 +41,22 @@ inline std::set<std::string> algorithms_available() {
 }
 
 [[noreturn]] inline void openssl_failed() { raise("ValueError", "hashing failed (OpenSSL error)"); }
+
+// Looking an algorithm up in OpenSSL is slow, so each is fetched once (and shared between
+// threads: fetched algorithms are immutable). The result is referenced; free it with EVP_MD_free.
+inline EVP_MD* fetch_digest(const std::string& name) {
+    static std::mutex mu;
+    static std::unordered_map<std::string, EVP_MD*> cache;
+    std::string key = str_lower(name);
+    std::lock_guard lk(mu);
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        const char* ossl = openssl_name(key);
+        it = cache.emplace(key, ossl ? EVP_MD_fetch(nullptr, ossl, nullptr) : nullptr).first;
+    }
+    if (it->second) EVP_MD_up_ref(it->second);
+    return it->second;
+}
 
 inline std::string to_hex(const std::string& raw) {
     static const char* digits = "0123456789abcdef";
@@ -73,9 +92,8 @@ class Hash {
 public:
     Hash() = default;
     Hash(const std::string& name, const bytes& data = bytes()) : s_(std::make_shared<State>()) {
-        const char* ossl = openssl_name(name);
         s_->name = str_lower(name);
-        s_->md = ossl ? EVP_MD_fetch(nullptr, ossl, nullptr) : nullptr;
+        s_->md = fetch_digest(name);
         if (!s_->md) raise("ValueError", "unsupported hash type " + name);
         s_->ctx = EVP_MD_CTX_new();
         if (!s_->ctx || !EVP_DigestInit_ex(s_->ctx, s_->md, nullptr)) openssl_failed();
@@ -112,8 +130,7 @@ inline Hash new_(const std::string& name, const bytes& data = bytes()) { return 
 
 inline bytes pbkdf2_hmac(const std::string& hash_name, const bytes& password, const bytes& salt, std::int64_t iterations,
                          std::optional<std::int64_t> dklen = std::nullopt) {
-    const char* ossl = openssl_name(hash_name);
-    EVP_MD* md = ossl ? EVP_MD_fetch(nullptr, ossl, nullptr) : nullptr;
+    EVP_MD* md = fetch_digest(hash_name);
     if (!md) raise("ValueError", "unsupported hash type " + hash_name);
     if (iterations < 1) {
         EVP_MD_free(md);
@@ -151,17 +168,35 @@ class HMAC {
         static EVP_MAC* m = EVP_MAC_fetch(nullptr, "HMAC", nullptr);
         return m;
     }
+    // A context already set to this digest (setting it looks the digest up, which is slow);
+    // each HMAC starts from a copy and only adds its key.
+    static EVP_MAC_CTX* template_for(const std::string& digest) {
+        static std::mutex mu;
+        static std::unordered_map<std::string, EVP_MAC_CTX*> templates;
+        std::lock_guard lk(mu);
+        auto it = templates.find(digest);
+        if (it != templates.end()) return it->second;
+        const char* ossl = hashlib::openssl_name(digest);
+        EVP_MAC_CTX* ctx = ossl ? EVP_MAC_CTX_new(mac()) : nullptr;
+        if (ctx) {
+            OSSL_PARAM params[] = {OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(ossl), 0),
+                                   OSSL_PARAM_construct_end()};
+            if (!EVP_MAC_CTX_set_params(ctx, params)) {
+                EVP_MAC_CTX_free(ctx);
+                ctx = nullptr;
+            }
+        }
+        return templates.emplace(digest, ctx).first->second;
+    }
 
 public:
     HMAC() = default;
     HMAC(const bytes& key, const std::optional<bytes>& msg, const std::string& digestmod) : s_(std::make_shared<State>()) {
-        const char* ossl = hashlib::openssl_name(digestmod);
-        if (!ossl) raise("ValueError", "unsupported hash type " + digestmod);
         s_->digest_name = str_lower(digestmod);
-        s_->ctx = EVP_MAC_CTX_new(mac());
-        OSSL_PARAM params[] = {OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(ossl), 0),
-                               OSSL_PARAM_construct_end()};
-        if (!s_->ctx || !EVP_MAC_init(s_->ctx, reinterpret_cast<const unsigned char*>(key.data.data()), key.data.size(), params))
+        EVP_MAC_CTX* base = template_for(s_->digest_name);
+        if (!base) raise("ValueError", "unsupported hash type " + digestmod);
+        s_->ctx = EVP_MAC_CTX_dup(base);
+        if (!s_->ctx || !EVP_MAC_init(s_->ctx, reinterpret_cast<const unsigned char*>(key.data.data()), key.data.size(), nullptr))
             hashlib::openssl_failed();
         if (msg) update(*msg);
     }
