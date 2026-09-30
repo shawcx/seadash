@@ -1442,7 +1442,7 @@ class CodeGen:
             case A.NoneLit():
                 return "std::nullopt"
             case A.FString(parts):
-                values = [p.value for p in parts if isinstance(p, A.FormattedValue)]
+                values = fstring_values(parts)
                 return self.in_order(values, lambda: self.fstring(parts))
             case A.Name():
                 return self.name(e)
@@ -1604,9 +1604,10 @@ class CodeGen:
                     value = f"sd::ascii(sd::repr({value}))"
                 elif p.conversion == "s":
                     value = f"sd::str({value})"
-                if p.spec is not None:
-                    fmt = cpp_string("{:" + p.spec + "}")[:-1]  # a plain "..." literal, as std::format wants
-                    value = f"std::format({fmt}, {value})"
+                if isinstance(p.spec, A.FString):  # {x:{width}}: the spec is built at run time
+                    value = f"sd::format_value({value}, {self.fstring(p.spec.parts)})"
+                elif p.spec:
+                    value = f"sd::format_value({value}, {cpp_string(p.spec)[:-1]}sv)"
                 pieces.append(value)
         return f"sd::fstr({', '.join(pieces)})"
 
@@ -2728,6 +2729,17 @@ def has_call(e: A.Expr) -> bool:
 
 def paren_all(tests: list[str]) -> str:
     return f"({' && '.join(tests)})" if tests else "true"
+
+
+def fstring_values(parts: list) -> list[A.Expr]:
+    """An f-string's expressions in evaluation order, including nested ones in specs."""
+    values = []
+    for p in parts:
+        if isinstance(p, A.FormattedValue):
+            values.append(p.value)
+            if isinstance(p.spec, A.FString):
+                values += fstring_values(p.spec.parts)
+    return values
 
 
 def walk_expr(e: A.Node, into_lambdas: bool = True):

@@ -45,7 +45,7 @@ class FStringExpr:
 
     source: str
     loc: Loc  # where `source` starts, so errors inside it point at the right place
-    spec: str | None = None
+    spec: "str | tuple[str | FStringExpr, ...] | None" = None  # a tuple when it has nested fields
     conversion: str | None = None  # 'r', 's' or 'a' from {x!r}
     debug: str | None = None  # the text before the value in {x=}: "x="
 
@@ -398,7 +398,7 @@ class Lexer:
         loc = self.loc()
         start = self.pos
         depth = 0
-        spec: str | None = None
+        spec: str | tuple[str | FStringExpr, ...] | None = None
         conversion: str | None = None
         expr_end = None
 
@@ -427,10 +427,16 @@ class Lexer:
             elif c == ":" and depth == 0 and spec is None and (expr_end is None or conversion is not None):
                 expr_end = expr_end if expr_end is not None else self.pos
                 self.advance()
-                spec_start = self.pos
+                pieces: list[str | FStringExpr] = []
                 while self.peek() not in ("}", "", "\n"):
-                    self.advance()
-                spec = self.src[spec_start : self.pos]
+                    if self.peek() == "{":  # a nested field: {x:{width}}
+                        self.advance()
+                        pieces.append(self.read_fstring_expr(quote, triple, string_start))
+                    elif pieces and isinstance(pieces[-1], str):
+                        pieces[-1] += self.advance()
+                    else:
+                        pieces.append(self.advance())
+                spec = "".join(pieces) if all(isinstance(p, str) for p in pieces) else tuple(pieces)
                 continue
             elif c in "\"'" and c != quote:
                 self.skip_nested_string(c, string_start)

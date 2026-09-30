@@ -1755,3 +1755,36 @@ def test_match_exhaustive_assigns():
        "            return 'int'\n")
     assert err("def f(n: int) -> str:\n    match n:\n        case 1:\n            return 'one'\n").message == (
         "function 'f' can reach its end without returning a value (it's declared to return str)")
+
+
+@pytest.mark.parametrize("line,msg", [
+    ('f"{n:,x}"', "bad format spec ':,x' for an int: Cannot specify ',' with 'x'."),
+    ('f"{n:.2}"', "bad format spec ':.2' for an int: Precision not allowed in integer format specifier"),
+    ('f"{s:+}"', "bad format spec ':+' for a str: Sign not allowed in string format specifier"),
+    ('f"{s:d}"', "bad format spec ':d' for a str: Unknown format code 'd' for object of type 'str'"),
+    ('f"{n!r:d}"', "bad format spec ':d' for a str: Unknown format code 'd' for object of type 'str'"),
+    ('f"{x:x}"', "bad format spec ':x' for a float: Unknown format code 'x' for object of type 'float'"),
+    ('f"{x:10.}"', "bad format spec ':10.' for a float: Format specifier missing precision"),
+    ('f"{xs:>10}"', "a format spec needs an int, float, str or date, not a list[int]; convert it first, e.g. `{str(x):>10}`"),
+    ('f"{xs:{n}}"', "a format spec needs an int, float, str or date, not a list[int]"),
+    ('f"{m:>5}"', "int? might be None; check it first, e.g. `if m is not None:`"),
+])
+def test_format_spec_errors(line, msg):
+    e = err(f"""
+        n = 5
+        x = 2.5
+        s = "a"
+        xs = [1]
+        def f(m: int | None):
+            print({line})
+    """)
+    assert msg in e.message
+
+
+def test_format_specs_that_are_fine():
+    ok("""
+        from datetime import date
+        n = 5
+        w = 3
+        print(f"{n:,} {n:_x} {2.5:z.1%} {'s':^{w}} {n:{w}.{w}} {date.today():%Y} {n:} {[1]:} {n!r:>5}")
+    """)

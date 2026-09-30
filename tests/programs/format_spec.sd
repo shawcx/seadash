@@ -1,0 +1,72 @@
+# f-string format specs: Python's format-spec mini-language for int, float, str, bool and dates.
+from datetime import date, datetime, time
+
+n = 1234567
+x = 1234567.891
+print(f"{n:,} {n:_} {x:,.0f} {x:,.2f} {x:,} {x:_.1f}")
+print(f"[{n:>12,}] [{n:<12_}] [{n:^13,}] [{-n:=+14,}] [{n:*^15,}]")
+print(f"{1234:08,} {1234:07,} {-1234:09,} {1234.5:012,.1f} {1.5:012,}")
+
+# integers
+for i in [0, 7, -42, 255, -9223372036854775807 - 1]:
+    print(f"{i:5}|{i:<5}|{i:^7}|{i:+d}|{i: d}|{i:x}|{i:#x}|{i:#X}|{i:o}|{i:#o}|{i:b}|{i:#010b}|{i:_x}")
+print(f"{65:c}{9731:c}{65:>3c} {12:+#x} {12:-^+8} {0xDEADBEEF:#_x} {255:#_b}")
+print(f"{7:e} {7:.2f} {7:%} {3:.0%} {1234567:g} {255:.3g} {12345678:n}")
+
+# floats
+for f in [0.0, -0.0, 3.0, 2.5, -0.5, 123.456, 1e16, 1e-5, 1e20, 0.1]:
+    print(f"{f}|{f:.2f}|{f:10.3f}|{f:e}|{f:.3E}|{f:g}|{f:.3g}|{f:.3}|{f:10}|{f:+}|{f:%}|{f:.1%}")
+print(f"{0.5:.0f} {1.5:.0f} {2.5:.0f} {9.995:.2f} {0.1:.20f} {1/3:.15g}")
+print(f"{3.0:#} {3.0:#.3} {1e16:#} {0.0:#.0e} {1.0:#g} {1.0:#.0f} {123456.0:.6} {1e15:.17}")
+print(f"{-0.0001:z.2f} {-0.0:z} {-0.0001:z.2e} {-1e-9:z%} {-0.0:.1f}")
+inf, nan = float("inf"), float("nan")
+print(f"{inf} {-inf:.2f} {nan:+} {inf:F} {nan:E} {inf:010.2f} {nan:=+08} {inf:,} {inf:%}")
+
+# strings
+for s in ["", "hi", "héllo"]:
+    print(f"[{s:5}] [{s:>5}] [{s:^6}] [{s:*<7}] [{s:é^7}] [{s:.2}] [{s:6.3}] [{s:05}]")
+name = "Ada"
+print(f"{name!r:>8}|{name!s:^9}|{True!r:>6}|{3.0!r:<5}|")
+
+# bools format as ints with a spec, and as True/False without one
+print(f"{True} {False:} {True:5} {True:<5}| {True:d} {False:.2f} {True:x}")
+
+# dates: the spec is a strftime format
+d = date(2024, 3, 9)
+dt = datetime(2024, 3, 9, 14, 5, 7)
+print(f"{d:%Y/%m/%d} {d:%A %d %B} {dt:%H:%M:%S} {time(9, 30):%I:%M %p} {d:} {dt}")
+
+# nested fields: the spec is computed
+for width in [4, 8]:
+    for precision in [1, 3]:
+        print(f"[{x:{width}.{precision}f}] [{name:>{width}}] [{n:{','}}] [{2.5:{'^'}{width + 2}.{precision}}]")
+align = "<"
+print(f"[{name:{align}10}] [{name:{'>' if len(name) > 5 else '^'}10}]")
+
+
+def order(label: str) -> str:
+    print("evaluating", label)
+    return label
+
+
+print(f"{order('value'):{order('>')}{len(order('width')) + 5}}")
+
+# a computed spec can still be wrong
+for spec in [",x", ".2", "x", "+s", "=5"]:
+    try:
+        print(f"{255:{spec}}")
+    except ValueError as e:
+        print("ValueError:", e)
+for spec in ["d", "+", "#"]:
+    try:
+        print(f"{'text':{spec}}")
+    except ValueError as e:
+        print("ValueError:", e)
+try:
+    print(f"{1114112:{'c'}}")
+except OverflowError as e:
+    print("OverflowError:", e)
+
+# = debugging keeps the spec
+value = 3.14159
+print(f"{value=:.2f} {n=:,} {name=}")

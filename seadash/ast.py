@@ -126,7 +126,7 @@ class FormattedValue(Node):
     """One `{expr:spec}` hole in an f-string."""
 
     value: Expr
-    spec: str | None = None
+    spec: str | FString | None = None  # an FString when it has nested fields: {x:{width}}
     conversion: str | None = None  # 'r', 's' or 'a': {x!r}
 
 

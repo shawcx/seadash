@@ -1038,7 +1038,11 @@ class Parser:
         conversion = piece.conversion
         if piece.debug is not None and conversion is None and piece.spec is None:
             conversion = "r"
-        return A.FormattedValue(value, piece.spec, conversion, loc=piece.loc)
+        spec = piece.spec
+        if isinstance(spec, tuple):  # {x:{width}.{precision}f}: the spec is itself an f-string
+            parts: list[str | A.FormattedValue] = [p if isinstance(p, str) else self.parse_fstring_expr(p) for p in spec]
+            spec = A.FString(parts, loc=piece.loc)
+        return A.FormattedValue(value, spec, conversion, loc=piece.loc)
 
 
 def add_text(parts: list, text: str) -> None:

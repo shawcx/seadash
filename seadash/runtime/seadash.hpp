@@ -1665,6 +1665,335 @@ inline std::string chr(std::int64_t cp) {
     return out;
 }
 
+// ---- format specs -----------------------------------------------------------
+// f"{x:spec}": Python's format-spec mini-language, with its output and errors,
+// [[fill]align][sign]["z"]["#"]["0"][width][grouping]["." precision][type].
+
+struct FormatSpec {
+    std::string fill = " ";  // one character (UTF-8)
+    char align = 0;          // '<', '>', '^', '=' or 0 for the type's default
+    char sign = 0;           // '+', '-', ' ' or 0 when not given
+    bool no_neg_zero = false, alternate = false;
+    std::int64_t width = -1, precision = -1;
+    char grouping = 0;  // ',' or '_'
+    char type = 0;
+};
+
+[[noreturn]] inline void unknown_format_code(char type, std::string_view type_name) {
+    char code[8];
+    if (type > ' ' && type < 127)
+        std::snprintf(code, sizeof code, "%c", type);
+    else
+        std::snprintf(code, sizeof code, "\\x%x", static_cast<unsigned char>(type));
+    raise("ValueError", std::string("Unknown format code '") + code + "' for object of type '" + std::string(type_name) + "'");
+}
+
+inline FormatSpec parse_format_spec(std::string_view s, std::string_view type_name) {
+    FormatSpec f;
+    std::size_t pos = 0;
+    auto is_align = [](char c) { return c == '<' || c == '>' || c == '^' || c == '='; };
+    std::size_t first = s.empty() ? 0 : 1;  // the first character's length in bytes
+    while (first < s.size() && (static_cast<unsigned char>(s[first]) & 0xC0) == 0x80) ++first;
+    bool fill_given = false;
+    if (first < s.size() && is_align(s[first])) {
+        f.fill = std::string(s.substr(0, first));
+        f.align = s[first];
+        fill_given = true;
+        pos = first + 1;
+    } else if (!s.empty() && is_align(s[0])) {
+        f.align = s[0];
+        pos = 1;
+    }
+    if (pos < s.size() && (s[pos] == '+' || s[pos] == '-' || s[pos] == ' ')) f.sign = s[pos++];
+    if (pos < s.size() && s[pos] == 'z') f.no_neg_zero = true, ++pos;
+    if (pos < s.size() && s[pos] == '#') f.alternate = true, ++pos;
+    if (!fill_given && pos < s.size() && s[pos] == '0') {  // 0-padding: fill with zeros after the sign
+        f.fill = "0";
+        if (f.align == 0 && type_name != "str") f.align = '=';
+        ++pos;
+    }
+    auto number = [&]() -> std::int64_t {
+        std::size_t start = pos;
+        std::int64_t n = 0;
+        while (pos < s.size() && s[pos] >= '0' && s[pos] <= '9') {
+            if (n > (std::numeric_limits<std::int32_t>::max() - (s[pos] - '0')) / 10)
+                raise("ValueError", "Too many decimal digits in format string");
+            n = n * 10 + (s[pos++] - '0');
+        }
+        return pos == start ? -1 : n;
+    };
+    f.width = number();
+    if (pos < s.size() && (s[pos] == ',' || s[pos] == '_')) {
+        f.grouping = s[pos++];
+        if (pos < s.size() && (s[pos] == ',' || s[pos] == '_')) {
+            if (s[pos] == f.grouping)
+                raise("ValueError", std::string("Cannot specify '") + s[pos] + "' with '" + s[pos] + "'.");
+            raise("ValueError", "Cannot specify both ',' and '_'.");
+        }
+    }
+    if (pos < s.size() && s[pos] == '.') {
+        ++pos;
+        f.precision = number();
+        if (f.precision < 0) raise("ValueError", "Format specifier missing precision");
+    }
+    if (s.size() - pos > 1)
+        raise("ValueError", "Invalid format specifier '" + std::string(s) + "' for object of type '" + std::string(type_name) + "'");
+    if (pos < s.size()) f.type = s[pos];
+    if (f.grouping) {
+        char type = f.type ? f.type : (type_name == "str" ? 's' : 0);
+        bool ok = std::string_view("defgEFG%").find(type) != std::string_view::npos || type == 0 ||
+                  (f.grouping == '_' && std::string_view("boxX").find(type) != std::string_view::npos);
+        if (!ok) raise("ValueError", std::string("Cannot specify '") + f.grouping + "' with '" + type + "'.");
+    }
+    return f;
+}
+
+inline std::size_t code_points(std::string_view s) {
+    std::size_t n = 0;
+    for (char c : s) n += (static_cast<unsigned char>(c) & 0xC0) != 0x80;
+    return n;
+}
+
+// Pads `left + right` to the spec's width; '=' pads between them (after a sign).
+inline std::string format_pad(const FormatSpec& f, char default_align, std::string_view left, std::string_view right) {
+    std::size_t n = code_points(left) + code_points(right);
+    std::size_t width = f.width < 0 ? 0 : static_cast<std::size_t>(f.width);
+    if (n >= width) return std::string(left) + std::string(right);
+    std::size_t pad = width - n, before = 0;
+    switch (f.align ? f.align : default_align) {
+        case '<': before = 0; break;
+        case '^': before = pad / 2; break;
+        default: before = pad; break;
+    }
+    std::string out;
+    auto fill = [&](std::size_t k) {
+        for (std::size_t i = 0; i < k; ++i) out += f.fill;
+    };
+    if (f.align == '=') {
+        out += left;
+        fill(pad);
+        out += right;
+        return out;
+    }
+    fill(before);
+    out += left;
+    out += right;
+    fill(pad - before);
+    return out;
+}
+
+// Groups the digits `d` by threes (or fours for '_' in bin/oct/hex), from the right.
+// With zero-padding, leading zeros are grouped too, up to `min_width` characters.
+inline std::string group_digits(std::string_view d, char sep, std::size_t size, std::int64_t min_width) {
+    std::string out;  // built backwards
+    std::int64_t remaining = static_cast<std::int64_t>(d.size());
+    bool first = true;
+    while (true) {
+        std::int64_t l = std::min<std::int64_t>(size, std::max<std::int64_t>({remaining, min_width, 1}));
+        std::int64_t zeros = std::max<std::int64_t>(0, l - remaining);
+        std::int64_t chars = std::max<std::int64_t>(0, std::min(remaining, l));
+        if (!first) out += sep;
+        first = false;
+        for (std::int64_t i = 0; i < chars; ++i) out += d[remaining - 1 - i];
+        out.append(zeros, '0');
+        remaining -= chars;
+        min_width -= l;
+        if (remaining <= 0 && min_width <= 0) break;
+        min_width -= 1;
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+// A number laid out: sign, prefix (0x), integer digits (grouped), then the rest (.5e+10%).
+inline std::string format_number(const FormatSpec& f, bool negative, std::string_view prefix, std::string_view digits,
+                                 std::string_view rest, std::size_t group_size = 3) {
+    std::string left;
+    if (negative)
+        left = "-";
+    else if (f.sign == '+' || f.sign == ' ')
+        left = std::string(1, f.sign);
+    left += prefix;
+    std::string body(digits);
+    if (f.grouping) {
+        std::int64_t min_width = 0;
+        if (f.fill == "0" && f.align == '=')
+            min_width = f.width - static_cast<std::int64_t>(left.size() + rest.size());
+        body = group_digits(digits, f.grouping, group_size, min_width);
+    }
+    body += rest;
+    return format_pad(f, '>', left, body);
+}
+
+inline std::string format_value(const std::string& s, std::string_view spec) {
+    if (spec.empty()) return s;
+    FormatSpec f = parse_format_spec(spec, "str");
+    if (f.type && f.type != 's') unknown_format_code(f.type, "str");
+    if (f.sign) raise("ValueError", f.sign == ' ' ? "Space not allowed in string format specifier" : "Sign not allowed in string format specifier");
+    if (f.no_neg_zero) raise("ValueError", "Negative zero coercion (z) not allowed in string format specifier");
+    if (f.alternate) raise("ValueError", "Alternate form (#) not allowed in string format specifier");
+    if (f.align == '=') raise("ValueError", "'=' alignment not allowed in string format specifier");
+    std::string_view text = s;
+    if (f.precision >= 0) {  // at most `precision` characters
+        std::size_t i = 0;
+        for (std::int64_t n = 0; i < text.size(); ++i)
+            if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80 && n++ == f.precision) break;
+        text = text.substr(0, i);
+    }
+    return format_pad(f, '<', text, "");
+}
+
+// Python's float formatting (format_float_short): `type` is 'e', 'f', 'g' or 'r' (repr).
+inline std::string format_double(const FormatSpec& f, double x, char type, std::int64_t precision, bool add_dot_0,
+                                 std::string_view suffix) {
+    bool upper = f.type == 'E' || f.type == 'F' || f.type == 'G';
+    if (!std::isfinite(x)) {
+        std::string s = std::isnan(x) ? (upper ? "NAN" : "nan") : (upper ? "INF" : "inf");
+        FormatSpec g = f;
+        g.grouping = 0;
+        return format_number(g, std::isinf(x) && x < 0, "", "", s + std::string(suffix));
+    }
+    // The significant digits (no trailing zeros) and the decimal point's position.
+    std::vector<char> buf(static_cast<std::size_t>(precision) + 400);
+    char *begin = buf.data(), *end = begin + buf.size();
+    std::to_chars_result r;
+    if (type == 'r')
+        r = std::to_chars(begin, end, std::fabs(x), std::chars_format::scientific);
+    else if (type == 'f')
+        r = std::to_chars(begin, end, std::fabs(x), std::chars_format::fixed, static_cast<int>(precision));
+    else
+        r = std::to_chars(begin, end, std::fabs(x), std::chars_format::scientific,
+                          static_cast<int>(std::max<std::int64_t>(type == 'e' ? precision : precision - 1, 0)));
+    std::string_view out(begin, r.ptr);
+    std::string digits;
+    std::int64_t decpt;
+    if (type == 'f') {
+        auto dot = out.find('.');
+        decpt = static_cast<std::int64_t>(dot == std::string_view::npos ? out.size() : dot);
+        for (char c : out)
+            if (c != '.') digits += c;
+        std::size_t lead = 0;
+        while (lead + 1 < digits.size() && digits[lead] == '0') ++lead;
+        digits.erase(0, lead);
+        decpt -= static_cast<std::int64_t>(lead);
+    } else {
+        auto e = out.find('e');
+        for (char c : out.substr(0, e))
+            if (c != '.') digits += c;
+        decpt = std::stoll(std::string(out.substr(e + 1))) + 1;
+    }
+    while (digits.size() > 1 && digits.back() == '0') digits.pop_back();
+    if (digits == "0") decpt = 1;
+    std::int64_t ndigits = static_cast<std::int64_t>(digits.size());
+
+    bool use_exp = false;
+    std::int64_t vend = ndigits;
+    switch (type) {
+        case 'e': use_exp = true, vend = precision + 1; break;
+        case 'f': vend = decpt + precision; break;
+        case 'g':
+            use_exp = decpt <= -4 || decpt > (add_dot_0 ? precision - 1 : precision);
+            if (f.alternate) vend = precision;
+            break;
+        default: use_exp = decpt <= -4 || decpt > 16; break;
+    }
+    std::int64_t exp = 0;
+    if (use_exp) exp = decpt - 1, decpt = 1;
+    std::int64_t vstart = decpt <= 0 ? decpt - 1 : 0;
+    vend = std::max(vend, !use_exp && add_dot_0 ? decpt + 1 : decpt);
+    std::string s;  // the virtual digit string [vstart, vend) with a point before index decpt
+    for (std::int64_t i = vstart; i < vend; ++i) {
+        if (i == decpt) s += '.';
+        s += i >= 0 && i < ndigits ? digits[i] : '0';
+    }
+    if (vend == decpt) s += '.';
+    if (s.back() == '.' && !f.alternate) s.pop_back();
+    if (use_exp) {
+        char e[16];
+        std::snprintf(e, sizeof e, "%c%+.02lld", upper ? 'E' : 'e', static_cast<long long>(exp));
+        s += e;
+    }
+    bool negative = std::signbit(x);
+    if (negative && f.no_neg_zero && s.find_first_not_of("0.") == s.find_first_of("eE%"))
+        negative = false;  // z: -0.00 -> 0.00
+    s += suffix;
+    auto int_end = std::min(s.find('.'), s.find_first_of("eE%"));
+    if (int_end == std::string::npos) int_end = s.size();
+    return format_number(f, negative, "", std::string_view(s).substr(0, int_end), std::string_view(s).substr(int_end));
+}
+
+inline std::string format_float(const FormatSpec& f, double x) {
+    char type = f.type;
+    std::int64_t precision = f.precision;
+    bool add_dot_0 = false;
+    std::string_view suffix;
+    switch (type) {
+        case 0:
+            add_dot_0 = true;
+            type = precision < 0 ? 'r' : 'g';
+            break;
+        case 'n': type = 'g'; break;
+        case '%': type = 'f', x *= 100, suffix = "%"; break;
+        case 'E': type = 'e'; break;
+        case 'F': type = 'f'; break;
+        case 'G': type = 'g'; break;
+    }
+    if (precision < 0) precision = 6;
+    if (type == 'g' && precision == 0) precision = 1;
+    return format_double(f, x, type, precision, add_dot_0, suffix);
+}
+
+inline std::string format_value(double x, std::string_view spec) {
+    if (spec.empty()) return float_repr(x);
+    FormatSpec f = parse_format_spec(spec, "float");
+    if (std::string_view("eEfFgGn%").find(f.type) == std::string_view::npos && f.type != 0)
+        unknown_format_code(f.type, "float");
+    return format_float(f, x);
+}
+
+inline std::string format_int(std::int64_t n, std::string_view spec, std::string_view type_name) {
+    FormatSpec f = parse_format_spec(spec, type_name);
+    switch (f.type) {
+        case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': case '%':
+            return format_float(f, static_cast<double>(n));
+        case 0: case 'd': case 'n': case 'b': case 'o': case 'x': case 'X': case 'c': break;
+        default: unknown_format_code(f.type, type_name);
+    }
+    if (f.precision >= 0) raise("ValueError", "Precision not allowed in integer format specifier");
+    if (f.no_neg_zero) raise("ValueError", "Negative zero coercion (z) not allowed in integer format specifier");
+    if (f.type == 'c') {
+        if (f.sign) raise("ValueError", "Sign not allowed with integer format specifier 'c'");
+        if (f.alternate) raise("ValueError", "Alternate form (#) not allowed with integer format specifier 'c'");
+        if (n < 0 || n > 0x10FFFF) raise("OverflowError", "%c arg not in range(0x110000)");
+        return format_number(f, false, "", chr(n), "");
+    }
+    int base = 10;
+    std::string_view prefix;
+    switch (f.type) {
+        case 'b': base = 2, prefix = "0b"; break;
+        case 'o': base = 8, prefix = "0o"; break;
+        case 'x': base = 16, prefix = "0x"; break;
+        case 'X': base = 16, prefix = "0X"; break;
+    }
+    std::uint64_t magnitude = n < 0 ? 0 - static_cast<std::uint64_t>(n) : static_cast<std::uint64_t>(n);
+    char buf[72];
+    auto r = std::to_chars(buf, buf + sizeof buf, magnitude, base);
+    if (f.type == 'X')
+        for (char* p = buf; p != r.ptr; ++p)
+            if (*p >= 'a') *p = static_cast<char>(*p - 'a' + 'A');
+    return format_number(f, n < 0, f.alternate ? prefix : "", std::string_view(buf, r.ptr), "", base == 10 ? 3 : 4);
+}
+
+inline std::string format_value(std::int64_t n, std::string_view spec) {
+    if (spec.empty()) return std::to_string(n);
+    return format_int(n, spec, "int");
+}
+
+inline std::string format_value(bool b, std::string_view spec) {
+    if (spec.empty()) return b ? "True" : "False";
+    return format_int(b, spec, "bool");
+}
+
 // ---- bytes <-> str ----------------------------------------------------------
 
 inline void check_encoding(const std::string& encoding) {

@@ -96,6 +96,8 @@ def test_fstrings():
     assert e('f"{a}" "b" f"{c}"') == "(fstr {a} 'b' {c})"
     assert e('f"no holes"') == "'no holes'"
     assert e("f\"{d['k']}\"") == "(fstr {(index d 'k')})"
+    assert e('f"{x:{w}.{p + 1}f}"') == "(fstr {x:{w}.{(+ p 1)}f})"
+    assert e('f"{x:>{w!r}}!"') == "(fstr {x:>{w!r}} '!')"
 
 
 def test_fstring_expression_locations_point_into_the_string():

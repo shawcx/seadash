@@ -76,7 +76,10 @@ def expr(e: A.Expr | None) -> str:
 
 
 def fvalue(fv: A.FormattedValue) -> str:
-    spec = f":{fv.spec}" if fv.spec is not None else ""
+    spec = fv.spec
+    if isinstance(spec, A.FString):
+        spec = "".join(p if isinstance(p, str) else fvalue(p) for p in spec.parts)
+    spec = f":{spec}" if spec is not None else ""
     conversion = f"!{fv.conversion}" if fv.conversion else ""
     return "{" + expr(fv.value) + conversion + spec + "}"
 

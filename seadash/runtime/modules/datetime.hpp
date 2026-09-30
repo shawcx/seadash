@@ -772,6 +772,19 @@ inline datetime datetime::fromisoformat(const std::string& s) {
 
 }  // namespace sd::datetime
 
+namespace sd {
+// f"{d:%Y-%m-%d}": a date's format spec is a strftime format.
+inline std::string format_value(const datetime::date& d, std::string_view spec) {
+    return spec.empty() ? d.sd_str() : d.strftime(std::string(spec));
+}
+inline std::string format_value(const datetime::datetime& d, std::string_view spec) {
+    return spec.empty() ? d.sd_str() : d.strftime(std::string(spec));
+}
+inline std::string format_value(const datetime::time& t, std::string_view spec) {
+    return spec.empty() ? t.sd_str() : t.strftime(std::string(spec));
+}
+}  // namespace sd
+
 template <>
 struct std::hash<sd::datetime::date> {
     std::size_t operator()(const sd::datetime::date& d) const { return std::hash<std::int64_t>()(d.toordinal()); }

@@ -1964,7 +1964,9 @@ class Checker:
             case A.FString(parts):
                 for part in parts:
                     if isinstance(part, A.FormattedValue):
-                        self.check_printable(self.check_expr(part.value), part.value)
+                        t = self.check_expr(part.value)
+                        self.check_printable(t, part.value)
+                        self.check_format_spec(part, t)
                 return STR
             case A.Name():
                 return self.check_name(e, expected)
@@ -2147,6 +2149,34 @@ class Checker:
     def check_printable(self, t: Type, e: A.Expr) -> None:
         if isinstance(t, IterType):
             raise self.error(f"{t} can't be converted to a string", e)
+
+    def check_format_spec(self, part: A.FormattedValue, t: Type) -> None:
+        """f"{x:spec}": numbers, strings and dates take a spec. A constant spec is checked
+        here by Python's own rules; one with nested fields ({x:{width}}) at run time."""
+        spec = part.spec
+        if isinstance(spec, A.FString):
+            self.check_expr(spec)
+        elif not spec:
+            return  # {x:} is str(x)
+        if part.conversion:
+            t = STR
+        if t in (DATE, DATETIME, TIME):
+            return  # a strftime format
+        sample = {INT: 0, FLOAT: 0.0, BOOL: False, STR: ""}.get(t)
+        if sample is None:
+            if isinstance(t, OptionalType) and strip_optional(t) in (INT, FLOAT, BOOL, STR, DATE, DATETIME, TIME):
+                raise self.error(
+                    f"{t} might be None; check it first, e.g. `if {describe_short(part.value)} is not None:`", part.value
+                )
+            raise self.error(
+                f"a format spec needs an int, float, str or date, not {with_article(t)}; "
+                f"convert it first, e.g. `{{str(x):>10}}`", part.value,
+            )
+        if isinstance(spec, str):
+            try:
+                format(sample, spec)
+            except ValueError as err:
+                raise self.error(f"bad format spec ':{spec}' for {with_article(t)}: {err}", part)
 
     def check_sequence_literal(self, e, elts, expected, ctor, word: str) -> Type:
         hint = expected.elem if isinstance(expected, ctor) else None
