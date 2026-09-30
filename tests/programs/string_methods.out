@@ -1,0 +1,28 @@
+13 -1 -1 -1 -1
+13 0 7 26 -1
+6 16 4 1 3
+ValueError: substring not found
+ValueError: substring not found
+ValueError: substring not found
+['a', 'b,,c'] ['a', 'b', ',c'] ['x', 'y  z  '] ['x  y  z  ']
+['a,b,', 'c'] ['  x  y', 'z'] ['x', 'y', 'z'] ['a', 'b', 'c'] ['']
+['x', 'y'] ['k', 'v=w'] ['k=v', 'w'] ['a', 'c']
+[ab] [ab] [ab] [abc] [é]
+[ab ] [*ab] [ ab] [abc] [.é.]
+[ab    ] [****ab] [  ab  ] [-abc--] [..é...]
+[ab     ] [*****ab] [   ab  ] [--abc--] [...é...]
+00042 -0042 +07 abc 000
+'a       bc      d' 'a   bc  d' 'x\ny z' ''
+TypeError: The fill character must be exactly one character long
+body body same x
+hELLO wORLD mixed
+True False True False True False False False True False False False
+[(97, 120), (98, 121), (99, 122), (100, None)] xyz-zxy
+HHeLL
+ann is 7    1|22
+13 17 6 3 3
+[b'a,b,', b'c'] [b'x', b'y  '] [b'a', b'b']
+b'ab  ' b'**ab' b'--ab-' b'-005' b'a   b'
+b'body' b'body' b'mIxEd' True True
+b'\xde\xad\xbe\xef' b'' b'zxy' b'heo'
+ValueError: non-hexadecimal number found in fromhex() arg at position 0

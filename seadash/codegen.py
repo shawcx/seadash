@@ -2422,6 +2422,8 @@ class CodeGen:
                 return f"sd::str({a})" if a else '""s'
             case "repr":
                 return f"sd::repr({a})"
+            case "str.maketrans" | "bytes.maketrans" | "bytes.fromhex":
+                return f"sd::{name.replace('.', '_')}({', '.join(args)})"
             case "__same_class__":  # (in generated dataclass methods: Python compares only the same class)
                 return f"(typeid(*{args[0]}) == typeid(*{args[1]}))"
             case "__class_name__":
@@ -2613,10 +2615,19 @@ class CodeGen:
         rest = "".join(", " + a for a in args)
         if recv_type == STR and name == "format":
             return self.str_format(e)
-        if recv_type == STR:
-            return f"sd::str_{name}({r}{rest})"
-        if recv_type == BYTES:
-            return f"sd::bytes_{name}({r}{rest})"
+        if recv_type == STR and name == "format_map":
+            vt = e.args[0].ty.value
+            return f"sd::str_format_map({r}, {args[0]}, {cpp_string(str(strip_optional(vt)).split('[')[0])[:-1]})"
+        if recv_type in (STR, BYTES):
+            prefix = "str" if recv_type == STR else "bytes"
+            handler = builtins.method_for(recv_type, name)
+            if hasattr(handler, "params"):  # keywords and defaults: s.split(maxsplit=1), s.find(x, 2)
+                codes = []
+                for i, (pname, ptype, *default) in enumerate(handler.params):
+                    node = e.args[i] if i < len(e.args) else self.keyword(e, pname)
+                    codes.append(default[0] if node is None else self.expr_as(node, handler.resolve(ptype, recv_type)))
+                rest = "".join(", " + c for c in codes)
+            return f"sd::{prefix}_{name}({r}{rest})"
         if isinstance(recv_type, FileType):
             return f"{r}->{'fileno_' if name == 'fileno' else name}({', '.join(args)})"  # (fileno: a macro on macOS)
         if recv_type == JSON_VALUE:

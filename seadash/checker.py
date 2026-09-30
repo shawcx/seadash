@@ -2785,6 +2785,12 @@ class Checker:
             return self.call_generic(e, gen, explicit, expected)
         if self.is_builtin_name(func, "isinstance"):
             return self.check_isinstance(e)
+        if (isinstance(func, A.Attribute) and isinstance(func.value, A.Name)
+                and (func.value.id, func.attr) in builtins.TYPE_FUNCTIONS and self.is_builtin_name(func.value, func.value.id)):
+            # str.maketrans(...), bytes.fromhex(...): called on the type itself
+            ctx = builtins.CallContext(self, e, f"{func.value.id}.{func.attr}()", expected)
+            e.sym = CallTarget("builtin", f"{func.value.id}.{func.attr}")
+            return builtins.TYPE_FUNCTIONS[(func.value.id, func.attr)](ctx)
         if isinstance(func, A.Attribute) and isinstance(func.value, A.Call) and self.is_builtin_name(func.value.func, "super"):
             return self.check_super_call(e, func.value, func.attr)
         own = self.scope.info.var if self.scope.info is not None else None

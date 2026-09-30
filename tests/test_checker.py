@@ -2019,3 +2019,17 @@ def test_replace_errors(line, msg):
 def test_file_descriptor_errors(line, msg):
     e = err(f"import os\nx = {line}\n")
     assert msg in e.message
+
+
+@pytest.mark.parametrize("line,msg", [
+    ('"ab".translate({"a": "b"})', "translate() takes a table from str.maketrans() (a dict[int, str | int | None]), not dict[str, str]"),
+    ('"{a}".format_map({1: "x"})', "format_map() takes a dict with str keys, not dict[int, str]"),
+    ('str.maketrans({1: 2})', "str.maketrans() with one argument takes a dict[str, str], not dict[int, int]"),
+    ('"ab".ljust("3")', "argument 'width' must be int, not str"),
+    ('"ab".split(maxsplit="1")', "argument 'maxsplit' must be int, not str"),
+    ('b"ab".find("a")', "argument 'sub' must be bytes, not str"),
+    ('bytes.fromhex(b"ab")', "must be str, not bytes"),
+])
+def test_string_method_errors(line, msg):
+    e = err(f"x = {line}\n")
+    assert msg in e.message

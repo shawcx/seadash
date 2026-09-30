@@ -1,0 +1,53 @@
+# More str and bytes methods: padding, searching with start/end, split with maxsplit,
+# rsplit, translate, format_map, fromhex... (valid Python: the same output)
+
+s = "hello world, hello seadash"
+print(s.find("hello", 1), s.find("hello", 1, 10), s.find("o", -5), s.find("", 30), s.find("xyz"))
+print(s.rfind("hello"), s.rfind("hello", 0, 10), s.rfind("o", 5, 8), s.rfind(""), s.rfind("zz"))
+print(s.index("world"), s.rindex("l"), s.count("l", 3), s.count("hello", 0, 5), s.count("", 2, 4))
+for bad in ["xyz", "hello world, hello seadash!"]:
+    try:
+        print(s.index(bad))
+    except ValueError as e:
+        print("ValueError:", e)
+try:
+    print(s.rindex("q", 2))
+except ValueError as e:
+    print("ValueError:", e)
+
+print("a,b,,c".split(",", 1), "a,b,,c".split(",", maxsplit=2), "  x  y  z  ".split(None, 1), "  x  y  z  ".split(maxsplit=0))
+print("a,b,,c".rsplit(",", 1), "  x  y  z  ".rsplit(None, 1), "  x  y  z  ".rsplit(), "a::b::c".rsplit("::"), "".rsplit(","))
+print("  x y ".split(), "k=v=w".split("=", 1), "k=v=w".rsplit("=", maxsplit=1), "abc".split("b", -1))
+
+for w in [0, 3, 6, 7]:
+    print(f"[{'ab'.ljust(w)}] [{'ab'.rjust(w, '*')}] [{'ab'.center(w)}] [{'abc'.center(w, '-')}] [{'é'.center(w, '.')}]")
+print("42".zfill(5), "-42".zfill(5), "+7".zfill(3), "abc".zfill(2), "".zfill(3))
+print(repr("a\tbc\td".expandtabs()), repr("a\tbc\td".expandtabs(4)), repr("x\ny\tz".expandtabs(2)), repr("\t".expandtabs(0)))
+try:
+    print("a".ljust(3, "ab"))
+except TypeError as e:
+    print("TypeError:", e)
+
+print("prefix-body".removeprefix("prefix-"), "body.txt".removesuffix(".txt"), "same".removeprefix("x"), "x".removesuffix(""))
+print("Hello World".swapcase(), "MiXeD".casefold())
+print("abc".isascii(), "héllo".isascii(), "123".isdecimal(), "12a".isnumeric(), "_ok1".isidentifier(),
+      "1no".isidentifier(), "".isidentifier(), "tab\there".isprintable(), "Title Case".istitle(),
+      "Title case".istitle(), "UPPER".istitle(), "".istitle())
+
+table = str.maketrans("abc", "xyz", "d")
+print(sorted(table.items()), "abcd-cab".translate(table))
+print("hello".translate(str.maketrans({"l": "L", "o": None, "h": "HH"})))
+print("{name} is {age}".format_map({"name": "ann", "age": "7"}), "{x:>4}|{y}".format_map({"x": 1, "y": 22}))
+
+b = b"hello world, hello bytes"
+print(b.find(b"hello", 1), b.rfind(b"o"), b.index(b"world"), b.rindex(b"l", 0, 5), b.count(b"l", 5))
+print(b"a,b,,c".rsplit(b",", 1), b"  x  y  ".split(None, 1), b"a b".rsplit())
+print(b"ab".ljust(4), b"ab".rjust(4, b"*"), b"ab".center(5, b"-"), b"-5".zfill(4), b"a\tb".expandtabs(4))
+print(b"pre.body".removeprefix(b"pre."), b"body.gz".removesuffix(b".gz"), b"MiXeD".swapcase(), b"abc".isascii(),
+      b"Title Case".istitle())
+print(bytes.fromhex("de ad be ef"), bytes.fromhex(""), b"cab".translate(bytes.maketrans(b"abc", b"xyz")),
+      b"hello".translate(None, b"l"))
+try:
+    print(bytes.fromhex("zz"))
+except ValueError as e:
+    print("ValueError:", e)

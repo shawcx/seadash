@@ -786,13 +786,83 @@ def dict_pop(ctx: CallContext) -> Type:
     return d.value
 
 
+def text_methods(t: Type, fill_default: str) -> dict:
+    """The methods str and bytes share (t is STR or BYTES): searching with start/end,
+    split/rsplit with maxsplit, padding..."""
+    search = lambda: sync_method(INT, ("sub", t), ("start", OptionalType(INT), "std::nullopt"),
+                                 ("end", OptionalType(INT), "std::nullopt"))
+    splits = lambda: sync_method(ListType(t), ("sep", OptionalType(t), "std::nullopt"), ("maxsplit", INT, "-1_i"))
+    return {
+        **{name: search() for name in ("find", "rfind", "index", "rindex", "count")},
+        "split": splits(),
+        "rsplit": splits(),
+        **{name: sync_method(t, ("width", INT), ("fillchar", t, fill_default)) for name in ("ljust", "rjust", "center")},
+        "zfill": sync_method(t, ("width", INT)),
+        "expandtabs": sync_method(t, ("tabsize", INT, "8_i")),
+        **{name: returns(t, args=(t,)) for name in ("removeprefix", "removesuffix")},
+        "swapcase": returns(t),
+        **{name: returns(BOOL) for name in ("isascii", "istitle")},
+    }
+
+
+def str_translate(ctx: CallContext) -> Type:
+    """s.translate(table): table maps code points to a str, a code point, or None (delete)."""
+    ctx.arity(1)
+    t = ctx.arg(0)
+    if not (isinstance(t, DictType) and t.key == INT and strip_optional_type(t.value) in (INT, STR)):
+        raise ctx.error(f"translate() takes a table from str.maketrans() (a dict[int, str | int | None]), not {t}",
+                        ctx.args[0])
+    return STR
+
+
+def str_format_map(ctx: CallContext) -> Type:
+    """s.format_map(mapping): str.format with the mapping's items as keywords."""
+    ctx.arity(1)
+    t = ctx.arg(0)
+    if not (isinstance(t, DictType) and t.key == STR and printable(t.value)):
+        raise ctx.error(f"format_map() takes a dict with str keys, not {t}", ctx.args[0])
+    return STR
+
+
+def str_maketrans(ctx: CallContext) -> Type:
+    """str.maketrans(x, y, z) or str.maketrans({"a": "b"}): a table for s.translate()."""
+    n = ctx.arity(1, 3)
+    if n == 1:
+        t = ctx.arg(0)
+        if not (isinstance(t, DictType) and t.key == STR and strip_optional_type(t.value) == STR):
+            raise ctx.error(f"str.maketrans() with one argument takes a dict[str, str], not {t}", ctx.args[0])
+        return DictType(INT, OptionalType(STR))
+    for i in range(n):
+        ctx.expect(i, STR)
+    return DictType(INT, OptionalType(INT))
+
+
+def bytes_maketrans(ctx: CallContext) -> Type:
+    ctx.arity(2)
+    ctx.expect(0, BYTES)
+    ctx.expect(1, BYTES)
+    return BYTES
+
+
+def bytes_fromhex(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    ctx.expect(0, STR)
+    return BYTES
+
+
+# `str.maketrans(...)`, `bytes.fromhex(...)`: called on the type itself.
+TYPE_FUNCTIONS = {("str", "maketrans"): str_maketrans, ("bytes", "maketrans"): bytes_maketrans,
+                  ("bytes", "fromhex"): bytes_fromhex}
+
+
 STR_METHODS = {
     **{name: returns(STR, 0, 1, (STR,)) for name in ("strip", "lstrip", "rstrip")},
-    **{name: returns(STR) for name in ("upper", "lower", "title", "capitalize")},
-    **{name: returns(BOOL) for name in ("isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower")},
+    **{name: returns(STR) for name in ("upper", "lower", "title", "capitalize", "casefold")},
+    **{name: returns(BOOL) for name in ("isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower",
+                                        "isdecimal", "isnumeric", "isidentifier", "isprintable")},
     **{name: returns(BOOL, args=(STR,)) for name in ("startswith", "endswith")},
-    **{name: returns(INT, args=(STR,)) for name in ("find", "count")},
-    "split": returns(ListType(STR), 0, 1, (STR,)),
+    "translate": str_translate,
+    "format_map": str_format_map,
     "splitlines": returns(ListType(STR)),
     **{name: returns(TupleType((STR, STR, STR)), args=(STR,)) for name in ("partition", "rpartition")},
     "replace": returns(STR, args=(STR, STR)),
@@ -813,11 +883,9 @@ BYTES_METHODS = {
     "decode": returns(STR, 0, 1, (STR,)),
     "hex": returns(STR),
     **{name: returns(BOOL, args=(BYTES,)) for name in ("startswith", "endswith")},
-    **{name: returns(INT, args=(BYTES,)) for name in ("find", "count")},
     **{name: returns(BYTES) for name in ("upper", "lower", "title", "capitalize")},
     **{name: returns(BYTES, 0, 1, (BYTES,)) for name in ("strip", "lstrip", "rstrip")},
     **{name: returns(BOOL) for name in ("isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower")},
-    "split": returns(ListType(BYTES), 0, 1, (BYTES,)),
     "splitlines": returns(ListType(BYTES)),
     **{name: returns(TupleType((BYTES, BYTES, BYTES)), args=(BYTES,)) for name in ("partition", "rpartition")},
     "replace": returns(BYTES, args=(BYTES, BYTES)),
@@ -1559,6 +1627,12 @@ def sync_method(result, *params):
     handler.params = params
     handler.resolve = resolve
     return handler
+
+
+# (these use sync_method, for keywords and defaults: s.split(maxsplit=1), s.find(x, 2))
+STR_METHODS.update(text_methods(STR, '" "s'))
+BYTES_METHODS.update(text_methods(BYTES, 'sd::bytes(" "s)'))
+BYTES_METHODS["translate"] = sync_method(BYTES, ("table", OptionalType(BYTES)), ("delete", BYTES, "sd::bytes()"))
 
 
 def plural_args(n: int) -> str:

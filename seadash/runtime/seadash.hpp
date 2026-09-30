@@ -2885,6 +2885,383 @@ bytes bytes_join(const bytes& sep, It&& parts) {
     return bytes(out);
 }
 
+// ============================================================================
+// More str and bytes methods: padding, searching with start/end, splitting with
+// maxsplit, rsplit, translate... Widths count characters for str (code points: UTF-8)
+// and bytes for bytes; positions are byte offsets, like indexing. Classification and
+// case follow ASCII rules, like upper() and lower().
+// ============================================================================
+
+// s[start:end] as byte offsets, Python's slice rules (for find, count, index...).
+inline std::pair<std::int64_t, std::int64_t> sub_bounds(std::size_t size, opt_int start, opt_int end) {
+    std::int64_t n = static_cast<std::int64_t>(size);
+    auto fix = [&](opt_int v, std::int64_t dflt) {
+        if (!v) return dflt;
+        std::int64_t i = *v;
+        if (i < 0) i = std::max<std::int64_t>(i + n, 0);
+        return std::min(i, n);
+    };
+    std::int64_t lo = start ? (*start < 0 ? std::max<std::int64_t>(*start + n, 0) : *start) : 0;
+    return {lo, fix(end, n)};
+}
+
+inline std::int64_t str_find(const std::string& s, const std::string& sub, opt_int start, opt_int end = std::nullopt) {
+    auto [lo, hi] = sub_bounds(s.size(), start, end);
+    if (lo > static_cast<std::int64_t>(s.size()) || hi - lo < static_cast<std::int64_t>(sub.size())) return -1;
+    auto pos = s.substr(0, static_cast<std::size_t>(hi)).find(sub, static_cast<std::size_t>(lo));
+    return pos == std::string::npos ? -1 : static_cast<std::int64_t>(pos);
+}
+inline std::int64_t str_rfind(const std::string& s, const std::string& sub, opt_int start = std::nullopt,
+                              opt_int end = std::nullopt) {
+    auto [lo, hi] = sub_bounds(s.size(), start, end);
+    if (lo > static_cast<std::int64_t>(s.size()) || hi - lo < static_cast<std::int64_t>(sub.size())) return -1;
+    auto pos = s.substr(0, static_cast<std::size_t>(hi)).rfind(sub);
+    return pos == std::string::npos || static_cast<std::int64_t>(pos) < lo ? -1 : static_cast<std::int64_t>(pos);
+}
+inline std::int64_t str_index(const std::string& s, const std::string& sub, opt_int start = std::nullopt,
+                              opt_int end = std::nullopt) {
+    std::int64_t i = str_find(s, sub, start, end);
+    if (i < 0) raise("ValueError", "substring not found");
+    return i;
+}
+inline std::int64_t str_rindex(const std::string& s, const std::string& sub, opt_int start = std::nullopt,
+                               opt_int end = std::nullopt) {
+    std::int64_t i = str_rfind(s, sub, start, end);
+    if (i < 0) raise("ValueError", "substring not found");
+    return i;
+}
+inline std::int64_t str_count(const std::string& s, const std::string& sub, opt_int start, opt_int end = std::nullopt) {
+    auto [lo, hi] = sub_bounds(s.size(), start, end);
+    if (lo > hi) return 0;
+    return str_count(s.substr(static_cast<std::size_t>(lo), static_cast<std::size_t>(hi - lo)), sub);
+}
+
+// split(sep=None, maxsplit=-1) and rsplit(): by runs of whitespace, or by sep.
+inline bool is_ws(char c) { return std::strchr(" \t\n\r\f\v", c) != nullptr && c != '\0'; }
+inline std::vector<std::string> str_split(const std::string& s, const std::optional<std::string>& sep, std::int64_t maxsplit) {
+    if (maxsplit < 0) return sep ? str_split(s, *sep) : str_split(s);
+    std::vector<std::string> out;
+    if (sep) {
+        if (sep->empty()) raise("ValueError", "empty separator");
+        std::size_t start = 0, pos;
+        while (static_cast<std::int64_t>(out.size()) < maxsplit && (pos = s.find(*sep, start)) != std::string::npos) {
+            out.push_back(s.substr(start, pos - start));
+            start = pos + sep->size();
+        }
+        out.push_back(s.substr(start));
+        return out;
+    }
+    std::size_t i = 0, n = s.size();
+    while (true) {
+        while (i < n && is_ws(s[i])) ++i;
+        if (i == n) break;
+        if (static_cast<std::int64_t>(out.size()) == maxsplit) {  // the rest, as it is (after its leading space)
+            out.push_back(s.substr(i));
+            break;
+        }
+        std::size_t j = i;
+        while (j < n && !is_ws(s[j])) ++j;
+        out.push_back(s.substr(i, j - i));
+        i = j;
+    }
+    return out;
+}
+inline std::vector<std::string> str_rsplit(const std::string& s, const std::optional<std::string>& sep = std::nullopt,
+                                           std::int64_t maxsplit = -1) {
+    std::vector<std::string> out;
+    if (sep) {
+        if (sep->empty()) raise("ValueError", "empty separator");
+        std::size_t end = s.size();
+        while (maxsplit < 0 || static_cast<std::int64_t>(out.size()) < maxsplit) {
+            std::size_t pos = end < sep->size() ? std::string::npos : s.rfind(*sep, end - sep->size());
+            if (pos == std::string::npos) break;
+            out.push_back(s.substr(pos + sep->size(), end - pos - sep->size()));
+            end = pos;
+        }
+        out.push_back(s.substr(0, end));
+    } else {
+        std::size_t j = s.size();
+        while (true) {
+            while (j > 0 && is_ws(s[j - 1])) --j;
+            if (j == 0) break;
+            if (maxsplit >= 0 && static_cast<std::int64_t>(out.size()) == maxsplit) {
+                out.push_back(s.substr(0, j));
+                break;
+            }
+            std::size_t i = j;
+            while (i > 0 && !is_ws(s[i - 1])) --i;
+            out.push_back(s.substr(i, j - i));
+            j = i;
+        }
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+// Padding. `chars` is how long the text is (characters for str, bytes for bytes).
+inline std::string pad_to(const std::string& s, std::int64_t width, const std::string& fill, std::size_t chars, int how) {
+    std::int64_t len = static_cast<std::int64_t>(chars);
+    if (width <= len) return s;
+    std::int64_t margin = width - len, left = 0;
+    if (how < 0) left = 0;                                  // ljust
+    else if (how > 0) left = margin;                        // rjust
+    else left = margin / 2 + (margin & width & 1);          // center, as CPython rounds it
+    std::string out;
+    for (std::int64_t i = 0; i < left; ++i) out += fill;
+    out += s;
+    for (std::int64_t i = 0; i < margin - left; ++i) out += fill;
+    return out;
+}
+inline const std::string& fill_char(const std::string& fill) {
+    if (code_points(fill) != 1) raise("TypeError", "The fill character must be exactly one character long");
+    return fill;
+}
+inline std::string str_ljust(const std::string& s, std::int64_t width, const std::string& fill = " ") {
+    return pad_to(s, width, fill_char(fill), code_points(s), -1);
+}
+inline std::string str_rjust(const std::string& s, std::int64_t width, const std::string& fill = " ") {
+    return pad_to(s, width, fill_char(fill), code_points(s), 1);
+}
+inline std::string str_center(const std::string& s, std::int64_t width, const std::string& fill = " ") {
+    return pad_to(s, width, fill_char(fill), code_points(s), 0);
+}
+inline std::string zfill_to(const std::string& s, std::int64_t width, std::size_t chars) {
+    std::int64_t len = static_cast<std::int64_t>(chars);
+    if (width <= len) return s;
+    std::string zeros(static_cast<std::size_t>(width - len), '0');
+    if (!s.empty() && (s[0] == '+' || s[0] == '-')) return s.substr(0, 1) + zeros + s.substr(1);
+    return zeros + s;
+}
+inline std::string str_zfill(const std::string& s, std::int64_t width) { return zfill_to(s, width, code_points(s)); }
+inline std::string expand_tabs(const std::string& s, std::int64_t tabsize, bool utf8) {
+    std::string out;
+    std::int64_t column = 0;
+    for (char c : s) {
+        if (c == '\t') {
+            if (tabsize > 0) {
+                std::int64_t spaces = tabsize - column % tabsize;
+                out.append(static_cast<std::size_t>(spaces), ' ');
+                column += spaces;
+            }
+        } else {
+            out += c;
+            if (c == '\n' || c == '\r') column = 0;
+            else if (!utf8 || (static_cast<unsigned char>(c) & 0xC0) != 0x80) ++column;
+        }
+    }
+    return out;
+}
+inline std::string str_expandtabs(const std::string& s, std::int64_t tabsize = 8) { return expand_tabs(s, tabsize, true); }
+
+inline std::string str_removeprefix(const std::string& s, const std::string& p) { return s.starts_with(p) ? s.substr(p.size()) : s; }
+inline std::string str_removesuffix(const std::string& s, const std::string& p) {
+    return !p.empty() && s.ends_with(p) ? s.substr(0, s.size() - p.size()) : s;
+}
+inline std::string str_casefold(const std::string& s) { return str_lower(s); }
+inline std::string str_swapcase(std::string s) {
+    for (char& c : s) {
+        unsigned char u = static_cast<unsigned char>(c);
+        if (std::isupper(u)) c = static_cast<char>(std::tolower(u));
+        else if (std::islower(u)) c = static_cast<char>(std::toupper(u));
+    }
+    return s;
+}
+inline bool str_isascii(const std::string& s) {
+    return std::all_of(s.begin(), s.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80; });
+}
+inline bool str_isdecimal(const std::string& s) { return str_isdigit(s); }
+inline bool str_isnumeric(const std::string& s) { return str_isdigit(s); }
+inline bool str_isidentifier(const std::string& s) {
+    if (s.empty() || std::isdigit(static_cast<unsigned char>(s[0]))) return false;
+    return std::all_of(s.begin(), s.end(), [](char c) {
+        unsigned char u = static_cast<unsigned char>(c);
+        return std::isalnum(u) || c == '_' || u >= 0x80;  // (non-ASCII letters are allowed, as in Python)
+    });
+}
+inline bool str_isprintable(const std::string& s) {
+    return std::all_of(s.begin(), s.end(), [](char c) {
+        unsigned char u = static_cast<unsigned char>(c);
+        return u >= 0x80 || (u >= 0x20 && u < 0x7F);
+    });
+}
+inline bool str_istitle(const std::string& s) {
+    bool cased = false, previous_cased = false;
+    for (char c : s) {
+        unsigned char u = static_cast<unsigned char>(c);
+        if (std::isupper(u)) {
+            if (previous_cased) return false;
+            previous_cased = cased = true;
+        } else if (std::islower(u)) {
+            if (!previous_cased) return false;
+            previous_cased = cased = true;
+        } else {
+            previous_cased = false;
+        }
+    }
+    return cased;
+}
+
+// str.maketrans / str.translate: a table from code points to a replacement (None: delete).
+inline std::vector<std::int64_t> utf8_code_points(const std::string& s) {
+    std::vector<std::int64_t> out;
+    for (std::size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        std::size_t width = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+        std::int64_t cp = width == 1 ? c : c & (0xFF >> (width + 1));
+        for (std::size_t k = 1; k < width && i + k < s.size(); ++k) cp = (cp << 6) | (s[i + k] & 0x3F);
+        out.push_back(cp);
+        i += width;
+    }
+    return out;
+}
+inline dict<std::int64_t, std::optional<std::int64_t>> str_maketrans(const std::string& x, const std::string& y,
+                                                                     const std::string& z = "") {
+    auto from = utf8_code_points(x), to = utf8_code_points(y);
+    if (from.size() != to.size()) raise("ValueError", "the first two maketrans arguments must have equal length");
+    dict<std::int64_t, std::optional<std::int64_t>> table;
+    for (std::size_t i = 0; i < from.size(); ++i) table[from[i]] = to[i];
+    for (std::int64_t cp : utf8_code_points(z)) table[cp] = std::nullopt;
+    return table;
+}
+template <class V>
+dict<std::int64_t, std::optional<std::string>> str_maketrans(const dict<std::string, V>& mapping) {
+    dict<std::int64_t, std::optional<std::string>> table;
+    for (const auto& [k, v] : mapping) {
+        auto cps = utf8_code_points(k);
+        if (cps.size() != 1) raise("ValueError", "string keys in translate table must be of length 1");
+        if constexpr (is_optional<V>::value)
+            table[cps[0]] = v;
+        else
+            table[cps[0]] = std::optional<std::string>(v);
+    }
+    return table;
+}
+template <class V>
+std::string str_translate(const std::string& s, const dict<std::int64_t, V>& table) {
+    std::string out;
+    for (std::size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        std::size_t width = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+        std::string piece = s.substr(i, width);
+        std::int64_t cp = utf8_code_points(piece)[0];
+        i += width;
+        const V* to = table.find(cp);
+        if (!to) {
+            out += piece;
+            continue;
+        }
+        auto put = [&](const auto& x) {
+            using X = std::remove_cvref_t<decltype(x)>;
+            if constexpr (std::is_same_v<X, std::string>) out += x;
+            else out += chr(x);
+        };
+        if constexpr (is_optional<V>::value) {
+            if (*to) put(**to);  // None deletes it
+        } else {
+            put(*to);
+        }
+    }
+    return out;
+}
+
+// str.format_map(mapping): str.format with the mapping's items as keywords.
+template <class K, class V>
+std::string str_format_map(std::string_view fmt, const dict<K, V>& mapping, std::string_view type_name) {
+    std::vector<FormatArg> args;
+    std::vector<std::string_view> names;
+    std::vector<std::string> keys;
+    keys.reserve(mapping.size());
+    for (const auto& [k, v] : mapping) {
+        keys.push_back(k);
+        args.push_back(FormatArg{&format_arg<V>, &v, type_name});
+    }
+    for (const auto& k : keys) names.push_back(k);
+    StrFormatter f{args, 0, names};
+    return f.run(fmt, 2);
+}
+
+// ---- the same for bytes (widths and positions in bytes) ----
+
+inline bytes bytes_ljust(const bytes& b, std::int64_t width, const bytes& fill = bytes(" ")) {
+    if (fill.size() != 1) raise("TypeError", "ljust() argument 2 must be a byte string of length 1, not bytes");
+    return bytes(pad_to(b.data, width, fill.data, b.size(), -1));
+}
+inline bytes bytes_rjust(const bytes& b, std::int64_t width, const bytes& fill = bytes(" ")) {
+    if (fill.size() != 1) raise("TypeError", "rjust() argument 2 must be a byte string of length 1, not bytes");
+    return bytes(pad_to(b.data, width, fill.data, b.size(), 1));
+}
+inline bytes bytes_center(const bytes& b, std::int64_t width, const bytes& fill = bytes(" ")) {
+    if (fill.size() != 1) raise("TypeError", "center() argument 2 must be a byte string of length 1, not bytes");
+    return bytes(pad_to(b.data, width, fill.data, b.size(), 0));
+}
+inline bytes bytes_zfill(const bytes& b, std::int64_t width) { return bytes(zfill_to(b.data, width, b.size())); }
+inline bytes bytes_expandtabs(const bytes& b, std::int64_t tabsize = 8) { return bytes(expand_tabs(b.data, tabsize, false)); }
+inline std::int64_t bytes_find(const bytes& b, const bytes& sub, opt_int start, opt_int end = std::nullopt) {
+    return str_find(b.data, sub.data, start, end);
+}
+inline std::int64_t bytes_rfind(const bytes& b, const bytes& sub, opt_int start = std::nullopt, opt_int end = std::nullopt) {
+    return str_rfind(b.data, sub.data, start, end);
+}
+inline std::int64_t bytes_index(const bytes& b, const bytes& sub, opt_int start = std::nullopt, opt_int end = std::nullopt) {
+    return str_index(b.data, sub.data, start, end);
+}
+inline std::int64_t bytes_rindex(const bytes& b, const bytes& sub, opt_int start = std::nullopt, opt_int end = std::nullopt) {
+    return str_rindex(b.data, sub.data, start, end);
+}
+inline std::int64_t bytes_count(const bytes& b, const bytes& sub, opt_int start, opt_int end = std::nullopt) {
+    return str_count(b.data, sub.data, start, end);
+}
+inline std::vector<bytes> bytes_split(const bytes& b, const std::optional<bytes>& sep, std::int64_t maxsplit) {
+    return as_bytes_list(str_split(b.data, sep ? std::optional<std::string>(sep->data) : std::nullopt, maxsplit));
+}
+inline std::vector<bytes> bytes_rsplit(const bytes& b, const std::optional<bytes>& sep = std::nullopt, std::int64_t maxsplit = -1) {
+    return as_bytes_list(str_rsplit(b.data, sep ? std::optional<std::string>(sep->data) : std::nullopt, maxsplit));
+}
+inline bytes bytes_removeprefix(const bytes& b, const bytes& p) { return bytes(str_removeprefix(b.data, p.data)); }
+inline bytes bytes_removesuffix(const bytes& b, const bytes& p) { return bytes(str_removesuffix(b.data, p.data)); }
+inline bytes bytes_swapcase(const bytes& b) { return bytes(str_swapcase(b.data)); }
+inline bool bytes_isascii(const bytes& b) { return str_isascii(b.data); }
+inline bool bytes_istitle(const bytes& b) { return str_istitle(b.data); }
+inline bytes bytes_fromhex(const std::string& s) {
+    std::string out;
+    int high = -1;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (is_ws(c)) {
+            if (high >= 0) raise("ValueError", "non-hexadecimal number found in fromhex() arg at position " + std::to_string(i));
+            continue;
+        }
+        int v = std::isdigit(static_cast<unsigned char>(c)) ? c - '0'
+                : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (v < 0) raise("ValueError", "non-hexadecimal number found in fromhex() arg at position " + std::to_string(i));
+        if (high < 0) {
+            high = v;
+        } else {
+            out += static_cast<char>(high * 16 + v);
+            high = -1;
+        }
+    }
+    if (high >= 0) raise("ValueError", "non-hexadecimal number found in fromhex() arg at position " + std::to_string(s.size()));
+    return bytes(out);
+}
+inline bytes bytes_maketrans(const bytes& from, const bytes& to) {
+    if (from.size() != to.size()) raise("ValueError", "maketrans arguments must have same length");
+    std::string table(256, '\0');
+    for (int i = 0; i < 256; ++i) table[static_cast<std::size_t>(i)] = static_cast<char>(i);
+    for (std::size_t i = 0; i < from.size(); ++i) table[static_cast<unsigned char>(from.data[i])] = to.data[i];
+    return bytes(table);
+}
+inline bytes bytes_translate(const bytes& b, const std::optional<bytes>& table, const bytes& remove = bytes()) {
+    if (table && table->size() != 256) raise("ValueError", "translation table must be 256 characters long");
+    std::string out;
+    for (char c : b.data) {
+        if (remove.data.find(c) != std::string::npos) continue;
+        out += table ? table->data[static_cast<unsigned char>(c)] : c;
+    }
+    return bytes(out);
+}
+
 inline bytes to_bytes() { return bytes(); }
 inline bytes to_bytes(std::int64_t n) {
     if (n < 0) raise("ValueError", "negative count");
