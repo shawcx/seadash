@@ -471,6 +471,8 @@ class Parser:
             return items[0]
         if self.accept("None"):
             return A.TypeName("None", loc=tok.loc)
+        if self.accept("..."):  # tuple[int, ...]
+            return A.TypeName("...", loc=tok.loc)
         if tok.kind != K.NAME:
             raise self.error(f"expected a type, found {describe(tok)}")
         name = self.parse_dotted_name()

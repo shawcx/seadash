@@ -39,7 +39,7 @@ from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA,
-    SYNC_ARITY, ClassRefType, CounterType, MatchType, NamespaceType, PatternType, ProcessType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
+    SYNC_ARITY, ClassRefType, CounterType, MatchType, NamespaceType, PatternType, ProcessType, VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
@@ -931,6 +931,11 @@ class Checker:
             example = {"list": "list[int]", "set": "set[int]", "dict": "dict[str, int]", "tuple": "tuple[int, str]"}[name]
             if not args or (arity is not None and len(args) != arity):
                 raise self.error(f"'{name}' needs {arity or 'some'} type argument(s), e.g. {example}", node)
+            dots = [isinstance(a, A.TypeName) and a.name == "..." for a in args]
+            if name == "tuple" and dots == [False, True]:  # tuple[int, ...]
+                return VarTupleType(self.resolve_type(args[0]))
+            if any(dots):
+                raise self.error("'...' only goes in tuple[T, ...] (a tuple of any length)", node)
             resolved = [self.resolve_type(a) for a in args]
             match name:
                 case "list":
@@ -1141,6 +1146,10 @@ class Checker:
                 if not assignable(t, slot):
                     raise self.error(f"can't store {t} in a {ct}", value)
                 target.ty = slot
+            case A.TupleLit(elts) | A.ListLit(elts) if isinstance(t, VarTupleType):
+                for elt in elts:  # checked when it runs: the lengths must match
+                    self.assign(elt, t.elem, value)
+                target.ty = t
             case A.TupleLit(elts) | A.ListLit(elts):
                 if not isinstance(t, TupleType):
                     raise self.error(f"can only unpack a tuple here, not {t}", value)
@@ -1517,7 +1526,7 @@ class Checker:
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
         ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE, PATH, *DATETIME_TYPES) or isinstance(
-            t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType, MatchType)
+            t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType, MatchType, VarTupleType)
         ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__"))
         if not ok:
             raise self.error(f"{t} can't be used as a condition", e)
@@ -1571,6 +1580,8 @@ class Checker:
                 return self.check_dict_literal(e, keys, values, expected)
             case A.TupleLit(elts):
                 hints = expected.elts if isinstance(expected, TupleType) and len(expected.elts) == len(elts) else [None] * len(elts)
+                if isinstance(expected, VarTupleType):
+                    hints = [expected.elem] * len(elts)
                 return TupleType(tuple(self.check_expr(x, h) for x, h in zip(elts, hints)))
             case A.ListComp(elt, gens):
                 return ListType(self.check_comprehension(gens, lambda: self.check_expr(elt)))
@@ -1901,6 +1912,8 @@ class Checker:
                     return l
                 if isinstance(l, TupleType) and isinstance(r, TupleType):
                     return TupleType(l.elts + r.elts)
+                if isinstance(l, VarTupleType) and l == r:
+                    return l
             case "-":
                 if numeric:
                     return widened
@@ -2004,7 +2017,7 @@ class Checker:
     def check_comparison(self, op: str, lt: Type, rt: Type, left: A.Expr, right: A.Expr, e: A.Compare) -> None:
         if op in ("<", ">", "<=", ">="):
             ordered = (is_numeric(lt) and is_numeric(rt)) or (
-                lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA) or isinstance(lt, (TupleType, ListType)))
+                lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA) or isinstance(lt, (TupleType, ListType, VarTupleType)))
             )
             if not ordered:
                 owner = lt if isinstance(lt, StructType) else rt
@@ -2015,7 +2028,7 @@ class Checker:
                 raise self.error(f"comparing {lt} with {rt} using '{op}' is always {op == '!='}", e)
         elif op in ("in", "not in"):
             match rt:
-                case ListType(elem) | SetType(elem) | DequeType(elem) | IterType(elem, "range"):
+                case ListType(elem) | SetType(elem) | DequeType(elem) | VarTupleType(elem) | IterType(elem, "range"):
                     ok = assignable(lt, elem)
                 case DictType(key):
                     ok = assignable(lt, key)
@@ -2135,7 +2148,7 @@ class Checker:
             e.dunder = Dunder(m)
             return m.ret
         if isinstance(index, A.Slice):
-            if not (isinstance(vt, ListType) or vt in (STR, BYTES)):
+            if not (isinstance(vt, (ListType, VarTupleType)) or vt in (STR, BYTES)):
                 raise self.error(f"{vt} can't be sliced", e)
             for part in (index.lower, index.upper, index.step):
                 if part is not None:
@@ -2148,6 +2161,9 @@ class Checker:
                 return elem
             case DequeType(elem):
                 self.expect_type(index, INT, "deque index")
+                return elem
+            case VarTupleType(elem):
+                self.expect_type(index, INT, "tuple index")
                 return elem
             case MatchType():  # m[1] is m.group(1)
                 ctx = builtins.CallContext(self, A.Call(value, [index], loc=e.loc), "re.Match[...]", None, vt)

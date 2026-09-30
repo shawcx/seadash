@@ -38,7 +38,7 @@ from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
     PARSER,
-    CounterType, DefaultDictType, DequeType, DictType, MatchType, NamespaceType, PatternType, ProcessType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
+    CounterType, DefaultDictType, DequeType, DictType, MatchType, NamespaceType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
 
@@ -262,6 +262,8 @@ class CodeGen:
                 return f"std::set<{self.cpp_type(elem)}>"
             case DequeType(elem):
                 return f"sd::deque<{self.cpp_type(elem)}>"
+            case VarTupleType(elem):
+                return f"sd::vtuple<{self.cpp_type(elem)}>"
             case ProcessType(kind):
                 return f"sd::subprocess::{kind}"
             case PatternType():
@@ -297,6 +299,10 @@ class CodeGen:
         """Convert `code` (of type src) to dst: int -> float, T/None -> T?, tuples elementwise."""
         if src == dst or dst is None or isinstance(src, IterType):
             return code
+        if isinstance(dst, VarTupleType) and isinstance(src, TupleType):  # (1, 2) as a tuple[int, ...]
+            items = ", ".join(self.coerce(f"std::get<{i}>(sd_t)", t, dst.elem) for i, t in enumerate(src.elts))
+            param = "sd_t" if src.elts else ""
+            return f"[&](auto&& {param}) {{ return {self.cpp_type(dst)}{{{items}}}; }}({code})"
         if src == NONE:
             return f"{self.cpp_type(dst)}{{}}"
         return f"static_cast<{self.cpp_type(dst)}>({code})"
@@ -681,8 +687,8 @@ class CodeGen:
             if var.captured:  # shared with a closure: a cell both sides point to
                 self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>();")
             else:
-                unused = "[[maybe_unused]] " if var.name == "_" else ""  # `for _ in range(n):`
-                self.line(f"{unused}{t} {ident(var.cpp_name)}{{}};")
+                # Python doesn't mind a variable that's assigned but never read (`for _ in ...`, `a, b = t`)
+                self.line(f"[[maybe_unused]] {t} {ident(var.cpp_name)}{{}};")
 
     def param_vars(self, fn: FuncInfo) -> list[Var]:
         nodes = fn.node.params[1:] if fn.owner is not None and fn.kind != "static" else fn.node.params
@@ -1020,6 +1026,14 @@ class CodeGen:
                     self.line(f"{c}[{key}] = {self.coerce(code, ty, target.ty)};")
                 else:
                     self.line(f"sd::index({c}, {self.expr(index)}) = {self.coerce(code, ty, target.ty)};")
+            case A.TupleLit(elts) | A.ListLit(elts) if isinstance(ty, VarTupleType):
+                tmp = self.fresh("t")
+                self.open("")
+                self.line(f"auto {tmp} = {code};")
+                self.line(f"sd::check_unpack({tmp}.size(), {len(elts)});")
+                for i, elt in enumerate(elts):
+                    self.assign(elt, f"{tmp}.items[{i}]", ty.elem)
+                self.close()
             case A.TupleLit(elts) | A.ListLit(elts):
                 tmp = self.fresh("t")
                 self.open("")
@@ -1857,6 +1871,10 @@ class CodeGen:
                 return f"sd::to_list({a})"
             case "set":
                 return f"sd::to_set({a})" if a else f"{self.cpp_type(e.ty)}{{}}"
+            case "tuple" if isinstance(e.ty, VarTupleType):
+                return f"{self.cpp_type(e.ty)}(sd::to_list({a}))" if a else f"{self.cpp_type(e.ty)}{{}}"
+            case "tuple":
+                return "std::tuple<>{}"
             case "dict" if getattr(e, "pairs", False):
                 k, v = e.ty.key, e.ty.value
                 return f"sd::dict_from_pairs<{self.cpp_type(k)}, {self.cpp_type(v)}>({a})"
@@ -1936,6 +1954,8 @@ class CodeGen:
                     codes.append(self.expr_as(node, want) if isinstance(want, Type) else self.expr(node))
             return f"{r}.{name}({', '.join(codes)})"
         match recv_type:
+            case VarTupleType(elem):
+                return f"{r}.{name}({self.expr_as(e.args[0], elem)})"
             case ProcessType():
                 return self.process_method(r, recv_type, name, e)
             case PatternType():

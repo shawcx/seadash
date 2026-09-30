@@ -1166,6 +1166,58 @@ T sum(It&& it, T total) {  // sum(items, start)
     return total;
 }
 
+// tuple[T, ...]: a tuple whose length isn't part of its type (tuple(xs), Path.parts).
+// Immutable, hashable and ordered like a tuple; stored as a list.
+template <class T>
+struct vtuple {
+    list<T> items;
+    vtuple() = default;
+    explicit vtuple(list<T> v) : items(std::move(v)) {}
+    vtuple(std::initializer_list<T> v) : items(v) {}
+    auto begin() const { return items.begin(); }
+    auto end() const { return items.end(); }
+    std::size_t size() const { return items.size(); }
+    bool empty() const { return items.empty(); }
+    auto operator<=>(const vtuple&) const = default;
+    bool operator==(const vtuple&) const = default;
+    friend vtuple operator+(const vtuple& a, const vtuple& b) {
+        vtuple out = a;
+        out.items.insert(out.items.end(), b.items.begin(), b.items.end());
+        return out;
+    }
+    std::int64_t count(const T& x) const { return std::count(items.begin(), items.end(), x); }
+    std::int64_t index(const T& x) const {
+        auto it = std::find(items.begin(), items.end(), x);
+        if (it == items.end()) raise("ValueError", "tuple.index(x): x not in tuple");
+        return it - items.begin();
+    }
+    std::string sd_repr() const {
+        std::string out = "(";
+        for (std::size_t i = 0; i < items.size(); ++i) out += (i ? ", " : "") + repr(items[i]);
+        return out + (items.size() == 1 ? ",)" : ")");
+    }
+};
+
+template <class T>
+const T& index(const vtuple<T>& t, std::int64_t i) {
+    return t.items[norm_index(i, t.items.size(), "tuple")];
+}
+template <class T, class X>
+bool contains(const vtuple<T>& t, const X& x) {
+    return std::find(t.items.begin(), t.items.end(), x) != t.items.end();
+}
+// `a, b = t`: the number of values must match, like Python.
+inline void check_unpack(std::size_t have, std::size_t want) {
+    if (have < want)
+        raise("ValueError", "not enough values to unpack (expected " + std::to_string(want) + ", got " + std::to_string(have) + ")");
+    if (have > want) raise("ValueError", "too many values to unpack (expected " + std::to_string(want) + ")");
+}
+
+template <class T>
+vtuple<T> slice(const vtuple<T>& t, opt_int lo, opt_int hi, opt_int step) {
+    return vtuple<T>(slice(t.items, lo, hi, step));
+}
+
 template <class It>
 auto min_of(It&& it) {
     auto values = to_list(std::forward<It>(it));
@@ -1853,5 +1905,14 @@ inline int run_main(int argc, char** argv_, void (*module_main)()) {
 }
 
 }  // namespace sd
+
+template <class T>
+struct std::hash<sd::vtuple<T>> {
+    std::size_t operator()(const sd::vtuple<T>& t) const {
+        std::size_t h = 0x345678;
+        for (const auto& e : t.items) h = (h * 1000003) ^ sd::Hash{}(e);
+        return h;
+    }
+};
 
 using namespace sd::literals;

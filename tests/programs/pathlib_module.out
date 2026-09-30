@@ -1,5 +1,5 @@
 docs/guide/intro.tar.gz PosixPath('docs/guide/intro.tar.gz') intro.tar.gz intro.tar .gz ['.tar', '.gz']
-docs/guide docs ['docs', 'guide', 'intro.tar.gz'] ['docs/guide', 'docs', '.']
+docs/guide docs ('docs', 'guide', 'intro.tar.gz') ['docs/guide', 'docs', '.']
 a/b/c . / /abs top/x
 a/b/c a/b/c True
 docs/guide/setup.py docs/guide/intro.tar.zip a/c.py

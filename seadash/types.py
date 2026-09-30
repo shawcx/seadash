@@ -148,6 +148,16 @@ class ProcessType(Type):
 
 
 @dataclass(frozen=True)
+class VarTupleType(Type):
+    """tuple[T, ...]: a tuple of any length (tuple(xs), Path.parts)."""
+
+    elem: Type
+
+    def __str__(self) -> str:
+        return f"tuple[{self.elem}, ...]"
+
+
+@dataclass(frozen=True)
 class NamespaceType(Type):
     """argparse.Namespace from parse_args(): one typed attribute per argument added."""
 
@@ -386,6 +396,8 @@ def is_hashable(t: Type) -> bool:
         return True
     if isinstance(t, TupleType):
         return all(is_hashable(e) for e in t.elts)
+    if isinstance(t, VarTupleType):
+        return is_hashable(t.elem)
     return False
 
 
@@ -418,6 +430,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return assignable(src, dst.inner)
     if isinstance(dst, TupleType) and isinstance(src, TupleType) and len(src.elts) == len(dst.elts):
         return all(assignable(s, d) for s, d in zip(src.elts, dst.elts))
+    if isinstance(dst, VarTupleType) and isinstance(src, TupleType):  # (1, 2) is a tuple[int, ...]
+        return all(assignable(s, dst.elem) for s in src.elts)
     return False
 
 
@@ -427,6 +441,15 @@ def join(a: Type, b: Type) -> Type | None:
         return a
     if type(a) is type(b) and isinstance(a, (PatternType, MatchType)):
         return type(a)(None)  # different patterns: forget what's known about their groups
+    if isinstance(b, VarTupleType) and isinstance(a, TupleType):
+        a, b = b, a
+    if isinstance(a, VarTupleType) and isinstance(b, (TupleType, VarTupleType)):  # (1, 2) with tuple[int, ...]
+        elem = a.elem
+        for x in (b.elts if isinstance(b, TupleType) else (b.elem,)):
+            elem = join(elem, x)
+            if elem is None:
+                return None
+        return VarTupleType(elem)
     if {a, b} == {INT, FLOAT}:
         return FLOAT
     if isinstance(a, StructType) and isinstance(b, StructType):
@@ -448,7 +471,7 @@ def strip_optional(t: Type) -> Type:
 def element_type(t: Type) -> Type | None:
     """What `for x in t` gives you, or None if `t` isn't iterable."""
     match t:
-        case ListType(elem) | SetType(elem) | IterType(elem) | DequeType(elem):
+        case ListType(elem) | SetType(elem) | IterType(elem) | DequeType(elem) | VarTupleType(elem):
             return elem
         case DictType(key):
             return key

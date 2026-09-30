@@ -17,7 +17,7 @@ from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
-    DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType,
+    DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, VarTupleType,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -193,13 +193,13 @@ def printable(t: Type) -> bool:
 
 
 def sized(t: Type) -> bool:
-    return t in (STR, BYTES, JSON_VALUE) or isinstance(t, (ListType, DictType, SetType, TupleType, DequeType)) or bool(
+    return t in (STR, BYTES, JSON_VALUE) or isinstance(t, (ListType, DictType, SetType, TupleType, DequeType, VarTupleType)) or bool(
         user_dunder(t, "__len__")
     )
 
 
 def ordered(t: Type) -> bool:
-    return t in (INT, FLOAT, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA) or isinstance(t, (TupleType, ListType)) or bool(user_dunder(t, "__lt__"))
+    return t in (INT, FLOAT, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA) or isinstance(t, (TupleType, ListType, VarTupleType)) or bool(user_dunder(t, "__lt__"))
 
 
 def bytes_like(t: Type) -> bool:
@@ -420,6 +420,14 @@ def b_set(ctx: CallContext) -> Type:
     raise ctx.error("can't tell what type of set this is; annotate the variable, e.g. `s: set[int] = set()`")
 
 
+def b_tuple(ctx: CallContext) -> Type:
+    if ctx.arity(0, 1):
+        return VarTupleType(ctx.iterable(0))
+    if isinstance(ctx.expected, VarTupleType):
+        return ctx.expected
+    return TupleType(())
+
+
 def b_dict(ctx: CallContext) -> Type:
     if ctx.arity(0, 1):  # dict(other_dict) copies; dict(pairs) builds from (key, value) tuples
         hint = ctx.expected if type(ctx.expected) is DictType else None
@@ -509,6 +517,7 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "iter": b_iter,
     "set": b_set,
     "dict": b_dict,
+    "tuple": b_tuple,
     "any": b_any_all,
     "all": b_any_all,
     "input": b_input,
@@ -777,6 +786,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = LIST_METHODS
         case DequeType():
             table = DEQUE_METHODS
+        case VarTupleType():
+            table = {"count": returns(INT, args=(elem_of,)), "index": returns(INT, args=(elem_of,))}
         case _ if t in DATETIME_METHODS:
             return DATETIME_METHODS[t].get(name)
         case _ if t == PARSER:
@@ -1635,7 +1646,7 @@ PATH_LIKE = object()  # a parameter taking a str or a Path (sync_method checks i
 
 PATH_ATTRIBUTES = {
     "name": lambda t: STR, "stem": lambda t: STR, "suffix": lambda t: STR, "anchor": lambda t: STR,
-    "suffixes": lambda t: ListType(STR), "parts": lambda t: ListType(STR),
+    "suffixes": lambda t: ListType(STR), "parts": lambda t: VarTupleType(STR),
     "parent": lambda t: PATH, "parents": lambda t: ListType(PATH),
 }
 

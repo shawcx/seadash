@@ -84,7 +84,7 @@ public:
     bool operator==(const Path&) const = default;
 
     // ---- parts of the path -----------------------------------------------------------
-    list<std::string> parts() const {
+    vtuple<std::string> parts() const {
         list<std::string> out;
         if (is_absolute()) out.push_back("/");
         std::size_t i = is_absolute() ? 1 : 0;
@@ -94,7 +94,7 @@ public:
             out.push_back(p_.substr(i, j - i));
             i = j + 1;
         }
-        return out;
+        return vtuple<std::string>(out);
     }
     std::string name() const {
         if (p_ == "/" || p_ == ".") return "";
@@ -167,7 +167,7 @@ public:
     }
     // Glob-style match against the end of the path (the whole path if the pattern is absolute).
     bool match(const std::string& pattern) const {
-        list<std::string> pat = Path(pattern).parts(), mine = parts();
+        list<std::string> pat = Path(pattern).parts().items, mine = parts().items;
         if (pat.size() > mine.size() || (Path(pattern).is_absolute() && pat.size() != mine.size())) return false;
         for (std::size_t i = 0; i < pat.size(); ++i) {
             const std::string& part = mine[mine.size() - pat.size() + i];
@@ -208,7 +208,7 @@ public:
     Path resolve() const {  // absolute, with symlinks and ".." resolved; the path needn't exist
         Path abs = absolute();
         Path out("/");
-        for (const auto& part : abs.parts()) {
+        for (const auto& part : abs.parts().items) {
             if (part == "/") continue;
             if (part == "..") {
                 out = out.parent();
@@ -289,7 +289,7 @@ public:
         if (pattern.empty()) raise("ValueError", "Unacceptable pattern: ''");
         if (!pattern.empty() && pattern[0] == '/') raise("NotImplementedError", "Non-relative patterns are unsupported");
         list<Path> out;
-        glob_parts(*this, Path(pattern).parts(), 0, out);
+        glob_parts(*this, Path(pattern).parts().items, 0, out);
         return out;
     }
     list<Path> rglob(const std::string& pattern) const { return glob("**/" + pattern); }

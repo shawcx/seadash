@@ -28,7 +28,7 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, DATETIME_TYPES,
-    DefaultDictType, DequeType, DictType, MatchType, PatternType, ProcessType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
+    DefaultDictType, DequeType, DictType, MatchType, PatternType, ProcessType, VarTupleType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
 MUTATING_METHODS = frozenset(
@@ -62,7 +62,7 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
             return None
         case ProcessType():
             return "a Popen (its pipes aren't safe to use from two threads; pass what you read from it)"
-        case ListType(x) | SetType(x) | OptionalType(x) | DequeType(x):
+        case ListType(x) | SetType(x) | OptionalType(x) | DequeType(x) | VarTupleType(x):
             return unsendable(x, seen)
         case DefaultDictType():
             return "a defaultdict (its factory function could share variables it captured; pass dict(d) instead)"

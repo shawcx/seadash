@@ -1,0 +1,31 @@
+# tuple[T, ...]: tuples whose length isn't part of their type.
+from pathlib import Path
+
+
+def total(nums: tuple[int, ...]) -> int:
+    return sum(nums)
+
+
+t = tuple([3, 1, 2])
+print(t, len(t), t[0], t[-1], t[1:], 2 in t, 5 in t)
+print(total(t), total((4, 5)), total(()), sorted(t), max(t), t.count(1), t.index(2))
+empty: tuple[int, ...] = ()
+single: tuple[str, ...] = ("one",)
+print(empty, single, (1, 2) == (1, 2), tuple("abc"), tuple(x * x for x in range(4)))
+floats: tuple[float, ...] = (1.5, 2.5)
+print(floats, t + tuple([9]), t < tuple([3, 2]))
+seen = {t, tuple([3, 1, 2]), (1,)}
+print(len(seen), {tuple(["a", "b"]): 1}[tuple(["a", "b"])])
+a, b, c = t
+print(a, b, c)
+for x in t:
+    print("item", x)
+print(Path("/usr/local/bin").parts, Path("a/b").parts[-1])
+try:
+    x, y = t
+except ValueError as e:
+    print("error:", e)
+try:
+    t.index(7)
+except ValueError as e:
+    print("error:", e)

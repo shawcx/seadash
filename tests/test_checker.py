@@ -1505,3 +1505,14 @@ def test_argparse_errors():
         "default= must be int for this argument, not str"
     )
     assert err(base + "p.add_argument('--count')\n").message == "'count' is already an argument of this parser"
+
+
+def test_var_tuples():
+    info = ok(
+        "t = tuple([1, 2])\nu: tuple[str, ...] = ('a', 'b', 'c')\nfirst = t[0]\nrest = t[1:]\n"
+        "e: tuple[int, ...] = ()\nboth = [t, (3, 4)]\n"
+    )
+    assert {"t: tuple[int, ...]", "u: tuple[str, ...]", "first: int", "rest: tuple[int, ...]", "e: tuple[int, ...]",
+            "both: list[tuple[int, ...]]"} <= set(variables(info))
+    assert err("x: tuple[..., int] = ()\n").message == "'...' only goes in tuple[T, ...] (a tuple of any length)"
+    assert err("t: tuple[int, ...] = ('a',)\n").message == "'t' is declared as tuple[int, ...], but the value is tuple[str]"

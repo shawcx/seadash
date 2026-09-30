@@ -4,7 +4,7 @@ from pathlib import Path
 
 p = Path("docs") / "guide" / "intro.tar.gz"
 print(p, repr(p), p.name, p.stem, p.suffix, p.suffixes)
-print(p.parent, p.parent.parent, list(p.parts), [str(x) for x in p.parents])
+print(p.parent, p.parent.parent, p.parts, [str(x) for x in p.parents])
 print(Path("a//b/./c/"), Path(), Path("/"), Path("a") / "/abs", "top" / Path("x"))
 print(Path("a", "b", Path("c")), Path("a").joinpath("b", "c"), pathlib.Path("/usr/bin").is_absolute())
 print(p.with_name("setup.py"), p.with_suffix(".zip"), Path("a/b.py").with_stem("c"))
