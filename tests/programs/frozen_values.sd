@@ -1,0 +1,58 @@
+# seadash-only: a frozen @value class is frozen all the way down (its lists too), so copies
+# of it can share them; frozen classes whose fields can't change are shared between threads
+# with no copy and no lock.
+import queue
+import threading
+from dataclasses import dataclass, replace
+from seadash import value
+
+
+@value
+@dataclass(frozen=True)
+class Palette:
+    name: str
+    colors: list[str]
+
+    def with_color(self, c: str) -> "Palette":
+        more = self.colors  # (a copy: the palette's own list can't change)
+        more.append(c)
+        return replace(self, colors=more)
+
+
+base = Palette("warm", ["red", "orange"])
+bigger = base.with_color("yellow")
+copy = base  # (cheap: the frozen palette's list is shared, since nothing can change it)
+print(base, bigger, copy == base, len(base.colors), "red" in base.colors)
+for c in base.colors:
+    print(c, end=" ")
+print()
+
+
+@dataclass(frozen=True)
+class Config:
+    name: str
+    limits: tuple[int, int]
+    tags: tuple[str, ...]
+
+    def describe(self, n: int) -> str:
+        return f"{self.name}#{n} {self.limits[0]}-{self.limits[1]} {','.join(self.tags)}"
+
+
+CONFIG = Config("main", (1, 9), ("a", "b"))
+results: queue.Queue[str] = queue.Queue()
+
+
+def work(cfg: Config, n: int, out: queue.Queue[str]):
+    out.put(cfg.describe(n) + " " + CONFIG.name)
+
+
+threads = [threading.Thread(target=work, args=(CONFIG, i, results)) for i in range(3)]
+threads.append(threading.Thread(target=CONFIG.describe, args=(99,)))
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+lines: list[str] = []
+while not results.empty():
+    lines.append(results.get())
+print(sorted(lines))

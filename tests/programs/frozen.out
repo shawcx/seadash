@@ -1,0 +1,4 @@
+Point(x=1, y=2) Point(x=1, y=5) Point(x=9, y=0) Point(x=4, y=2)
+True False True b
+Segment(start=Point(x=1, y=2), end=Point(x=1, y=5), label='') Segment(start=Point(x=1, y=2), end=Point(x=9, y=0), label='long') 9 2
+Box(label='a', items=[1, 2]) Box(label='c', items=[1, 2]) False True

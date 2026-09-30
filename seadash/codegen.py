@@ -470,8 +470,9 @@ class CodeGen:
                 for f in st.fields.values()
             )
             self.line(f"{name}({params}) : {inits} {{}}")
-        if any(holds_references(f.type) for f in st.fields.values()):
-            # A struct is a value all the way down: copying one copies its lists, dicts and sets.
+        if any(holds_references(f.type) for f in st.fields.values()) and not st.frozen:
+            # A value class is a value all the way down: copying one copies its lists, dicts and
+            # sets. (A frozen one's can't change, so its copies share them: copying is cheap.)
             copies = [(ident(f.name), f"sd::value_copy(o.{ident(f.name)})" if holds_references(f.type) else f"o.{ident(f.name)}")
                       for f in st.fields.values()]
             self.line(f"{name}(const {name}& o) : {', '.join(f'{n}({c})' for n, c in copies)} {{}}")
@@ -2739,6 +2740,20 @@ class CodeGen:
                 headers = self.expr(args["headers"]) if "headers" in args else "sd::dict<std::string, std::string>{}"
                 return f"sd::urlrequest::Request({self.expr(args['url'])}, {opt('data', BYTES)}, {headers}, {opt('method', STR)})"
             return f"sd::urlrequest::urlopen({self.expr(args['url'])}, {opt('data', BYTES)}, {opt('timeout', FLOAT)})"
+        if mod == "dataclasses" and name == "replace":  # a copy with some fields changed
+            t: StructType = e.ty
+            tmp = self.fresh("r")
+            obj = self.expr(e.args[0])
+            arrow = "->" if t.kind == "class" else "."
+            fields = t.all_fields()
+            sets = []
+            for kw in e.keywords:
+                value = self.expr_as(kw.value, fields[kw.name].type)
+                if holds_references(fields[kw.name].type) and t.kind == "struct":
+                    value = f"sd::value_copy({value})"  # (a @value class's lists are its own)
+                sets.append(f"{tmp}{arrow}{ident(kw.name)} = {value};")
+            copy = f"std::make_shared<{class_name(t)}>(*{obj})" if t.kind == "class" else obj
+            return f"[&] {{ auto {tmp} = {copy}; {' '.join(sets)} return {tmp}; }}()"
         if mod == "urllib.parse" and name == "urlencode":
             doseq = e.args[1] if len(e.args) > 1 else self.keyword(e, "doseq")
             return f"sd::urlparse::urlencode({self.expr(e.args[0])}, {self.expr(doseq) if doseq is not None else 'false'})"

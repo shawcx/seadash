@@ -141,6 +141,16 @@ def into_value(e: A.Expr) -> bool:
     return False
 
 
+def into_frozen(e: A.Expr) -> bool:
+    """Does e reach into a frozen @value class (whose lists mustn't change)?"""
+    while isinstance(e, (A.Attribute, A.Index)):
+        owner = e.value.ty if isinstance(e, A.Attribute) else None
+        if isinstance(owner, StructType) and owner.kind == "struct" and owner.frozen:
+            return True
+        e = e.value
+    return False
+
+
 _escaping_params: dict[int, set[int]] = {}
 
 
@@ -227,8 +237,8 @@ def mark_call(n: A.Call, func: A.Expr, args: list, mark, threads) -> None:
         params = fn.node.params[1:] if fn.owner is not None and fn.kind != "static" else fn.node.params
         slots = ct.args if ct.args is not None else args  # (one per parameter, in order)
         for param, arg in zip(params, slots):
-            if arg is not None and id(param.sym) in keeps:
-                mark(arg)
+            if arg is not None and (id(param.sym) in keeps or into_frozen(arg)):
+                mark(arg)  # (a frozen value's list is never handed over to be changed)
     elif kind == "builtin":
         if ct.target in threads.ITEM_BUILTINS:
             for a in args:  # list(s.grid): the new list would share s's rows

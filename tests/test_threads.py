@@ -128,6 +128,26 @@ SAFE = {
         results: queue.Queue[list[int]] = queue.Queue()
         threading.Thread(target=fill, args=(results, [0])).start()
     """,
+    "frozen classes that can't change are shared": """
+        from dataclasses import dataclass
+        @dataclass(frozen=True)
+        class Limits:
+            low: int
+            high: int
+        @dataclass(frozen=True)
+        class Config:
+            name: str
+            limits: Limits
+            tags: tuple[str, ...]
+            def show(self) -> None:
+                print(self.name)
+        CONFIG = Config("x", Limits(1, 2), ("a",))
+        def work(c: Config):
+            print(c.limits.high, CONFIG.name)
+        threading.Thread(target=work, args=(CONFIG,)).start()
+        threading.Thread(target=CONFIG.show).start()
+        q: queue.Queue[Config] = queue.Queue()
+    """,
     "reading nested lists through aliases": """
         GRID = [[1, 2], [3]]
         def work():
@@ -178,7 +198,8 @@ UNSAFE = [
         def work(n: Node):
             n.value += 1
         threading.Thread(target=work, args=(Node(1),)).start()
-     """, "can't pass this to a thread: a Node is a class instance, shared by reference (make it a threading.Synchronized class)"),
+     """, "can't pass this to a thread: a Node is a class instance, shared by reference (make it a threading.Synchronized class, "
+                "or a frozen dataclass whose fields can't change either)"),
     ("""
         def work():
             pass
@@ -255,6 +276,27 @@ UNSAFE = [
             items.append(2)
         main(True)
      """, "the thread's function uses 'items' from the enclosing function, but the enclosing function changes 'items' (and a recursive nested def, or one defined more than once"),
+    ("""
+        from dataclasses import dataclass
+        @dataclass(frozen=True)
+        class Config:
+            tags: list[str]
+        def work(c: Config):
+            print(c)
+        threading.Thread(target=work, args=(Config([]),)).start()
+     """, "can't pass this to a thread: a Config is a class instance, shared by reference"),
+    ("""
+        from dataclasses import dataclass
+        @dataclass(frozen=True, eq=False)
+        class Config:
+            name: str
+        @dataclass(frozen=True, eq=False)
+        class Extended(Config):
+            extra: list[str]
+        def work(c: Config):
+            print(c)
+        threading.Thread(target=work, args=(Config("x"),)).start()
+     """, "can't pass this to a thread: a Config is a class instance, shared by reference"),
     # a thread's arguments are copies: changing one and never using it is lost work
     ("""
         results: list[int] = []

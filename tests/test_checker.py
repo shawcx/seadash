@@ -1287,10 +1287,10 @@ def test_dunder_errors(src, msg):
 def test_decorator_errors():
     assert err(
         "from dataclasses import dataclass\n@dataclass(frozen=True)\nclass V:\n    x: int\nv = V(1)\nv.x = 2\n"
-    ).message == "V is a frozen dataclass; its field 'x' can't be changed"
+    ).message == "V is a frozen dataclass; its field 'x' can't be changed (make a changed copy: dataclasses.replace(obj, x=...))"
     assert err(
         "from dataclasses import dataclass\n@dataclass(frozen=True)\nclass V:\n    x: int\nv = V(1)\nv.x += 2\n"
-    ).message == "V is a frozen dataclass; its field 'x' can't be changed"
+    ).message == "V is a frozen dataclass; its field 'x' can't be changed (make a changed copy: dataclasses.replace(obj, x=...))"
     assert err(
         "class T:\n    c_: float\n    @property\n    def c(self) -> float:\n        return self.c_\nt = T(1.0)\nt.c = 2.0\n"
     ).message == "property 'c' of T is read-only (add an @c.setter)"
@@ -1910,3 +1910,89 @@ def f(ps: list[P], t: T, q: P) -> P:
     q.x = 3
     return q
 """)
+
+
+FROZEN_HEADER = """
+from dataclasses import dataclass, replace
+from seadash import value
+@value
+class In:
+    x: int
+    def bump(self):
+        self.x += 1
+    def show(self) -> int:
+        return self.x
+@value
+@dataclass(frozen=True)
+class T:
+    name: str
+    tags: list[str]
+    inner: In
+    grid: list[list[int]]
+    def rename(self, n: str) -> "T":
+        return replace(self, name=n)
+def fill(xs: list[str]):
+    xs.append("filled")
+"""
+
+
+@pytest.mark.parametrize("body", [
+    "t.tags.append('x')",
+    "t.tags[0] = 'x'",
+    "t.inner.x = 5",
+    "t.inner.bump()",
+    "for row in t.grid:\n        row.append(0)",
+])
+def test_frozen_value_classes_are_frozen_all_the_way_down(body):
+    e = err(FROZEN_HEADER + f"def f(t: T):\n    {body}\n    print(t)\n")
+    assert e.message.startswith(
+        "T is a frozen @value class, so nothing in 't' can change, lists included (they're part of its value). "
+        "Make a changed copy with dataclasses.replace(t, ...), or copy the list first"
+    )
+
+
+def test_frozen_value_classes_can_be_read_and_copied():
+    ok(FROZEN_HEADER + """
+def f(t: T) -> T:
+    xs = t.tags
+    xs.append("mine")
+    fill(t.tags)
+    print(t.inner.show(), len(t.tags), [len(r) for r in t.grid], xs)
+    return replace(t.rename("n"), tags=xs)
+""")
+
+
+def test_a_frozen_class_can_set_its_fields_in_init():
+    ok("""
+        from dataclasses import dataclass
+        @dataclass(frozen=True)
+        class Temp:
+            celsius: float
+            def __init__(self, fahrenheit: float):
+                self.celsius = (fahrenheit - 32) * 5 / 9
+        print(Temp(212.0))
+    """)
+
+
+@pytest.mark.parametrize("line,msg", [
+    ("replace(p, z=1)", "P has no field 'z'"),
+    ("replace(p, x='a')", "field 'x' is int, not str"),
+    ("replace(3, x=1)", "replace() needs a dataclass or @value class instance, not int"),
+    ("replace(p, 1)", "replace() takes the object, then fields as keywords: replace(obj, x=1) (2 given)"),
+    ("replace(c, n=1)", "replace() rebuilds an object from its fields, but C has its own __init__"),
+])
+def test_replace_errors(line, msg):
+    e = err(f"""
+        from dataclasses import dataclass, replace
+        @dataclass(frozen=True)
+        class P:
+            x: int
+        class C:
+            n: int
+            def __init__(self):
+                self.n = 0
+        p = P(1)
+        c = C()
+        q = {line}
+    """)
+    assert e.message == msg

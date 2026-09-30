@@ -312,7 +312,14 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
    parameters, names bound to a copy, and `for p in ps` over @value classes. Not done: the
    file-descriptor functions (`os.open`, `os.fdopen`, `f.fileno()`...), next as their own
    feature.
-5. Frozen types and `dataclasses.replace`; sharing deeply immutable values across threads.
+5. **Done.** A frozen `@value` class (`@value` + `@dataclass(frozen=True)`) is frozen all
+   the way down: any change through it, including through `for row in t.grid`, is an error
+   (`checker.check_frozen_changes`, from `threads.direct_changes`); its copies share its
+   lists (no deep-copy constructor). `dataclasses.replace`. A frozen class's own `__init__`
+   may set its fields. Frozen ordinary classes whose fields (and subclasses' fields) can't
+   change either are `threads.deeply_immutable`, and cross into threads shared, not copied.
+   Frozen dataclasses with a list field get no `__hash__` (like Python, they can't be
+   hashed). `frozenset` is left for later.
 6. Performance: non-escaping parameters as plain references, inline locals. Compare with
    the benchmarks before and after each phase.
 

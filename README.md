@@ -236,7 +236,7 @@ def work():
 | `shutil`, `tempfile` | `copy`/`copy2`/`copytree`, `move`, `rmtree`, `which`, `disk_usage`; `TemporaryDirectory` (removes itself), `mkdtemp`, `gettempdir` |
 | `datetime`, `zoneinfo` | `date`, `time`, `datetime`, `timedelta`, `timezone`, and named zones like `ZoneInfo("Europe/Paris")` (daylight saving time included): arithmetic, `strftime`/`strptime`, `isoformat`/`fromisoformat`, `now()`/`today()`, time zone conversion |
 | `argparse` | `ArgumentParser` with Python's help and errors, and subcommands; the parsed arguments are typed from `add_argument()` (`args.count` is an `int`, a misspelled `args.cuont` is a compile error, and inside `if args.command == "add":` the add subcommand's arguments have their real types) |
-| `dataclasses`, `functools` | `@dataclass`, `field()`, `@cache`, `@lru_cache` |
+| `dataclasses`, `functools` | `@dataclass` (with `frozen=True`, checked when compiling), `field()`, `replace()`, `@cache`, `@lru_cache` |
 | `typing` | `Callable`, `Optional`, `Iterator`... (so the same code also runs under Python) |
 
 
@@ -246,6 +246,7 @@ seadash borrows Python's syntax, not all of its semantics:
 
 - **Threads get copies.** A list, dict or set passed to a thread, put on a queue, returned from a `Future` or stored in a `Mutex` or `Synchronized` object is copied (all the way down, keeping lists that appear twice shared, like `copy.deepcopy`), so changes made on one side aren't seen on the other. A closure run on a thread gets copies of the enclosing function's variables, made when the thread is created, so `Thread(target=lambda: print(i))` in a loop prints each `i`. Share with a `threading.Mutex` or send results back through a `queue.Queue`. Inside `with m as data:`, `data` can't escape the block.
 - **`@value` classes are values** (`from seadash import value`, not in Python): assigning or passing one copies it, lists and all. Their fields must be values too (no ordinary classes, locks, files or functions inside). A value class's list is its own: `s.items.append(x)` and `fill(s.items)` change it, but `xs = s.items`, `return self.items` or storing it elsewhere gives a copy. Changing a copy and never using it is a compile error (`for p in points: p.x += 1` changes copies; loop over the indexes, or write the copy back).
+- **Frozen dataclasses are checked when compiling**: changing a field is a compile error rather than a `FrozenInstanceError`, and a frozen `@value` class is frozen all the way down (its lists can't change either). A frozen class whose fields can't change either is shared between threads without copying.
 - **Static types.** Containers hold one type (`list[int]`, not a mix), and there's no dynamic typing or `eval`. Mixed numbers widen, so `[1, 2.5]` is a `list[float]`.
 - **Generators** don't support `send()`/`throw()`, and nested functions can't be generators yet. (Generators, generator expressions, `map`, `filter`, `zip` and `enumerate` are all lazy, as in Python.)
 - **Strings are UTF-8 bytes.** Indexes and lengths count bytes.

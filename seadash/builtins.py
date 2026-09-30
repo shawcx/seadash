@@ -3525,9 +3525,33 @@ class DecoratorName:
     name: str
 
 
+def dataclasses_replace(ctx: CallContext) -> Type:
+    """dataclasses.replace(obj, field=value, ...): a copy of obj with those fields changed
+    (the way to change a frozen dataclass)."""
+    if len(ctx.args) != 1:
+        raise ctx.error(f"replace() takes the object, then fields as keywords: replace(obj, x=1) ({len(ctx.args)} given)")
+    t = ctx.arg(0)
+    if not isinstance(t, StructType) or t.builtin or t.is_exception:
+        raise ctx.error(f"replace() needs a dataclass or @value class instance, not {t}", ctx.args[0])
+    if any(a.builtin and a.name == "Synchronized" for a in t.ancestors()):
+        raise ctx.error(f"replace() can't copy {t.name}: a Synchronized object's lock can't be copied", ctx.args[0])
+    if t.kind == "class" and any("__init__" in a.methods for a in t.ancestors() if not a.builtin):
+        raise ctx.error(f"replace() rebuilds an object from its fields, but {t.name} has its own __init__", ctx.args[0])
+    fields = t.all_fields()
+    for kw in ctx.call.keywords:
+        f = fields.get(kw.name)
+        if f is None:
+            raise ctx.error(f"{t.name} has no field '{kw.name}'", kw)
+        vt = ctx.checker.check_expr(kw.value, f.type)
+        if not assignable(vt, f.type):
+            raise ctx.error(f"field '{kw.name}' is {f.type}, not {vt}", kw.value)
+    return t
+
+
 MODULES["dataclasses"] = Module("dataclasses", {
     "dataclass": DecoratorName("dataclass"),
     "field": DecoratorName("field"),
+    "replace": Function("replace", dataclasses_replace),
 })
 # seadash's own: `@value class Point:` makes a value type (copied on assignment, like an int).
 MODULES["seadash"] = Module("seadash", {

@@ -332,6 +332,7 @@ class Checker:
 
         for info in self.all_functions():
             self.check_function_body(info)
+        self.check_frozen_changes(top_level, None)
         self.check_dropped_changes([], top_level, module=True)
         self.module_checked = True
         self.check_pending_instances()
@@ -367,6 +368,7 @@ class Checker:
         st = StructType(node.name, node.kind, node, module=self.module_name)
         node.sym = st
         self.structs[node.name] = st
+        threads.ALL_CLASSES.append(st)
 
     def declare_import(self, node: A.Import | A.ImportFrom) -> None:
         if isinstance(node, A.Import):
@@ -655,6 +657,7 @@ class Checker:
             pnode.sym = var
         self.enter(scope, state)
         self.check_block(node.body)
+        self.check_frozen_changes(node.body, info)
         self.check_dropped_changes(param_nodes, node.body)
         if not self.state.dead and info.ret != NONE and not isinstance(info.ret, OptionalType) and not info.generator:
             raise self.error(
@@ -3201,7 +3204,7 @@ class Checker:
                 raise self.error(f"{name} must return {ret}, not {m.ret}", m.node)
             if name == "__iter__" and element_type(m.ret) is None:
                 raise self.error(f"__iter__ must return something iterable (like a list), not {m.ret}", m.node)
-        if "__hash__" in st.methods and not st.find_method("__eq__"):
+        if "__hash__" in st.methods and not st.find_method("__eq__") and st.kind != "struct":  # (values compare fields)
             raise self.error("a class with __hash__ also needs __eq__ (equal objects must hash the same)", st.methods["__hash__"].node)
 
     # ---- decorators --------------------------------------------------------------
@@ -3290,7 +3293,40 @@ class Checker:
 
     def check_not_frozen(self, owner: Type, attr: str, node: A.Node) -> None:
         if isinstance(owner, StructType) and any(t.frozen for t in owner.ancestors()):
-            raise self.error(f"{owner.name} is a frozen dataclass; its field '{attr}' can't be changed", node)
+            if self.in_own_init(node):
+                return  # (the object isn't finished yet: its __init__ sets its fields)
+            raise self.error(
+                f"{owner.name} is a frozen dataclass; its field '{attr}' can't be changed "
+                f"(make a changed copy: dataclasses.replace(obj, {attr}=...))", node,
+            )
+
+    def in_own_init(self, target: A.Node) -> bool:
+        """`self.x = ...` (or self.items.append) inside the class's own __init__."""
+        info = self.scope.info if self.scope is not None else None
+        return info is not None and info.name == "__init__" and threads.base_name(target) == "self"
+
+    def check_frozen_changes(self, body: list, fn: FuncInfo | None) -> None:
+        """A frozen @value class is frozen all the way down: nothing inside it can change,
+        directly or through something reached from it (`for row in t.grid: row.append(0)`)."""
+        changed = threads.direct_changes(body)
+        if not changed:
+            return
+        seen: set[int] = set()
+        for n in flow.walk(body):
+            if not (isinstance(n, A.Name) and isinstance(n.sym, Var)) or id(n.sym) in seen:
+                continue
+            var = n.sym
+            seen.add(id(var))
+            t = strip_optional(var.type)
+            if id(var) not in changed or not (isinstance(t, StructType) and t.kind == "struct" and t.frozen):
+                continue
+            if fn is not None and fn.name == "__init__" and var.name == "self":
+                continue
+            raise CheckError(
+                f"{t.name} is a frozen @value class, so nothing in '{var.name}' can change, lists included "
+                f"(they're part of its value). Make a changed copy with dataclasses.replace({var.name}, ...), "
+                f"or copy the list first", changed[id(var)],
+            )
 
     def field_default(self, default: A.Expr | None) -> A.Expr | None:
         """dataclasses.field(default=v) / field(default_factory=f) as a field's default."""
@@ -3328,7 +3364,8 @@ class Checker:
             for op, name in (("<", "__lt__"), ("<=", "__le__"), (">", "__gt__"), (">=", "__ge__")):
                 if name not in st.methods:
                     methods.append(f"def {name}(self, {other}) -> bool:\n    return {mine} {op} {theirs}")
-        if (options["unsafe_hash"] or (options["eq"] and options["frozen"])) and "__hash__" not in st.methods:
+        hashable = all(is_hashable(f.type) for f in st.all_fields().values())  # (a list field: like Python, it can't be hashed)
+        if (options["unsafe_hash"] or (options["eq"] and options["frozen"])) and "__hash__" not in st.methods and hashable:
             methods.append(f"def __hash__(self) -> int:\n    return hash({mine})")
         if not methods:
             return

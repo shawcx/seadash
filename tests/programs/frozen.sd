@@ -1,0 +1,40 @@
+# frozen dataclasses and dataclasses.replace (valid Python, same output)
+import dataclasses
+from dataclasses import dataclass, replace
+
+
+@dataclass(frozen=True)
+class Point:
+    x: int
+    y: int = 0
+
+    def moved(self, dx: int) -> "Point":
+        return replace(self, x=self.x + dx)
+
+
+@dataclass(frozen=True)
+class Segment:
+    start: Point
+    end: Point
+    label: str = ""
+
+
+@dataclass
+class Box:
+    label: str
+    items: list[int]
+
+
+p = Point(1, 2)
+q = replace(p, y=5)
+r = dataclasses.replace(q, x=9, y=0)
+print(p, q, r, p.moved(3))
+print(p == Point(1, 2), p == q, hash(p) == hash(Point(1, 2)), {p: "a", q: "b"}[Point(1, 5)])
+s = Segment(p, q)
+s2 = replace(s, end=r, label="long")
+print(s, s2, s2.end.x, len({s: 1, s2: 2, Segment(p, q): 3}))
+
+b = Box("a", [1])
+c = replace(b, label="c")
+c.items.append(2)  # (a shallow copy, as in Python: both share the list)
+print(b, c, b is c, b.items is c.items)

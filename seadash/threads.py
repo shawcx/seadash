@@ -86,6 +86,35 @@ def is_synchronized(st: StructType) -> bool:
     return any(t.builtin and t.name == "Synchronized" for t in st.ancestors())
 
 
+# Every class the checker declares (for deeply_immutable: a subclass could add a list).
+ALL_CLASSES: list[StructType] = []
+
+
+def deeply_immutable(t: Type, seen: frozenset = frozenset()) -> bool:
+    """Can nothing about a value of type t ever change? Then threads may share it with no
+    copy and no lock: numbers, strings, tuples of those, frozen @value classes (frozen all
+    the way down), and frozen classes whose fields (and subclasses' fields) are all like that."""
+    match t:
+        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, PATH, *DATETIME_TYPES):
+            return True
+        case TupleType(xs):
+            return all(deeply_immutable(x, seen) for x in xs)
+        case VarTupleType(x) | OptionalType(x):
+            return deeply_immutable(x, seen)
+        case StructType() if t.kind == "struct":
+            return t.frozen
+        case StructType() if t.kind == "class" and not t.builtin and not is_synchronized(t):
+            if t in seen:
+                return True
+            classes = [t] + [c for c in ALL_CLASSES if c is not t and c.is_subclass_of(t)]
+            return all(
+                any(a.frozen for a in c.ancestors())
+                and all(deeply_immutable(f.type, seen | {t}) for f in c.all_fields().values())
+                for c in classes
+            )
+    return False
+
+
 def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
     """Why a value of type `t` can't be handed to another thread, or None if it can."""
     match t:
@@ -119,10 +148,11 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
             return next((r for x in xs if (r := unsendable(x, seen))), None)
         case StructType() if t.kind == "struct":
             return None  # a @value class holds only values (checked where it's defined), so it copies
-        case StructType() if is_synchronized(t):
-            return None
+        case StructType() if is_synchronized(t) or deeply_immutable(t):
+            return None  # (thread-safe, or can't change: shared, not copied)
         case StructType():
-            return f"a {t.name} is a class instance, shared by reference (make it a threading.Synchronized class)"
+            return (f"a {t.name} is a class instance, shared by reference (make it a threading.Synchronized class, "
+                    f"or a frozen dataclass whose fields can't change either)")
         case FuncType():
             return "a function value (it could share variables it captured)"
     return f"a {t} can't be shared between threads"
@@ -219,7 +249,51 @@ def escapes(nodes) -> dict[int, Loc]:
     return uses(nodes)[2]
 
 
-def uses(nodes) -> tuple[dict[int, int], dict[int, Loc], dict[int, Loc]]:
+def direct_changes(nodes) -> dict[int, Loc]:
+    """Per variable (by id): where its value is first changed in place (directly, or through
+    an alias like `for row in grid`), not counting it being passed on or stored."""
+    return uses(nodes, direct=True)[1]
+
+
+_changes_self: dict[int, bool] = {}
+
+
+def changes_self(fn: FuncInfo) -> bool:
+    """Does this method change its object (a field, a list in a field, another method that
+    does)? Syntactic and conservative; used for @value classes' methods."""
+    if id(fn) in _changes_self:
+        return _changes_self[id(fn)]
+    _changes_self[id(fn)] = False  # (recursion: assume not, while looking)
+    result = False
+    for n in walk_all(fn.node.body):
+        target = None
+        match n:
+            case A.Assign(targets):
+                result = result or any(isinstance(t, (A.Attribute, A.Index)) and base_name(t) == "self" for t in targets)
+            case A.AugAssign(t):
+                target = t
+            case A.Call(A.Attribute(recv, attr)):
+                kind = getattr(n.sym, "kind", None)
+                if kind == "builtin_method" and attr in MUTATING_METHODS and base_name(recv) == "self":
+                    result = True
+                elif kind == "method" and base_name(recv) == "self" and n.sym.target is not fn:
+                    result = result or changes_self(n.sym.target)
+        if target is not None and base_name(target) == "self":
+            result = True
+        if result:
+            break
+    _changes_self[id(fn)] = result
+    return result
+
+
+def base_name(e: A.Expr) -> str | None:
+    while isinstance(e, (A.Attribute, A.Index)):
+        e = e.value
+    return e.id if isinstance(e, A.Name) else None
+
+
+def uses(nodes, direct: bool = False) -> tuple[dict[int, int], dict[int, Loc], dict[int, Loc]]:
+    """direct: count only changes made in place (not a list escaping somewhere) as modified."""
     assigned: dict[int, int] = {}
     modified: dict[int, Loc] = {}
     escaped: dict[int, Loc] = {}
@@ -250,7 +324,7 @@ def uses(nodes) -> tuple[dict[int, int], dict[int, Loc], dict[int, Loc]]:
         looped.add(id(iterable))
         elem = element_type(iterable.ty) if iterable.ty is not None else None
         roots = [n.sym for n in walk(iterable) if isinstance(n, A.Name) and isinstance(n.sym, Var)
-                 and holds_references(n.sym.type)]
+                 and (holds_references(n.sym.type) or (isinstance(n.sym.type, StructType) and n.sym.type.kind == "struct"))]
         if roots and (elem is None or holds_references(elem)):
             for v in targets:
                 aliases.setdefault(id(v), []).extend(roots)
@@ -271,7 +345,8 @@ def uses(nodes) -> tuple[dict[int, int], dict[int, Loc], dict[int, Loc]]:
         passed to a function) could be changed through that other reference: count it as
         modified."""
         if isinstance(e, (A.Name, A.Attribute, A.Index)) and e.ty is not None and holds_references(e.ty):
-            modify(base_var(e), e.loc)
+            if not direct:
+                modify(base_var(e), e.loc)
             if (var := base_var(e)) is not None:
                 for v in sources(var):
                     escaped.setdefault(id(v), e.loc)
@@ -360,7 +435,7 @@ def uses(nodes) -> tuple[dict[int, int], dict[int, Loc], dict[int, Loc]]:
                     modify(base_var(func.value), n.loc)
                 elif kind == "method" and isinstance(func, A.Attribute):
                     owner = ct.target.owner
-                    if owner is not None and owner.kind == "struct":  # a struct method may change the value
+                    if owner is not None and owner.kind == "struct" and changes_self(ct.target):  # (it changes the value)
                         modify(base_var(func.value), n.loc)
                 elif kind == "module_func" and args:
                     member = ct.target[0].members.get(ct.target[1])
@@ -529,7 +604,8 @@ class Spawn:
         if isinstance(sym, FuncInfo):
             if sym.owner is not None:  # a bound method: obj.method
                 obj_type = target.value.ty
-                if isinstance(obj_type, StructType) and obj_type.kind == "class" and not is_synchronized(obj_type):
+                if (isinstance(obj_type, StructType) and obj_type.kind == "class" and not is_synchronized(obj_type)
+                        and not deeply_immutable(obj_type)):
                     raise self.fail(
                         f"a thread can't run a method of a {obj_type.name}: the object would be shared by both "
                         f"threads. Make {obj_type.name} a threading.Synchronized class", target,
