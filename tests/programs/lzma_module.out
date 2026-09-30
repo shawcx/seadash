@@ -1,0 +1,29 @@
+9000 True b'\xfd7zXZ\x00' True
+b"\xfd7zXZ\x00\x00\x04\xe6\xd6\xb4F\x02\x00!\x01\x16\x00\x00\x00t/\xe5\xa3\xe0\x00\x10\x00\x0b]\x004\x19I\xee\x8d\xe9O~\x15\xe0\x00\x00\x00K\x88\xe6\xdaD\x80\x07v\x00\x01'\x11\xbc'\xf3\x90\x1f\xb6\xf3}\x01\x00\x00\x00\x00\x04YZ"
+b']\x00\x00\x80\x00\xff\xff\xff\xff\xff\xff\xff\xff\x004\x19I\xee\x8eh!\xff\xff\xff\xb9\xe0\x00\x00'
+b'\xfd7zXZ\x00\x00\x04\xe6\xd6\xb4F\x00\x00\x00\x00\x1c\xdfD!\x1f\xb6\xf3}\x01\x00\x00\x00\x00\x04YZ' b''
+148 148
+b'\x00\x01' b'\x00\x00' b'\x00\n'
+b'abcd' b'ab'
+b'ab' b'ab'
+0 1 2 0 1 4 10 6 2147483648
+True True False
+LZMAError: Compressed data ended before the end-of-stream marker was reached
+LZMAError: Compressed data ended before the end-of-stream marker was reached
+LZMAError: Compressed data ended before the end-of-stream marker was reached
+LZMAError: Input format not supported by decoder
+LZMAError: Invalid or unsupported options
+ValueError: Integrity checks are only supported by FORMAT_XZ
+'first line\n'
+'line 0\n'
+'line 1\n'
+'line 2\n'
+'appended\n'
+b'first line\nline 0\nline 1\nline 2\nappended\n' True
+25600
+b'\x00\x01\x02' 25597
+LZMAError: Input format not supported by decoder
+EOFError: Compressed file ended before the end-of-stream marker was reached
+FileNotFoundError: [Errno 2] No such file or directory: 'missing.xz'
+EOFError: Compressed file ended before the end-of-stream marker was reached
+LZMAError: Compressed data ended before the end-of-stream marker was reached

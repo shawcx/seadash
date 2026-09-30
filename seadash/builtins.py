@@ -2660,6 +2660,19 @@ MODULES["bz2"] = module_with_params(runtime_module(
     open=(compressed_open("bz2"), None),
 ))
 
+MODULES["lzma"] = module_with_params(runtime_module(
+    "lzma", "modules/lzma.hpp", ("lzma",),
+    compress=(signature(BYTES, ("data", BYTES), ("format", INT, "sd::lzma::FORMAT_XZ"), ("check", INT, "(-1_i)"),
+                        ("preset", OptionalType(INT), "std::nullopt")), "sd::lzma::compress"),
+    decompress=(signature(BYTES, ("data", BYTES), ("format", INT, "sd::lzma::FORMAT_AUTO")), "sd::lzma::decompress"),
+    open=(compressed_open("lzma"), None),
+    is_check_supported=(signature(BOOL, ("check_id", INT)), "sd::lzma::is_check_supported"),
+    LZMAError=exception_class("LZMAError", "sd::lzma::LZMAError"),
+    **{name: (INT, f"sd::lzma::{name}") for name in (
+        "FORMAT_AUTO", "FORMAT_XZ", "FORMAT_ALONE", "FORMAT_RAW", "CHECK_NONE", "CHECK_CRC32", "CHECK_CRC64", "CHECK_SHA256",
+        "CHECK_UNKNOWN", "PRESET_DEFAULT", "PRESET_EXTREME")},
+))
+
 
 # ---- uuid ----------------------------------------------------------------------------
 

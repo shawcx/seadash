@@ -1,0 +1,72 @@
+import lzma
+
+text = ("the quick brown fox jumps over the lazy dog. " * 200).encode()
+packed = lzma.compress(text)
+print(len(text), len(packed) < 200, packed[:6], lzma.decompress(packed) == text)
+print(lzma.compress(b"hello hello hello"))
+print(lzma.compress(b"hello", format=lzma.FORMAT_ALONE))
+print(lzma.compress(b""), lzma.decompress(lzma.compress(b"")))
+print(len(lzma.compress(b"x" * 100000, preset=0)), len(lzma.compress(b"x" * 100000, preset=9 | lzma.PRESET_EXTREME)))
+print(lzma.compress(b"a", check=lzma.CHECK_CRC32)[6:8], lzma.compress(b"a", check=lzma.CHECK_NONE)[6:8], lzma.compress(b"a", check=lzma.CHECK_SHA256)[6:8])
+print(lzma.decompress(lzma.compress(b"ab") + lzma.compress(b"cd")), lzma.decompress(lzma.compress(b"ab") + b"trailing junk"))
+print(lzma.decompress(lzma.compress(b"ab", format=lzma.FORMAT_ALONE)), lzma.decompress(lzma.compress(b"ab", format=lzma.FORMAT_ALONE), format=lzma.FORMAT_ALONE))
+print(lzma.FORMAT_AUTO, lzma.FORMAT_XZ, lzma.FORMAT_ALONE, lzma.CHECK_NONE, lzma.CHECK_CRC32, lzma.CHECK_CRC64, lzma.CHECK_SHA256, lzma.PRESET_DEFAULT, lzma.PRESET_EXTREME)
+print(lzma.is_check_supported(lzma.CHECK_SHA256), lzma.is_check_supported(lzma.CHECK_NONE), lzma.is_check_supported(lzma.CHECK_UNKNOWN))
+
+for bad in [b"garbage", packed[:-4], packed[:10], lzma.compress(b"ab", format=lzma.FORMAT_ALONE)]:
+    try:
+        print(lzma.decompress(bad, format=lzma.FORMAT_XZ))
+    except lzma.LZMAError as e:
+        print("LZMAError:", e)
+for bad_call in [lambda: lzma.compress(b"x", preset=10), lambda: lzma.compress(b"x", format=lzma.FORMAT_ALONE, check=lzma.CHECK_CRC32)]:
+    try:
+        print(bad_call())
+    except lzma.LZMAError as e:
+        print("LZMAError:", e)
+    except ValueError as e:
+        print("ValueError:", e)
+
+with lzma.open("log.txt.xz", "wt") as f:
+    f.write("first line\n")
+    for i in range(3):
+        print("line", i, file=f)
+with lzma.open("log.txt.xz", "at", preset=1) as f:
+    f.write("appended\n")
+with lzma.open("log.txt.xz", "rt") as f:
+    for line in f:
+        print(repr(line))
+with lzma.open("log.txt.xz") as f:  # binary by default
+    raw = f.read()
+print(raw, lzma.decompress(open("log.txt.xz", "rb").read()) == raw)
+with lzma.open("data.bin.lzma", "wb", format=lzma.FORMAT_ALONE) as f:
+    print(f.write(bytes(range(256)) * 100))
+with lzma.open("data.bin.lzma", "rb") as f:
+    print(f.read(3), len(f.read()))
+with open("plain.txt", "w") as f:
+    f.write("not compressed\n")
+try:
+    with lzma.open("plain.txt", "rt") as f:
+        print(f.read())
+except lzma.LZMAError as e:
+    print("LZMAError:", e)
+with open("cut.xz", "wb") as f:
+    f.write(packed[:60])
+try:
+    with lzma.open("cut.xz", "rb") as f:
+        print(len(f.read()))
+except EOFError as e:
+    print("EOFError:", e)
+try:
+    lzma.open("missing.xz")
+except FileNotFoundError as e:
+    print("FileNotFoundError:", e)
+open("empty.xz", "wb").close()
+try:
+    with lzma.open("empty.xz", "rb") as f:
+        print(f.read())
+except EOFError as e:
+    print("EOFError:", e)
+try:
+    lzma.decompress(b"")
+except lzma.LZMAError as e:
+    print("LZMAError:", e)
