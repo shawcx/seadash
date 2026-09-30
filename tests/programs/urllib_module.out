@@ -16,7 +16,7 @@ HTTP Error 404: Not Found <HTTPError 404: 'Not Found'> 404 Not Found gone b'nope
 200 True b'hello world\nline two\nlast'
 b'hello, world'
 b'until the end'
-URLError: [Errno 111] Connection refused
+URLError: Connection refused
 ParseResult(scheme='https', netloc='user:pw@Example.com:8080', path='/a/b', params='p', query='q=1&r=two', fragment='frag')
 https user:pw@Example.com:8080 /a/b p q=1&r=two frag
 example.com 8080 user pw https://user:pw@Example.com:8080/a/b;p?q=1&r=two#frag

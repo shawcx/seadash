@@ -110,7 +110,7 @@ t.join()
 try:
     urllib.request.urlopen(base + "/gone")
 except urllib.error.URLError as e:
-    print("URLError:", e.reason)
+    print("URLError:", str(e.reason).split("] ")[1])  # the errno varies by platform
 
 # urllib.parse
 p = urlparse("https://user:pw@Example.com:8080/a/b;p?q=1&r=two#frag")
