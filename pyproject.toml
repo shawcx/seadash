@@ -14,5 +14,8 @@ sd = "seadash.cli:main"
 [tool.setuptools]
 packages = ["seadash"]
 
+[tool.setuptools.package-data]
+seadash = ["runtime/*.hpp", "runtime/modules/*.hpp"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

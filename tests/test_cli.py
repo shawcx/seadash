@@ -38,3 +38,12 @@ def test_stdin_errors_name_stdin(tmp_path):
     assert r.stderr.startswith("<stdin>:2:3: error: int has no method 'foo'")
     r = sd(["check", "-"], "print(1)\n", tmp_path)
     assert r.returncode == 0 and r.stderr == "<stdin>: ok\n"
+
+
+def test_package_data_covers_the_runtime():
+    # A wheel ships only what pyproject.toml lists; without the runtime headers nothing builds.
+    import tomllib
+    patterns = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]["seadash"]
+    package = ROOT / "seadash"
+    shipped = {path for pattern in patterns for path in package.glob(pattern)}
+    assert {path for path in (package / "runtime").rglob("*") if path.is_file()} <= shipped
