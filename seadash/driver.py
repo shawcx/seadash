@@ -6,6 +6,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,7 +112,7 @@ def find_cxx() -> str:
     for name in CXX_CANDIDATES:
         if shutil.which(name):
             return name
-    raise BuildError("no C++ compiler found; install g++-14 or set SEADASH_CXX")
+    raise BuildError("no C++ compiler found; install g++-14 (on macOS: xcode-select --install) or set SEADASH_CXX")
 
 
 @dataclass
@@ -198,6 +199,18 @@ def precompiled_header(cxx: str, flags: list[str]) -> Path | None:
     return where
 
 
+@functools.cache
+def library_paths() -> tuple[list[str], list[str]]:
+    """Where to find the libraries that modules link with, as (compile flags, link flags).
+    Only macOS needs telling: Homebrew on Apple silicon isn't on the compiler's search path."""
+    if sys.platform != "darwin":
+        return [], []
+    prefix = Path(os.environ.get("HOMEBREW_PREFIX") or "/opt/homebrew")
+    if not (prefix / "include").is_dir():
+        return [], []
+    return [f"-I{prefix / 'include'}"], [f"-L{prefix / 'lib'}"]
+
+
 def prune(directory: Path, keep: int) -> None:
     entries = sorted(directory.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0)
     for old in entries[: max(0, len(entries) - keep)]:
@@ -209,9 +222,14 @@ def compile_cpp(cpp_path: Path, output: Path, options: BuildOptions, libs: list[
     flags = [
         "-std=c++23",
         "-fwrapv",  # int overflow wraps instead of being undefined behaviour
+        "-ffp-contract=off",  # a * b + c rounds twice, as in Python (arm64 would fuse it)
         "-O2" if options.optimize else "-O0",
     ]
     link = [f"-l{lib}" for lib in libs]
+    if libs:
+        include_dirs, lib_dirs = library_paths()
+        flags += include_dirs
+        link = lib_dirs + link
     cached = None
     if options.cache:
         key = digest(cpp_path.read_text(), *flags, *link, compiler_id(cxx), runtime_hash())

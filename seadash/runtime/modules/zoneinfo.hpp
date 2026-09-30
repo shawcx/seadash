@@ -13,7 +13,7 @@ struct ZoneInfoNotFoundError : KeyError {
 
 inline datetime::timezone ZoneInfo(const std::string& key) {
     try {
-        return datetime::timezone::named(std::chrono::locate_zone(key), key);
+        return datetime::timezone::named(datetime::zones::locate_zone(key), key);
     } catch (const std::runtime_error&) {
         auto e = std::make_shared<ZoneInfoNotFoundError>(repr_str("No time zone found with key " + key));
         e->from_lookup = true;  // shown like a KeyError's key: 'No time zone found ...'
@@ -22,11 +22,7 @@ inline datetime::timezone ZoneInfo(const std::string& key) {
 }
 
 inline std::set<std::string> available_timezones() {
-    std::set<std::string> out;
-    const auto& db = std::chrono::get_tzdb();
-    for (const auto& z : db.zones) out.insert(std::string(z.name()));
-    for (const auto& l : db.links) out.insert(std::string(l.name()));
-    return out;
+    return datetime::zones::zone_names();
 }
 
 }  // namespace sd::zoneinfo

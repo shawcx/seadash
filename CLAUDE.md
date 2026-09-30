@@ -44,7 +44,8 @@ The name is final (a nod to the author's two kids).
 .venv/bin/python bench/run.py [name]          # benchmarks vs python3, checks identical output
 ```
 
-Requires g++-14 (or clang with C++23) and the zlib, PCRE2 and OpenSSL dev headers.
+Requires g++-14 on Linux or Apple clang on macOS, and the zlib, PCRE2 and OpenSSL dev
+headers (Homebrew's `pcre2` and `openssl@3` on macOS).
 
 ## How work is done here
 
@@ -65,7 +66,10 @@ Requires g++-14 (or clang with C++23) and the zlib, PCRE2 and OpenSSL dev header
   - anything with threads, coroutines or lifetimes runs clean under
     `-fsanitize=address,undefined`, and threads under `-fsanitize=thread`. ThreadSanitizer
     needs `setarch $(uname -m) -R ./binary`.
-  - Compile emitted C++ with `g++-14 -std=c++23 -fwrapv -Iseadash/runtime file.cpp [-l...]`.
+  - Compile emitted C++ with
+    `g++-14 -std=c++23 -fwrapv -ffp-contract=off -Iseadash/runtime file.cpp [-l...]`.
+    On macOS it's `clang++`, plus `-I/opt/homebrew/include -L/opt/homebrew/lib` for the
+    libraries, and ThreadSanitizer needs no `setarch`.
 - Keep the README's standard-library table and "Differences from Python" section current.
 - When reporting results, say what differs from Python and what isn't supported yet.
 
@@ -77,5 +81,10 @@ Requires g++-14 (or clang with C++23) and the zlib, PCRE2 and OpenSSL dev header
 - Arguments that only instruct the compiler (`type=int`, `digestmod=hashlib.sha256`) are
   marked `compile_time` so codegen doesn't evaluate them as values.
 - C library names that are macros (`stdout`, `st_mtime`...) are renamed by `codegen.ident`.
+- Linux and macOS are both supported, and only one is at hand at a time. libc++ doesn't
+  include headers transitively the way libstdc++ does (include what you use), lacks the
+  `<chrono>` time zone database (`modules/tzif.hpp` stands in), and some libc calls are
+  Linux-only (`sigtimedwait`, `st_mtim`...). Test output must not depend on the platform:
+  errno numbers, `/tmp` (a symlink on macOS), the last digit of libm results.
 - Builds are cached in `~/.cache/seadash` (or `$SEADASH_CACHE_DIR`); `sd clean` empties it,
   `--no-cache` bypasses it. The benchmark always builds with `--no-cache`.

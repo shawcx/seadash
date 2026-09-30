@@ -28,6 +28,22 @@ struct SubprocessError : Exception {
     std::string sd_type() const override { return "subprocess.SubprocessError"; }
 };
 
+// A signal's name without its SIG prefix ("KILL"), or nullptr if it has none.
+inline const char* signal_name(int sig) {
+#ifdef __APPLE__  // no sigabbrev_np, but a table of lowercase names
+    static std::string names[NSIG];
+    if (sig <= 0 || sig >= NSIG) return nullptr;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        for (int i = 1; i < NSIG; ++i)
+            for (const char* p = sys_signame[i]; *p; ++p) names[i] += static_cast<char>(std::toupper(static_cast<unsigned char>(*p)));
+    });
+    return names[sig].c_str();
+#else
+    return sigabbrev_np(sig);
+#endif
+}
+
 struct Args;
 std::string shown(const Args& a);  // how Python's messages show a command
 
@@ -39,7 +55,7 @@ struct CalledProcessError : SubprocessError {
     static std::string describe(std::int64_t code, const std::string& shown_cmd) {
         std::string what = "Command '" + shown_cmd + "'";
         if (code < 0) {
-            const char* name = sigabbrev_np(static_cast<int>(-code));
+            const char* name = signal_name(static_cast<int>(-code));
             return what + " died with <Signals.SIG" + (name ? name : std::to_string(-code)) + ": " + std::to_string(-code) + ">.";
         }
         return what + " returned non-zero exit status " + std::to_string(code) + ".";
@@ -176,7 +192,11 @@ inline Child spawn(const Args& args, const Options& o) {
     setup(o.in, STDIN_FILENO, true, c.in);
     setup(o.out, STDOUT_FILENO, false, c.out);
     setup(o.err, STDERR_FILENO, false, c.err);
+#if defined(__APPLE__) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 260000  // where the _np name is deprecated
+    if (o.cwd) posix_spawn_file_actions_addchdir(&fa, o.cwd->c_str());
+#else
     if (o.cwd) posix_spawn_file_actions_addchdir_np(&fa, o.cwd->c_str());
+#endif
 
     std::vector<char*> cargv;
     for (auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
@@ -289,8 +309,14 @@ inline bool exchange(int& in, const std::string& input, int& out, std::string& o
         }
     }
     if (broken) {
+#ifdef __APPLE__  // no sigtimedwait: wait for the signal only if it's there
+        sigset_t pending;
+        int sig;
+        if (sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE)) sigwait(&pipe_set, &sig);
+#else
         timespec zero{0, 0};
         sigtimedwait(&pipe_set, nullptr, &zero);
+#endif
     }
     pthread_sigmask(SIG_SETMASK, &old_set, nullptr);
     return finished;

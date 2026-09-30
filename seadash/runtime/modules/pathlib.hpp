@@ -10,6 +10,13 @@
 
 #include <functional>
 
+// A file's timestamps with nanoseconds: st_mtim on Linux, st_mtimespec on macOS.
+#ifdef __APPLE__
+#define SD_ST_TIM(which) st_##which##timespec
+#else
+#define SD_ST_TIM(which) st_##which##tim
+#endif
+
 namespace sd::pathlib {
 
 class Path;
@@ -202,7 +209,7 @@ public:
         return {static_cast<std::int64_t>(st->st_size), static_cast<std::int64_t>(st->st_mode),
                 static_cast<std::int64_t>(st->st_uid), static_cast<std::int64_t>(st->st_gid),
                 static_cast<std::int64_t>(st->st_nlink), static_cast<std::int64_t>(st->st_ino),
-                secs(st->st_mtim), secs(st->st_atim), secs(st->st_ctim)};
+                secs(st->SD_ST_TIM(m)), secs(st->SD_ST_TIM(a)), secs(st->SD_ST_TIM(c))};
     }
     Path absolute() const { return is_absolute() ? *this : cwd() / *this; }
     Path resolve() const {  // absolute, with symlinks and ".." resolved; the path needn't exist

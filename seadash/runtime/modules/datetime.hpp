@@ -9,6 +9,25 @@
 #include <cmath>
 #include <ctime>
 
+// Named zones come from <chrono>'s time zone database where the standard library has one
+// (libstdc++); elsewhere (Apple's libc++) tzif.hpp reads the system's zoneinfo files.
+#if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
+namespace sd::datetime::zones {
+using std::chrono::locate_zone;
+using std::chrono::sys_info;
+using std::chrono::time_zone;
+inline std::set<std::string> zone_names() {
+    std::set<std::string> out;
+    const auto& db = std::chrono::get_tzdb();
+    for (const auto& z : db.zones) out.insert(std::string(z.name()));
+    for (const auto& l : db.links) out.insert(std::string(l.name()));
+    return out;
+}
+}  // namespace sd::datetime::zones
+#else
+#include "tzif.hpp"
+#endif
+
 namespace sd::datetime {
 
 inline constexpr std::int64_t MINYEAR = 1, MAXYEAR = 9999;
@@ -162,12 +181,12 @@ class timezone {
     std::int64_t offset_us_ = 0;
     std::optional<std::string> name_;
     bool utc_ = false;
-    const std::chrono::time_zone* zone_ = nullptr;  // a named zone (its key is name_)
+    const zones::time_zone* zone_ = nullptr;  // a named zone (its key is name_)
 
-    std::chrono::sys_info info_utc(std::int64_t utc_us) const {
+    zones::sys_info info_utc(std::int64_t utc_us) const {
         return zone_->get_info(std::chrono::sys_seconds(std::chrono::seconds(floordiv(utc_us, US_PER_SEC))));
     }
-    std::chrono::sys_info info_wall(std::int64_t wall_us) const {
+    zones::sys_info info_wall(std::int64_t wall_us) const {
         auto local = std::chrono::local_seconds(std::chrono::seconds(floordiv(wall_us, US_PER_SEC)));
         return zone_->get_info(local).first;  // unique, or (ambiguous / skipped) the one before the change
     }
@@ -180,7 +199,7 @@ public:
             value_error("offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not " + offset.sd_repr() + ".");
     }
     static timezone utc() { return timezone(); }
-    static timezone named(const std::chrono::time_zone* zone, std::string key) {
+    static timezone named(const zones::time_zone* zone, std::string key) {
         timezone tz;
         tz.utc_ = false;
         tz.zone_ = zone;

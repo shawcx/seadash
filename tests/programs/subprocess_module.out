@@ -3,7 +3,7 @@ CompletedProcess(args=['echo', 'hello', 'world'], returncode=0, stdout='hello wo
 b'a\r\nb' ['a', 'b']
 SHOUT THIS
 42
-/tmp
+/usr/bin
 hi from env
 ['err', 'out']
 0

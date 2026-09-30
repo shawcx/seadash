@@ -8,7 +8,8 @@ for s in [42, 0, -7, 2**40 + 3, 123456789012345]:
 random.seed(2024)
 print([random.randrange(10) for _ in range(8)], [random.randrange(3, 30, 7) for _ in range(5)])
 print([random.randrange(20, 0, -3) for _ in range(5)], [randint(1, 6) for _ in range(10)])
-print(random.uniform(1.5, 2.5), random.gauss(), random.gauss(), random.gauss(10, 0.5))
+# gauss() goes through the C library's log/sin/cos, whose last digit varies by platform
+print(random.uniform(1.5, 2.5), round(random.gauss(), 12), round(random.gauss(), 12), round(random.gauss(10, 0.5), 12))
 
 words = ["apple", "banana", "cherry", "date", "elderberry", "fig", "grape"]
 print(random.choice(words), random.choice("seadash"), random.choice(range(100, 200)), random.choice(b"xyz"))

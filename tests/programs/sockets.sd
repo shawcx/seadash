@@ -61,7 +61,7 @@ closed.close()
 try:
     socket.create_connection(("127.0.0.1", dead_port))
 except ConnectionRefusedError as e:
-    print("refused:", e)
+    print("refused:", str(e).startswith("[Errno "), str(e).split("] ")[1])  # the number varies by platform
 except OSError as e:
     print("other:", e)
 print(len(socket.gethostname()) > 0, socket.gethostbyname("127.0.0.1"))

@@ -83,8 +83,8 @@ of their time is spent in OpenSSL and in the kernel, the same code for both lang
 You need:
 
 - **Python 3.12+**, to run the compiler.
-- **A C++23 compiler:** g++ 14 or newer. Set `SEADASH_CXX` to pick a specific one.
-- **zlib, PCRE2 and OpenSSL** development headers, for the `zlib`, `re`/`textwrap` and `hashlib` modules (`apt install zlib1g-dev libpcre2-dev libssl-dev`).
+- **A C++23 compiler:** g++ 14 or newer on Linux; on macOS, the clang that comes with Xcode's command line tools (`xcode-select --install`). Set `SEADASH_CXX` to pick a specific one.
+- **zlib, PCRE2 and OpenSSL** development headers, for the `zlib`, `re`/`textwrap` and `hashlib` modules (`apt install zlib1g-dev libpcre2-dev libssl-dev`, or `brew install pcre2 openssl@3` on macOS).
 
 ```console
 $ python3 -m venv .venv && .venv/bin/pip install -e .
@@ -101,8 +101,8 @@ $ .venv/bin/sd run books.sd     # the example above
 | `sd clean` | empty the build cache |
 
 Builds are cached (in `~/.cache/seadash`): running a program you haven't changed skips the
-C++ compiler entirely, and the runtime header is precompiled once, so small edits rebuild
-quickly. `--no-cache` always compiles.
+C++ compiler entirely, and the runtime header is precompiled once (with g++), so small edits
+rebuild quickly. `--no-cache` always compiles.
 
 `sd run` with no file (or `-`) reads the program from stdin:
 

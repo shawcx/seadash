@@ -845,7 +845,7 @@ class CodeGen:
             case A.If():
                 self.if_stmt(s)
             case A.While(test, body, orelse):
-                self.loop(f"while ({self.cond(test)})", body, orelse)
+                self.loop(f"while ({unwrapped(self.cond(test))})", body, orelse)
             case A.For(target, it, body, orelse):
                 v = self.fresh("v")
                 elem = element_type(it.ty)
@@ -1067,12 +1067,12 @@ class CodeGen:
             self.close()
 
     def if_stmt(self, s: A.If) -> None:
-        self.open(f"if ({self.cond(s.test)})")
+        self.open(f"if ({unwrapped(self.cond(s.test))})")
         self.block(s.body)
         orelse = s.orelse
         while len(orelse) == 1 and isinstance(orelse[0], A.If):
             self.depth -= 1
-            self.line(f"}} else if ({self.cond(orelse[0].test)}) {{")
+            self.line(f"}} else if ({unwrapped(self.cond(orelse[0].test))}) {{")
             self.depth += 1
             self.block(orelse[0].body)
             orelse = orelse[0].orelse
@@ -1373,7 +1373,9 @@ class CodeGen:
         """Captures by value ([=]), so the lambda is safe to return or store. `self` is
         captured as a copy (struct) or shared pointer (class) instead of the raw `this`."""
         t: FuncType = e.ty
-        params = ", ".join(f"{self.cpp_type(pt)} {ident(p.sym.cpp_name)}" for p, pt in zip(e.params, t.params))
+        used = {id(n.sym) for n in walk_expr(e.body) if isinstance(n, A.Name)}
+        params = ", ".join(f"{'' if id(p.sym) in used else '[[maybe_unused]] '}{self.cpp_type(pt)} {ident(p.sym.cpp_name)}"
+                           for p, pt in zip(e.params, t.params))
         capture = "[=]"
         uses_self = any(isinstance(n, A.Name) and is_self(n) for n in walk_expr(e.body))
         if uses_self:
@@ -2478,6 +2480,31 @@ class CodeGen:
 
 
 # ---- helpers ------------------------------------------------------------------
+
+
+def unwrapped(code: str) -> str:
+    """`(a == b)` without the parentheses around the whole of it, for `if (...)`: clang
+    warns about `if ((a == b))`. `(a) == (b)` is left alone."""
+    if not code.startswith("("):
+        return code
+    depth, quote, i = 0, "", 0
+    while i < len(code):
+        c = code[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = ""
+        elif c in "\"'":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return code[1:-1] if i == len(code) - 1 else code
+        i += 1
+    return code
 
 
 def constant_int(e: A.Expr) -> int | None:

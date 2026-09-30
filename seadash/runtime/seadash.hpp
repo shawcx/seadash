@@ -14,12 +14,15 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <format>
 #include <functional>
 #include <initializer_list>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numbers>
 #include <numeric>
 #include <optional>

@@ -12,7 +12,7 @@ print(b.stdout, b.stdout.decode().splitlines())
 piped = subprocess.run(["tr", "a-z", "A-Z"], input="shout this\n", capture_output=True, text=True)
 print(piped.stdout.strip())
 print(subprocess.run("echo $((6 * 7))", shell=True, capture_output=True, text=True).stdout, end="")
-print(subprocess.run(["pwd"], cwd="/tmp", capture_output=True, text=True).stdout.strip())
+print(subprocess.run(["pwd"], cwd="/usr/bin", capture_output=True, text=True).stdout.strip())
 env_run = subprocess.run(["sh", "-c", "echo $GREETING"], env={"GREETING": "hi from env"}, capture_output=True, text=True)
 print(env_run.stdout.strip())
 

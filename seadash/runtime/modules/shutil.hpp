@@ -71,7 +71,7 @@ inline void copymode(const Path& src, const Path& dst) {
 inline void copystat(const Path& src, const Path& dst) {
     copymode(src, dst);
     auto st = src.stat_raw();
-    timespec times[2] = {st->st_atim, st->st_mtim};
+    timespec times[2] = {st->SD_ST_TIM(a), st->SD_ST_TIM(m)};
     if (::utimensat(AT_FDCWD, dst.str().c_str(), times, 0) != 0) raise_os(errno, dst.str());
 }
 

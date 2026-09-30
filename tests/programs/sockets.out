@@ -7,5 +7,5 @@ b'ping' 127.0.0.1
 0.2
 timeout: timed out
 socket.timeout is TimeoutError: True
-refused: [Errno 111] Connection refused
+refused: True Connection refused
 True 127.0.0.1
