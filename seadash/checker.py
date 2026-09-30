@@ -2368,7 +2368,7 @@ def walk(node):
         return
     yield node
     for f in dataclasses.fields(node):
-        if f.name in ("loc", "sym", "ty"):
+        if f.name in ("loc", "sym", "ty", "dunder"):
             continue
         value = getattr(node, f.name)
         if isinstance(value, (A.Node, list)):
@@ -2410,7 +2410,7 @@ def assigned_targets(stmts: list[A.Stmt]) -> list[str]:
             case A.ExceptHandler(_, A.Name(name)):
                 names.append(name)
         for f in dataclasses.fields(node):
-            if f.name not in ("loc", "sym", "ty"):
+            if f.name not in ("loc", "sym", "ty", "dunder"):
                 visit(getattr(node, f.name))
 
     visit(stmts)
@@ -2434,7 +2434,7 @@ def declared_names(stmts: list[A.Stmt]) -> tuple[dict[str, A.Stmt], dict[str, A.
         elif isinstance(node, A.Global):
             global_names.update(dict.fromkeys(node.names, node))
         for f in dataclasses.fields(node):
-            if f.name not in ("loc", "sym", "ty"):
+            if f.name not in ("loc", "sym", "ty", "dunder"):
                 visit(getattr(node, f.name))
 
     visit(stmts)

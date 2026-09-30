@@ -81,7 +81,7 @@ def shareable(t: Type) -> bool:
 
 def children(node):
     for f in dataclasses.fields(node):
-        if f.name in ("loc", "sym", "ty"):
+        if f.name in ("loc", "sym", "ty", "dunder"):
             continue
         value = getattr(node, f.name)
         for item in value if isinstance(value, list) else [value]:

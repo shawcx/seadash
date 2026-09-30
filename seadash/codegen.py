@@ -119,6 +119,8 @@ def ident(name: str) -> str:
     """A user identifier, made safe for C++."""
     if name == "_":
         return "_d"  # not "__": C++ reserves names with a double underscore (and a user's _d becomes _d_)
+    if len(name) > 4 and name.startswith("__") and name.endswith("__"):
+        return f"sd_op_{name[2:-2]}"  # __add__ -> sd_op_add (user names never start with sd_)
     if "__" in name:
         name = name.replace("__", "_u_")
     if name in CPP_KEYWORDS or name.startswith("sd_") or name.startswith("_"):
@@ -1607,7 +1609,7 @@ def walk_expr(e: A.Node, into_lambdas: bool = True):
     if isinstance(e, A.Lambda) and not into_lambdas:
         return
     for f in dataclasses.fields(e):
-        if f.name in ("loc", "sym", "ty"):
+        if f.name in ("loc", "sym", "ty", "dunder"):
             continue
         value = getattr(e, f.name)
         for item in value if isinstance(value, list) else [value]:

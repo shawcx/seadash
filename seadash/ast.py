@@ -24,6 +24,9 @@ class Node:
     # Filled in by the checker: what a name/call/attribute/definition resolved
     # to (a types.Var, types.FuncInfo, types.StructType, builtin tag, ...).
     sym: object = field(default=None, compare=False, repr=False, kw_only=True)
+    # Filled in by the checker when an operator/protocol resolves to a dunder method on a
+    # user type: a checker.Dunder (or a list of them, one per operator in a comparison chain).
+    dunder: object = field(default=None, compare=False, repr=False, kw_only=True)
 
 
 # ---- types ------------------------------------------------------------------
