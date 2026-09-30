@@ -44,9 +44,11 @@ inline std::set<std::string> algorithms_available() {
 
 // Looking an algorithm up in OpenSSL is slow, so each is fetched once (and shared between
 // threads: fetched algorithms are immutable). The result is referenced; free it with EVP_MD_free.
+// The cache is never destroyed: it would go after OpenSSL's own cleanup at exit, and while
+// other threads may still be hashing; destroyed without freeing its algorithms, they'd be leaks.
 inline EVP_MD* fetch_digest(const std::string& name) {
     static std::mutex mu;
-    static std::unordered_map<std::string, EVP_MD*> cache;
+    static auto& cache = *new std::unordered_map<std::string, EVP_MD*>();
     std::string key = str_lower(name);
     std::lock_guard lk(mu);
     auto it = cache.find(key);
@@ -169,10 +171,10 @@ class HMAC {
         return m;
     }
     // A context already set to this digest (setting it looks the digest up, which is slow);
-    // each HMAC starts from a copy and only adds its key.
+    // each HMAC starts from a copy and only adds its key. (Never destroyed, like fetch_digest's cache.)
     static EVP_MAC_CTX* template_for(const std::string& digest) {
         static std::mutex mu;
-        static std::unordered_map<std::string, EVP_MAC_CTX*> templates;
+        static auto& templates = *new std::unordered_map<std::string, EVP_MAC_CTX*>();
         std::lock_guard lk(mu);
         auto it = templates.find(digest);
         if (it != templates.end()) return it->second;
