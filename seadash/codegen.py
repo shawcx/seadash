@@ -1081,16 +1081,17 @@ class CodeGen:
         return f"[sd_o = {self.expr(obj)}]({params}) mutable -> {self.cpp_type(m.ret)} {{ return {call}; }}"
 
     def fstring(self, parts: list) -> str:
+        """f"w{n}!" -> sd::fstr("w"sv, n, "!"sv): pieces appended into one string."""
         pieces = []
         for p in parts:
             if isinstance(p, str):
-                pieces.append(cpp_string(p))
+                pieces.append(cpp_string(p)[:-1] + "sv")  # a string_view literal (keeps NULs)
             elif p.spec is not None:
                 fmt = cpp_string("{:" + p.spec + "}")[:-1]  # a plain "..." literal, as std::format wants
                 pieces.append(f"std::format({fmt}, {self.expr(p.value)})")
             else:
-                pieces.append(f"sd::str({self.expr(p.value)})")
-        return "(" + " + ".join(pieces) + ")" if len(pieces) > 1 else pieces[0]
+                pieces.append(self.expr(p.value))
+        return f"sd::fstr({', '.join(pieces)})"
 
     def attribute(self, e: A.Attribute) -> str:
         if isinstance(e.sym, builtins.Value):

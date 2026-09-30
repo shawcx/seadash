@@ -970,3 +970,10 @@ MODULES["json"].members["Value"] = NamedType("Value", JSON_VALUE)
 
 MODULES["__future__"] = Module("__future__", {"annotations": TypeAlias("annotations")})  # accepted, no effect
 
+MODULES["time"] = module_with_params(runtime_module(
+    "time", "modules/time.hpp",
+    perf_counter=(signature(FLOAT), "sd::time::perf_counter"),
+    monotonic=(signature(FLOAT), "sd::time::monotonic"),
+    time=(signature(FLOAT), "sd::time::time"),
+    sleep=(signature(NONE, ("secs", FLOAT)), "sd::time::sleep"),
+))

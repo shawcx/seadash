@@ -34,6 +34,7 @@
 #include <vector>
 
 using namespace std::string_literals;
+using namespace std::string_view_literals;
 
 namespace sd {
 
@@ -269,13 +270,89 @@ std::string str(const T& x) {
 }
 
 // ============================================================================
-// dict: a hash map that remembers insertion order, like Python's
+// dict: insertion-ordered hash map, laid out like CPython's
 // ============================================================================
+//
+// Entries live in a vector in insertion order (with their hash cached); a
+// separate open-addressing table maps hash -> entry index. Each key is stored
+// once, lookups touch one small table, and iteration is a plain vector walk.
+// Deleted entries become tombstones and are compacted away on the next resize.
 
 template <class K, class V>
 class dict {
     std::vector<std::pair<K, V>> items_;
-    std::unordered_map<K, std::size_t, Hash> index_;
+    std::vector<std::size_t> hashes_;
+    std::vector<char> alive_;
+    std::vector<std::int32_t> table_;  // entry index, or EMPTY / DELETED
+    std::size_t live_ = 0;
+
+    static constexpr std::int32_t EMPTY = -1, DELETED = -2;
+
+    static std::size_t hash_of(const K& k) {
+        std::size_t h = Hash{}(k);
+        h ^= h >> 33;  // mix: std::hash of an int is the int itself
+        h *= 0xff51afd7ed558ccdULL;
+        h ^= h >> 33;
+        return h;
+    }
+
+    // Index of k in items_, or -1. `insert_at` gets the table slot where k would go.
+    std::int64_t lookup(const K& k, std::size_t h, std::size_t* insert_at = nullptr) const {
+        if (table_.empty()) return -1;
+        std::size_t mask = table_.size() - 1;
+        std::size_t first_deleted = SIZE_MAX;
+        for (std::size_t i = h & mask;; i = (i + 1) & mask) {
+            std::int32_t slot = table_[i];
+            if (slot == EMPTY) {
+                if (insert_at) *insert_at = first_deleted != SIZE_MAX ? first_deleted : i;
+                return -1;
+            }
+            if (slot == DELETED) {
+                if (first_deleted == SIZE_MAX) first_deleted = i;
+            } else if (hashes_[slot] == h && items_[slot].first == k) {
+                return slot;
+            }
+        }
+    }
+
+    void rebuild(std::size_t capacity) {
+        if (live_ != items_.size()) {  // compact out deleted entries
+            std::size_t j = 0;
+            for (std::size_t i = 0; i < items_.size(); ++i) {
+                if (!alive_[i]) continue;
+                if (i != j) {
+                    items_[j] = std::move(items_[i]);
+                    hashes_[j] = hashes_[i];
+                }
+                ++j;
+            }
+            items_.resize(j);
+            hashes_.resize(j);
+            alive_.assign(j, 1);
+        }
+        std::size_t size = 8;
+        while (size * 2 < capacity * 3) size *= 2;  // keep the load factor under 2/3
+        table_.assign(size, EMPTY);
+        std::size_t mask = size - 1;
+        for (std::size_t n = 0; n < items_.size(); ++n) {
+            std::size_t i = hashes_[n] & mask;
+            while (table_[i] != EMPTY) i = (i + 1) & mask;
+            table_[i] = static_cast<std::int32_t>(n);
+        }
+    }
+
+    std::size_t insert_new(K key, V value, std::size_t h) {
+        if ((items_.size() + 1) * 3 >= table_.size() * 2) rebuild(live_ + 1 > 4 ? (live_ + 1) * 2 : 8);
+        std::size_t at = 0;
+        lookup(key, h, &at);
+        std::size_t n = items_.size();
+        items_.emplace_back(std::move(key), std::move(value));
+        hashes_.push_back(h);
+        alive_.push_back(1);
+        table_[at] = static_cast<std::int32_t>(n);
+        ++live_;
+        return n;
+    }
 
 public:
     dict() = default;
@@ -285,67 +362,99 @@ public:
 
     // d[k] = v : inserts if missing (assignment)
     V& operator[](const K& k) {
-        auto it = index_.find(k);
-        if (it != index_.end()) return items_[it->second].second;
-        index_.emplace(k, items_.size());
-        items_.emplace_back(k, V{});
-        return items_.back().second;
+        std::size_t h = hash_of(k);
+        std::int64_t i = lookup(k, h);
+        if (i >= 0) return items_[i].second;
+        return items_[insert_new(k, V{}, h)].second;
     }
 
     // d[k] as a value: KeyError if missing
     V& at(const K& k) {
-        auto it = index_.find(k);
-        if (it == index_.end()) raise("KeyError", repr(k));
-        return items_[it->second].second;
+        std::int64_t i = lookup(k, hash_of(k));
+        if (i < 0) raise("KeyError", repr(k));
+        return items_[i].second;
     }
     const V& at(const K& k) const { return const_cast<dict*>(this)->at(k); }
 
     const V* find(const K& k) const {
-        auto it = index_.find(k);
-        return it == index_.end() ? nullptr : &items_[it->second].second;
+        std::int64_t i = lookup(k, hash_of(k));
+        return i < 0 ? nullptr : &items_[i].second;
     }
 
-    bool contains(const K& k) const { return index_.count(k) != 0; }
-    std::size_t size() const { return items_.size(); }
-    bool empty() const { return items_.empty(); }
+    bool contains(const K& k) const { return lookup(k, hash_of(k)) >= 0; }
+    std::size_t size() const { return live_; }
+    bool empty() const { return live_ == 0; }
     void clear() {
         items_.clear();
-        index_.clear();
+        hashes_.clear();
+        alive_.clear();
+        table_.clear();
+        live_ = 0;
     }
 
     bool erase(const K& k) {
-        auto it = index_.find(k);
-        if (it == index_.end()) return false;
-        std::size_t i = it->second;
-        index_.erase(it);
-        items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(i));
-        for (auto& [key, j] : index_)
-            if (j > i) --j;
-        return true;
+        std::size_t h = hash_of(k);
+        std::size_t mask = table_.empty() ? 0 : table_.size() - 1;
+        if (table_.empty()) return false;
+        for (std::size_t i = h & mask;; i = (i + 1) & mask) {
+            std::int32_t slot = table_[i];
+            if (slot == EMPTY) return false;
+            if (slot >= 0 && hashes_[slot] == h && items_[slot].first == k) {
+                table_[i] = DELETED;
+                alive_[slot] = 0;
+                items_[slot] = std::pair<K, V>{};  // release the memory now
+                --live_;
+                return true;
+            }
+        }
     }
 
-    auto begin() const { return items_.begin(); }
-    auto end() const { return items_.end(); }
+    // Iteration skips deleted entries; yields (key, value) pairs in insertion order.
+    struct const_iterator {
+        const dict* d;
+        std::size_t i;
+        void skip() {
+            while (i < d->items_.size() && !d->alive_[i]) ++i;
+        }
+        const std::pair<K, V>& operator*() const { return d->items_[i]; }
+        const std::pair<K, V>* operator->() const { return &d->items_[i]; }
+        const_iterator& operator++() {
+            ++i;
+            skip();
+            return *this;
+        }
+        bool operator!=(const const_iterator& o) const { return i != o.i; }
+        bool operator==(const const_iterator& o) const { return i == o.i; }
+    };
+    const_iterator begin() const {
+        const_iterator it{this, 0};
+        it.skip();
+        return it;
+    }
+    const_iterator end() const { return {this, items_.size()}; }
 
     std::vector<K> keys() const {
         std::vector<K> out;
-        for (const auto& [k, v] : items_) out.push_back(k);
+        out.reserve(live_);
+        for (const auto& [k, v] : *this) out.push_back(k);
         return out;
     }
     list<V> values() const {
         list<V> out;
-        for (const auto& [k, v] : items_) out.push_back(v);
+        out.reserve(live_);
+        for (const auto& [k, v] : *this) out.push_back(v);
         return out;
     }
     std::vector<std::tuple<K, V>> items() const {
         std::vector<std::tuple<K, V>> out;
-        for (const auto& [k, v] : items_) out.emplace_back(k, v);
+        out.reserve(live_);
+        for (const auto& [k, v] : *this) out.emplace_back(k, v);
         return out;
     }
 
     bool operator==(const dict& other) const {
         if (size() != other.size()) return false;
-        for (const auto& [k, v] : items_) {
+        for (const auto& [k, v] : *this) {
             const V* o = other.find(k);
             if (!o || !(*o == v)) return false;
         }
@@ -537,6 +646,25 @@ inline std::string BaseException::sd_repr() const {
 }
 inline std::string KeyError::sd_repr() const {
     return from_lookup ? "KeyError(" + message + ")" : LookupError::sd_repr();
+}
+
+// f-strings: append every piece into one string (no chain of temporaries).
+inline void fstr_piece(std::string& out, std::string_view s) { out += s; }
+inline void fstr_piece(std::string& out, const std::string& s) { out += s; }
+inline void fstr_piece(std::string& out, std::int64_t n) {
+    char buf[24];
+    auto res = std::to_chars(buf, buf + sizeof buf, n);
+    out.append(buf, res.ptr);
+}
+template <class T>
+void fstr_piece(std::string& out, const T& x) {
+    out += str(x);
+}
+template <class... Ts>
+std::string fstr(const Ts&... parts) {
+    std::string out;
+    (fstr_piece(out, parts), ...);
+    return out;
 }
 
 template <class... Ts>
@@ -819,8 +947,26 @@ template <class It>
 auto to_list(It&& it) {
     auto&& src = iter(std::forward<It>(it));
     std::vector<elem_t<decltype(src)>> out;
+    if constexpr (requires { src.size(); }) out.reserve(src.size());
     for (auto&& v : src) out.push_back(v);
     return out;
+}
+
+// Values where "equal" means "identical", so a stable sort can't be told apart from
+// std::sort (which is faster). Not floats: 0.0 == -0.0, but they print differently.
+template <class T>
+struct plain_order : std::bool_constant<std::is_integral_v<T> || std::is_same_v<T, std::string> ||
+                                        std::is_same_v<T, Bool>> {};
+template <class... Ts>
+struct plain_order<std::tuple<Ts...>> : std::bool_constant<(plain_order<Ts>::value && ...)> {};
+
+template <class T, class Less>
+void sort_values(std::vector<T>& v, Less less) {
+    if constexpr (plain_order<T>::value) {
+        std::sort(v.begin(), v.end(), less);
+    } else {
+        std::stable_sort(v.begin(), v.end(), less);
+    }
 }
 
 template <class It>
@@ -860,9 +1006,9 @@ template <class It>
 auto sorted(It&& it, bool reverse = false) {
     auto out = to_list(std::forward<It>(it));
     if (reverse)
-        std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return b < a; });
+        sort_values(out, [](const auto& a, const auto& b) { return b < a; });
     else
-        std::stable_sort(out.begin(), out.end());
+        sort_values(out, std::less<>{});
     return out;
 }
 
@@ -1495,9 +1641,9 @@ void list_extend(std::vector<T>& v, It&& it) {
 template <class T>
 void list_sort(std::vector<T>& v, bool reverse = false) {
     if (reverse)
-        std::stable_sort(v.begin(), v.end(), [](const T& a, const T& b) { return b < a; });
+        sort_values(v, [](const T& a, const T& b) { return b < a; });
     else
-        std::stable_sort(v.begin(), v.end());
+        sort_values(v, std::less<>{});
 }
 template <class T>
 void list_reverse(std::vector<T>& v) {

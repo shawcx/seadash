@@ -1,0 +1,47 @@
+# Runs unchanged under python3 and seadash: classes, virtual methods, floats, recursion.
+
+class Body:
+    x: float
+    y: float
+    vx: float
+    vy: float
+
+    def __init__(self, x: float, y: float, vx: float, vy: float):
+        self.x = x
+        self.y = y
+        self.vx = vx
+        self.vy = vy
+
+    def step(self, dt: float):
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+
+    def energy(self) -> float:
+        return 0.5 * (self.vx * self.vx + self.vy * self.vy)
+
+class Bouncer(Body):
+    def step(self, dt: float):
+        super().step(dt)
+        if self.x < 0 or self.x > 100:
+            self.vx = -self.vx
+        if self.y < 0 or self.y > 100:
+            self.vy = -self.vy
+
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+def simulate(n: int, steps: int) -> float:
+    bodies: list[Body] = []
+    for i in range(n):
+        if i % 2 == 0:
+            bodies.append(Body(i % 100, (i * 7) % 100, 1.5, -0.5))
+        else:
+            bodies.append(Bouncer(i % 100, (i * 3) % 100, -2.0, 1.25))
+    for s in range(steps):
+        for b in bodies:
+            b.step(0.1)
+    return sum(b.energy() for b in bodies) + sum(b.x for b in bodies)
+
+print(round(simulate(2000, 5000), 3), fib(32))
