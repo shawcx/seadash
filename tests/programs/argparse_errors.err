@@ -1,0 +1,2 @@
+usage: app [-h] --ratio RATIO files [files ...] {fast,slow}
+app: error: argument mode: invalid choice: 'zoom' (choose from 'fast', 'slow')

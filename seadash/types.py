@@ -35,6 +35,7 @@ UNKNOWN = Prim("?")  # only while inferring literals: the element type of an emp
 SOCKET = Prim("socket")  # socket.socket: a thread-safe handle
 PATH = Prim("Path")  # pathlib.Path: an immutable path value
 TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
+PARSER = Prim("ArgumentParser")  # argparse.ArgumentParser
 DATE = Prim("date")  # the datetime module's value types
 TIME = Prim("time")
 DATETIME = Prim("datetime")
@@ -144,6 +145,16 @@ class ProcessType(Type):
 
     def __str__(self) -> str:
         return f"subprocess.{self.kind}"
+
+
+@dataclass(frozen=True)
+class NamespaceType(Type):
+    """argparse.Namespace from parse_args(): one typed attribute per argument added."""
+
+    fields: tuple[tuple[str, Type], ...] = ()
+
+    def __str__(self) -> str:
+        return "argparse.Namespace"
 
 
 @dataclass(frozen=True)

@@ -17,7 +17,7 @@ from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
-    DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE,
+    DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -778,6 +778,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = DEQUE_METHODS
         case _ if t in DATETIME_METHODS:
             return DATETIME_METHODS[t].get(name)
+        case _ if t == PARSER:
+            return PARSER_METHODS.get(name)
         case _ if t == PATH:
             return PATH_METHODS.get(name)
         case _ if t == TEMPDIR:
@@ -1609,6 +1611,8 @@ MATCH_ATTRIBUTES = {
 
 
 def type_attributes(t: Type) -> dict | None:
+    if isinstance(t, NamespaceType):
+        return {name: (lambda _, ft=ft: ft) for name, ft in t.fields}
     if t in DATETIME_ATTRIBUTES:
         return DATETIME_ATTRIBUTES[t]
     if t == PATH:
@@ -1837,6 +1841,177 @@ CLASS_MEMBERS: dict[Type, dict[str, Function | Value]] = {
     },
     TIMEZONE: {"utc": Value("utc", TIMEZONE, DT + "timezone::utc()")},
 }
+
+
+# ---- argparse ---------------------------------------------------------------------------
+#
+# The parsed Namespace is typed from the parser's add_argument() calls, which the checker
+# sees in order: args.count is an int (not "any"), and a misspelled args.cuont is a compile
+# error. So the arguments are written out (literal names, action=, nargs=, type=) and
+# added in the function that calls parse_args() -- as almost every script does.
+
+ACTIONS = ("store", "store_true", "store_false", "store_const", "count", "append", "help", "version")
+ARG_KEYWORDS = ("action", "nargs", "const", "default", "type", "choices", "required", "help", "metavar", "dest", "version")
+
+
+def parser_var(ctx: CallContext) -> object:
+    recv = ctx.call.func.value
+    sym = getattr(recv, "sym", None)
+    if not isinstance(recv, A.Name) or sym is None or not hasattr(sym, "cpp_name"):
+        raise ctx.error(f"{ctx.what} must be called on the variable holding the parser, so its arguments are known")
+    return sym
+
+
+def literal_str(ctx: CallContext, node: A.Expr, what: str) -> str:
+    if not isinstance(node, A.StrLit):
+        raise ctx.error(f"{what} must be a string written out (it decides the parsed type)", node)
+    node.ty = STR
+    return node.value
+
+
+def argument_kind(ctx: CallContext, node: A.Expr | None) -> tuple[str, Type]:
+    """type=int / float / str / Path -> (runtime kind, value type)."""
+    if node is None:
+        return "STR", STR
+    if isinstance(node, A.Name) and node.id in ("int", "float", "str") and not ctx.checker.state.names.get(node.id):
+        return node.id.upper(), {"int": INT, "float": FLOAT, "str": STR}[node.id]
+    if ctx.checker.builtin_class(node) == PATH or (
+        isinstance(node, A.Name) and node.id in ctx.checker.imported
+        and ctx.checker.imported[node.id][0] is MODULES["pathlib"]
+    ):
+        return "PATH", PATH
+    raise ctx.error("type= must be int, float, str or Path (written out: it decides the parsed type)", node)
+
+
+def parser_add_argument(ctx: CallContext) -> Type:
+    var = parser_var(ctx)
+    if not ctx.args:
+        raise ctx.error("add_argument() needs a name, or option flags like '-v', '--verbose'")
+    names = [literal_str(ctx, a, "an argument name") for a in ctx.args]
+    kw: dict[str, A.Expr] = {}
+    for k in ctx.call.keywords:
+        if k.name not in ARG_KEYWORDS:
+            raise ctx.error(f"add_argument() got an unexpected keyword argument '{k.name}'", k)
+        kw[k.name] = k.value
+    positional = not names[0].startswith("-")
+    if positional and len(names) > 1:
+        raise ctx.error("a positional argument has one name (options start with '-')", ctx.args[1])
+    if not positional and any(not n.startswith("-") for n in names):
+        raise ctx.error("option flags all start with '-'", ctx.call)
+    action = literal_str(ctx, kw["action"], "action=") if "action" in kw else "store"
+    if action not in ACTIONS:
+        raise ctx.error(f"unknown action {action!r} (supported: {', '.join(ACTIONS)})", kw["action"])
+    nargs = "ONE"
+    if "nargs" in kw:
+        n = kw["nargs"]
+        if isinstance(n, A.IntLit):
+            nargs = str(n.value)
+        elif isinstance(n, A.StrLit) and n.value in ("?", "*", "+"):
+            nargs = {"?": "OPTIONAL", "*": "ANY", "+": "SOME"}[n.value]
+        else:
+            raise ctx.error("nargs= must be a number, '?', '*' or '+' (written out)", n)
+        n.ty = INT if isinstance(n, A.IntLit) else STR
+    if "dest" in kw:
+        dest = literal_str(ctx, kw["dest"], "dest=")
+    elif positional:
+        dest = names[0]
+    else:
+        long = next((n for n in names if n.startswith("--")), names[0])
+        dest = long.lstrip("-").replace("-", "_")
+    if positional and "required" in kw:
+        raise ctx.error("'required' is an invalid argument for positionals", kw["required"])
+    kind, item = argument_kind(ctx, kw.get("type"))
+    required = False
+    if "required" in kw:
+        if not isinstance(kw["required"], A.BoolLit):
+            raise ctx.error("required= must be True or False written out", kw["required"])
+        kw["required"].ty = BOOL
+        required = kw["required"].value
+    many = nargs not in ("ONE", "OPTIONAL")
+    has_default = "default" in kw and not isinstance(kw["default"], A.NoneLit)
+    # What the attribute holds, following Python's rules for when it can be None.
+    match action:
+        case "store_true" | "store_false":
+            t = BOOL
+        case "count":
+            t = INT if has_default else OptionalType(INT)
+        case "append":
+            t = ListType(item) if has_default else OptionalType(ListType(item))
+        case "store_const":
+            if "const" not in kw:
+                raise ctx.error("action='store_const' needs const=", ctx.call)
+            t = ctx.checker.check_expr(kw["const"])
+            if not has_default:
+                t = t if isinstance(t, OptionalType) else OptionalType(t)
+        case "help" | "version":
+            t = None
+        case _:
+            base = ListType(item) if many else item
+            always = (positional and nargs in ("ONE", "SOME") or nargs.isdigit()) or (positional and nargs == "ANY")
+            t = base if always or has_default or required else OptionalType(base)
+    if action == "version" and "version" not in kw:
+        raise ctx.error("action='version' needs version=", ctx.call)
+    for name, want in (("help", STR), ("metavar", STR), ("version", STR)):
+        if name in kw:
+            ctx.checker.expect_type(kw[name], want, name)
+    if has_default and t is not None:
+        want = strip_optional_type(t)
+        actual = ctx.checker.check_expr(kw["default"], want)
+        if not assignable(actual, want):
+            raise ctx.error(f"default= must be {want} for this argument, not {actual}", kw["default"])
+    elif "default" in kw:
+        ctx.checker.check_expr(kw["default"])
+    if "const" in kw and action != "store_const":
+        ctx.checker.expect_type(kw["const"], item, "const")
+    if "choices" in kw:
+        ch = kw["choices"]
+        if not isinstance(ch, (A.ListLit, A.TupleLit)):
+            raise ctx.error("choices= must be a list written out, like choices=['fast', 'slow']", ch)
+        for c in ch.elts:
+            ctx.checker.expect_type(c, item, "each choice")
+        ch.ty = ListType(item)
+    specs = ctx.checker.argument_parsers.setdefault(id(var), [])
+    for existing, _ in specs:
+        if existing == dest and t is not None:
+            raise ctx.error(f"'{dest}' is already an argument of this parser", ctx.call)
+    if t is not None:
+        specs.append((dest, t))
+    ctx.call.argparse = {"flags": [] if positional else names, "dest": dest, "action": action, "nargs": nargs,
+                         "kind": kind, "kw": kw, "required": required}
+    return NONE
+
+
+def strip_optional_type(t: Type) -> Type:
+    return t.inner if isinstance(t, OptionalType) else t
+
+
+def parser_parse_args(ctx: CallContext) -> Type:
+    var = parser_var(ctx)
+    ctx.arity(0, 1, keywords=("args",))
+    node = ctx.args[0] if ctx.args else ctx.keyword_arg("args")
+    if node is not None and not isinstance(node, A.NoneLit):
+        ctx.checker.expect_type(node, ListType(STR), "args")
+    ctx.call.regex_args = {"args": node}  # (the bound argument, for codegen)
+    return NamespaceType(tuple(ctx.checker.argument_parsers.get(id(var), [])))
+
+
+PARSER_METHODS = {
+    "add_argument": parser_add_argument,
+    "parse_args": parser_parse_args,
+    "print_help": sync_method(NONE),
+    "print_usage": sync_method(NONE),
+    "format_help": sync_method(STR),
+    "format_usage": sync_method(STR),
+    "error": sync_method(NONE, ("message", STR)),
+    "exit": sync_method(NONE, ("status", INT, "0"), ("message", OptionalType(STR), "std::nullopt")),
+}
+MODULES["argparse"] = Module("argparse", {
+    "ArgumentParser": Function("ArgumentParser", signature(
+        PARSER, *((name, OptionalType(STR), "std::nullopt") for name in ("prog", "usage", "description", "epilog")),
+        ("add_help", BOOL, "true")), "sd::argparse::ArgumentParser", as_type=PARSER),
+    "Namespace": NamedType("Namespace", NamespaceType()),
+}, "modules/argparse.hpp")
+MODULES["argparse"].members["ArgumentParser"].params = MODULES["argparse"].members["ArgumentParser"].check.params
 
 
 class AttributeUnavailable(Exception):

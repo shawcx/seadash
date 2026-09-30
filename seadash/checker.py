@@ -39,7 +39,7 @@ from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA,
-    SYNC_ARITY, ClassRefType, CounterType, MatchType, PatternType, ProcessType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
+    SYNC_ARITY, ClassRefType, CounterType, MatchType, NamespaceType, PatternType, ProcessType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
@@ -223,6 +223,7 @@ class Checker:
         self.pending: list = []  # generic instance bodies waiting to be checked
         self.spawns: list = []  # threading.Thread(...) calls, verified once the program is checked
         self.decorated: dict[str, str] = {}  # decorated function name -> hidden name of the original
+        self.argument_parsers: dict[int, list] = {}  # id(parser variable) -> [(dest, type)] from add_argument
         self.module_checked = False
         self.out_structs: list[StructType] = []
         self.out_functions: list[FuncInfo] = []
@@ -1933,6 +1934,17 @@ class Checker:
                     return BOOL
                 if l == r and isinstance(l, SetType):
                     return l
+        if isinstance(l, OptionalType) or isinstance(r, OptionalType):
+            maybe = l if isinstance(l, OptionalType) else r
+            try:  # would it work once None is ruled out?
+                self.binop_type(op, strip_optional(l), strip_optional(r), A.BinOp(op, None, None, loc=e.loc))
+            except CheckError:
+                pass
+            else:
+                operand = e.left if maybe is l else e.right
+                raise self.error(
+                    f"{maybe} might be None; check it first, e.g. `if {describe_short(operand)} is not None:`", operand
+                )
         hint = ""
         if {l, r} == {STR, BYTES}:
             hint = " (convert with s.encode() or b.decode())"
@@ -2065,6 +2077,9 @@ class Checker:
             e.sym = ("thread_attr", attr)
             return builtins.THREAD_ATTRIBUTES[attr]
         if (attrs := builtins.type_attributes(vt)) is not None:  # m.string, pattern.groups
+            if attr not in attrs and isinstance(vt, NamespaceType):
+                known = ", ".join(name for name, _ in vt.fields) or "none"
+                raise self.error(f"the parsed arguments have no '{attr}' (the parser's arguments are: {known})", e)
             if attr not in attrs:
                 raise self.error(f"{vt} has no attribute '{attr}'", e)
             try:

@@ -178,10 +178,10 @@ def work():
 | `pathlib` | `Path` values: `/` joins, `name`/`stem`/`suffix`/`parent`, `read_text`/`write_text`, `mkdir`, `iterdir`, `glob`/`rglob`, `resolve`...; `open()` takes a `Path` too |
 | `shutil`, `tempfile` | `copy`/`copy2`/`copytree`, `move`, `rmtree`, `which`, `disk_usage`; `TemporaryDirectory` (removes itself), `mkdtemp`, `gettempdir` |
 | `datetime` | `date`, `time`, `datetime`, `timedelta`, fixed-offset `timezone`: arithmetic, `strftime`/`strptime`, `isoformat`/`fromisoformat`, `now()`/`today()`, time zone conversion |
+| `argparse` | `ArgumentParser` with Python's help and errors; the parsed arguments are typed from `add_argument()` (`args.count` is an `int`, a misspelled `args.cuont` is a compile error) |
 | `dataclasses`, `functools` | `@dataclass`, `field()`, `@cache`, `@lru_cache` |
 | `typing` | `Callable`, `Optional`, `Iterator`... (so the same code also runs under Python) |
 
-In progress: `argparse`.
 
 ## Differences from Python
 

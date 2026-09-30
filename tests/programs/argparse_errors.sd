@@ -1,0 +1,10 @@
+# An argparse error: usage and the message go to stderr, and the program exits with 2.
+import argparse
+
+parser = argparse.ArgumentParser(prog="app")
+parser.add_argument("files", nargs="+")
+parser.add_argument("mode", choices=["fast", "slow"])
+parser.add_argument("--ratio", type=float, required=True)
+print("parsing")
+args = parser.parse_args(["a.txt", "zoom", "--ratio", "1"])
+print("not reached", args.mode)

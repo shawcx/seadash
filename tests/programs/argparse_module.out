@@ -1,0 +1,42 @@
+usage: app [-h] [-c COUNT] [-v] [--dry-run] [--name NAME] --ratio R
+           [--tag TAG] [--out OUT]
+           [--a-very-long-option-name-here A_VERY_LONG_OPTION_NAME_HERE]
+           files [files ...] {fast,slow}
+
+Process some files and do a number of interesting things with them, wrapping
+onto a second line.
+
+positional arguments:
+  files                 input files
+  {fast,slow}           how to run
+
+options:
+  -h, --help            show this help message and exit
+  -c COUNT, --count COUNT
+                        how many times (default: 1)
+  -v, --verbose
+  --dry-run             don't change anything
+  --name NAME           a name
+  --ratio R
+  --tag TAG             tags, can repeat
+  --out OUT
+  --a-very-long-option-name-here A_VERY_LONG_OPTION_NAME_HERE
+                        this help text is long enough that it will need to
+                        wrap around onto the following line of output
+
+See the docs for more.
+---
+usage: app [-h] [-c COUNT] [-v] [--dry-run] [--name NAME] --ratio R
+           [--tag TAG] [--out OUT]
+           [--a-very-long-option-name-here A_VERY_LONG_OPTION_NAME_HERE]
+           files [files ...] {fast,slow}
+Namespace(files=['a.txt', 'b.txt'], mode='fast', count=3, verbose=2, dry_run=True, name=None, ratio=0.5, tag=['x', 'y'], out=PosixPath('out'), a_very_long_option_name_here=None)
+32 ['a.txt', 'b.txt'] fast True None 1.0 ['x', 'y'] out/log.txt
+no name
+2 x,y
+1 0 False None out
+usage: tiny [-h] [-n N] [--pair PAIR PAIR] [--quiet] [--level {1,2,3}]
+            [x] [rest ...]
+Namespace(x='d', rest=[], n=None, pair=None, loud=True, level=2)
+Namespace(x='1', rest=['2', '3'], n=5, pair=[0.5, 1.5], loud=False, level=3)
+Namespace(x='-n', rest=[], n=None, pair=None, loud=True, level=2)

@@ -290,7 +290,7 @@ def test_narrowing_is_undone_by_merge():
             print(n + 1)
         print(n + 1)
     """, params="n: int?"))
-    assert e.message == "unsupported operand types for +: int? and int"
+    assert e.message == "int? might be None; check it first, e.g. `if n is not None:`"
 
 
 def test_assigning_none_needs_annotation():
@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, datetime, functools, json, math, os, pathlib, queue, random, re, shutil, socket, subprocess, sys, tempfile, threading, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: argparse, base64, collections, dataclasses, datetime, functools, json, math, os, pathlib, queue, random, re, shutil, socket, subprocess, sys, tempfile, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -809,9 +809,9 @@ def test_self_recursion_does_not_capture_itself():
     ("def f():\n    def g(a: int = 1) -> int:\n        return a", "default values aren't supported in nested functions yet ('a')"),
     ("def f():\n    def g():\n        print(later)\n    later = 1", "'later' isn't assigned yet where this nested function is defined; assign it before the def"),
     ("def f(p: int?):\n    if p is not None:\n        def g() -> int:\n            return p + 1",
-     "unsupported operand types for +: int? and int"),
+     "int? might be None; check it first, e.g. `if p is not None:`"),
     ("def f(p: int?):\n    if p is not None:\n        h: () -> int = lambda: p + 1",
-     "unsupported operand types for +: int? and int"),
+     "int? might be None; check it first, e.g. `if p is not None:`"),
 ])
 def test_closure_errors(src, msg):
     assert err(src).message == msg
@@ -1472,3 +1472,36 @@ def test_datetime_types():
     assert err("from datetime import datetime\nx = datetime.yesterday()\n").message == (
         "type object 'datetime' has no attribute 'yesterday'"
     )
+
+
+def test_argparse_types():
+    info = ok(
+        "import argparse\nfrom pathlib import Path\n"
+        "p = argparse.ArgumentParser()\n"
+        "p.add_argument('files', nargs='+')\np.add_argument('--count', type=int, default=1)\n"
+        "p.add_argument('--name')\np.add_argument('-v', '--verbose', action='store_true')\n"
+        "p.add_argument('--out', type=Path, required=True)\np.add_argument('--tag', action='append')\n"
+        "args = p.parse_args()\n"
+        "files = args.files\ncount = args.count\nname = args.name\nverbose = args.verbose\nout = args.out\n"
+        "tags = args.tag\n"
+    )
+    assert {"files: list[str]", "count: int", "name: str?", "verbose: bool", "out: Path", "tags: list[str]?"} <= set(
+        variables(info)
+    )
+
+
+def test_argparse_errors():
+    base = "import argparse\np = argparse.ArgumentParser()\np.add_argument('--count', type=int)\n"
+    assert err(base + "a = p.parse_args()\nx = a.cuont\n").message == (
+        "the parsed arguments have no 'cuont' (the parser's arguments are: count)"
+    )
+    assert err(base + "a = p.parse_args()\nx = a.count + 1\n").message == (
+        "int? might be None; check it first, e.g. `if a.count is not None:`"
+    )
+    assert err(base + "p.add_argument('--n', type=complex)\n").message == (
+        "type= must be int, float, str or Path (written out: it decides the parsed type)"
+    )
+    assert err(base + "p.add_argument('--k', type=int, default='x')\n").message == (
+        "default= must be int for this argument, not str"
+    )
+    assert err(base + "p.add_argument('--count')\n").message == "'count' is already an argument of this parser"

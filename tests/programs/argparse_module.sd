@@ -1,0 +1,47 @@
+# argparse: the parsed arguments are typed from the add_argument() calls.
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser(
+    prog="app",
+    description="Process some files and do a number of interesting things with them, wrapping onto a second line.",
+    epilog="See the docs for more.",
+)
+parser.add_argument("files", nargs="+", help="input files")
+parser.add_argument("mode", choices=["fast", "slow"], help="how to run")
+parser.add_argument("-c", "--count", type=int, default=1, help="how many times (default: %(default)s)")
+parser.add_argument("-v", "--verbose", action="count", default=0)
+parser.add_argument("--dry-run", action="store_true", help="don't change anything")
+parser.add_argument("--name", help="a name")
+parser.add_argument("--ratio", type=float, required=True, metavar="R")
+parser.add_argument("--tag", action="append", help="tags, can repeat")
+parser.add_argument("--out", type=Path, default=Path("out"))
+parser.add_argument("--a-very-long-option-name-here", help="this help text is long enough that it will need to wrap around onto the following line of output")
+parser.print_help()
+print("---")
+parser.print_usage()
+
+args = parser.parse_args(["a.txt", "b.txt", "fast", "--ratio", "0.5", "-vv", "--tag", "x", "--tag=y", "--dry", "-c3"])
+print(args)
+total = args.count * 10 + args.verbose  # typed: int and int
+print(total, args.files, args.mode, args.dry_run, args.name, args.ratio * 2, args.tag, args.out / "log.txt")
+if args.name is None:
+    print("no name")
+tags = args.tag
+if tags is not None:
+    print(len(tags), ",".join(tags))
+
+defaults = parser.parse_args(["one", "slow", "--ratio=2"])
+print(defaults.count, defaults.verbose, defaults.dry_run, defaults.tag, defaults.out)
+
+tiny = argparse.ArgumentParser(prog="tiny")
+tiny.add_argument("x", nargs="?", default="d")
+tiny.add_argument("rest", nargs="*")
+tiny.add_argument("-n", type=int)
+tiny.add_argument("--pair", nargs=2, type=float)
+tiny.add_argument("--quiet", action="store_false", dest="loud")
+tiny.add_argument("--level", choices=[1, 2, 3], type=int, default=2)
+print(tiny.format_usage(), end="")
+print(tiny.parse_args([]))
+print(tiny.parse_args(["1", "2", "3", "-n5", "--pair", "0.5", "1.5", "--quiet", "--level", "3"]))
+print(tiny.parse_args(["--", "-n"]))

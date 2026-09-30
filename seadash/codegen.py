@@ -37,7 +37,8 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    CounterType, DefaultDictType, DequeType, DictType, MatchType, PatternType, ProcessType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
+    PARSER,
+    CounterType, DefaultDictType, DequeType, DictType, MatchType, NamespaceType, PatternType, ProcessType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
 
@@ -249,6 +250,10 @@ class CodeGen:
                 return "sd::tempfile::TemporaryDirectory"
             case _ if t in DATETIME_TYPES:
                 return f"sd::datetime::{t.name}"
+            case _ if t == PARSER:
+                return "sd::argparse::ArgumentParser"
+            case NamespaceType():
+                return "sd::argparse::Namespace"
             case _ if t == NONE:
                 return "void"
             case ListType(elem):
@@ -1315,6 +1320,8 @@ class CodeGen:
             obj, vt = self.expr(e.value), e.value.ty
             if isinstance(vt, ProcessType):
                 return self.process_attribute(obj, vt, e.sym[1], e.ty)
+            if isinstance(vt, NamespaceType):  # args.count
+                return f"{obj}.get<{self.cpp_type(e.ty)}>({cpp_string(e.sym[1])})"
             return f"{obj}.{e.sym[1]}()"  # m.string(), pattern.groups()
         if isinstance(e.sym, tuple) and e.sym[0] == "property":  # obj.area -> obj.sd_get_area()
             return f"{self.member(e.value, e.sym[1])}()"
@@ -1494,7 +1501,9 @@ class CodeGen:
     # =========================================================================
 
     def call(self, e: A.Call) -> str:
-        return self.in_order([*e.args, *(k.value for k in e.keywords)], lambda: self.call_inner(e), keep_refs=True)
+        # (add_argument's type=int is an instruction to the compiler, not a value)
+        keywords = [k.value for k in e.keywords if not (hasattr(e, "argparse") and k.name == "type")]
+        return self.in_order([*e.args, *keywords], lambda: self.call_inner(e), keep_refs=True)
 
     def call_inner(self, e: A.Call) -> str:
         target: CallTarget = e.sym
@@ -1861,6 +1870,27 @@ class CodeGen:
         encoding = self.keyword(e, "encoding")
         return f"sd::open_text({', '.join([path, mode_code, *([self.expr(encoding)] if encoding else [])])})"
 
+    def argument_spec(self, e: A.Call) -> str:
+        """An argparse Spec built from the literal add_argument(...) call."""
+        a = e.argparse
+        kw = a["kw"]
+        lines = [f"s.flags = {{{', '.join(cpp_string(f) for f in a['flags'])}}};", f"s.dest = {cpp_string(a['dest'])};",
+                 f"s.action = {cpp_string(a['action'])};", f"s.kind = sd::argparse::{a['kind']};"]
+        nargs = a["nargs"]
+        lines.append(f"s.nargs = {nargs if nargs.isdigit() else 'sd::argparse::' + nargs};")
+        for name, field in (("default", "default_"), ("const", "const_")):
+            if name in kw and not isinstance(kw[name], A.NoneLit):
+                lines.append(f"s.{field} = sd::argparse::Value({self.expr(kw[name])});")
+        if "choices" in kw:
+            items = ", ".join(f"sd::argparse::Value({self.expr(c)})" for c in kw["choices"].elts)
+            lines.append(f"s.choices = {{{items}}};")
+        if a["required"]:
+            lines.append("s.required = true;")
+        for name in ("help", "metavar", "version"):
+            if name in kw:
+                lines.append(f"s.{name} = {self.expr(kw[name])};")
+        return f"[&] {{ sd::argparse::Spec s; {' '.join(lines)} return s; }}()"
+
     def method_call(self, recv_type: Type, name: str, e: A.Call) -> str:
         r = self.expr(e.func.value)
         args = [self.expr(a) for a in e.args]
@@ -1877,9 +1907,15 @@ class CodeGen:
             return f"{r}.joinpath({', '.join(args)})"
         if recv_type == PATH and name == "open":
             return self.open_call(f"{r}.str()", e.args[0] if e.args else self.keyword(e, "mode"), e)
+        if recv_type == PARSER and name == "add_argument":
+            return f"{r}.add_argument({self.argument_spec(e)})"
+        if recv_type == PARSER and name == "parse_args":
+            node = e.regex_args["args"]
+            given = node is not None and not isinstance(node, A.NoneLit)
+            return f"{r}.parse_args({self.expr_as(node, OptionalType(ListType(STR))) if given else 'std::nullopt'})"
         if recv_type == DATETIME and name in ("date", "time"):
             return f"{r}.to_{name}()"  # (a C++ member can't share its class's name)
-        if isinstance(recv_type, SyncType) or recv_type in (SOCKET, PATH, TEMPDIR, *DATETIME_TYPES):
+        if isinstance(recv_type, SyncType) or recv_type in (SOCKET, PATH, TEMPDIR, PARSER, *DATETIME_TYPES):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):
