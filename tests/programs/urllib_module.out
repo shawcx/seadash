@@ -1,0 +1,31 @@
+200 OK 200 True
+text/plain; charset=utf-8 text/plain utf-8
+yes None dflt
+True False ['a=1', 'b=2']
+b'hello world\n'
+b'line' b' two\nlast'
+b'hello world\n'
+b'line two\n'
+b'last'
+POST True True [('X-a', 'one')]
+two b'payload'
+POST /echo?q=1 x-a=one type=application/x-www-form-urlencoded body=payload
+b'POST /echo x-a=- type=application/x-www-form-urlencoded body=k=v+w'
+b'PUT /echo x-a=- type=- body='
+HTTP Error 404: Not Found <HTTPError 404: 'Not Found'> 404 Not Found gone b'nope' True
+200 True b'hello world\nline two\nlast'
+b'hello, world'
+b'until the end'
+URLError: [Errno 111] Connection refused
+ParseResult(scheme='https', netloc='user:pw@Example.com:8080', path='/a/b', params='p', query='q=1&r=two', fragment='frag')
+https user:pw@Example.com:8080 /a/b p q=1&r=two frag
+example.com 8080 user pw https://user:pw@Example.com:8080/a/b;p?q=1&r=two#frag
+/x;y z None
+a%20b/c%3Fd%3D%C3%A9 a%20b%2Fc a+b%26c
+a b/cé a b&c
+q=hello+world&n=3&x=a%26b a=1&a=2
+k=1&k=2
+http://h/a/d http://h/e?f http://h/a/g
+https://other/x http://other/y http://h/a/b?r
+{'a': ['1', '3'], 'b': ['2']} {'c': [''], 'd': ['']}
+[('x', '1'), ('y', ' z w')]

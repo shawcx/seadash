@@ -1,0 +1,129 @@
+# urllib.request against a tiny HTTP server in a thread; urllib.parse; urllib.error.
+import socket
+import threading
+import urllib.request
+import urllib.error
+from urllib.parse import urlparse, urlsplit, quote, quote_plus, unquote, unquote_plus, urlencode, urljoin, parse_qs, parse_qsl
+
+REQUESTS = 10
+
+
+def read_request(conn: socket.socket) -> tuple[str, str, dict[str, str], bytes]:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        part = conn.recv(4096)
+        if not part:
+            break
+        data += part
+    head, _, body = data.partition(b"\r\n\r\n")
+    lines = head.decode().split("\r\n")
+    first = lines[0].split(" ")
+    method = first[0]
+    path = first[1]
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        k, _, v = line.partition(": ")
+        headers[k.lower()] = v
+    size = int(headers.get("content-length", "0"))
+    while len(body) < size:
+        body += conn.recv(4096)
+    return method, path, headers, body
+
+
+def respond(conn: socket.socket, status: str, headers: list[str], body: bytes):
+    head = "HTTP/1.1 " + status + "\r\n" + "".join(h + "\r\n" for h in headers) + "\r\n"
+    conn.sendall(head.encode() + body)
+
+
+def serve(server: socket.socket):
+    for _ in range(REQUESTS):
+        conn, _ = server.accept()
+        method, path, headers, body = read_request(conn)
+        if path == "/hello":
+            text = b"hello world\nline two\nlast"
+            respond(conn, "200 OK", ["Content-Type: text/plain; charset=utf-8", "X-Custom: yes",
+                                     "Set-Cookie: a=1", "Set-Cookie: b=2", "Content-Length: " + str(len(text))], text)
+        elif path.startswith("/echo"):
+            info = method + " " + path + " x-a=" + headers.get("x-a", "-") + " type=" + headers.get("content-type", "-")
+            out = info.encode() + b" body=" + body
+            respond(conn, "200 OK", ["Content-Length: " + str(len(out))], out)
+        elif path == "/missing":
+            respond(conn, "404 Not Found", ["Content-Length: 4", "X-Why: gone"], b"nope")
+        elif path == "/redirect":
+            respond(conn, "302 Found", ["Location: /hello", "Content-Length: 0"], b"")
+        elif path == "/chunked":
+            respond(conn, "200 OK", ["Transfer-Encoding: chunked"], b"5\r\nhello\r\n7\r\n, world\r\n0\r\n\r\n")
+        else:
+            respond(conn, "200 OK", ["Connection: close"], b"until the end")
+        conn.close()
+    server.close()
+
+
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", 0))
+server.listen()
+port = server.getsockname()[1]
+base = "http://127.0.0.1:" + str(port)
+t = threading.Thread(target=serve, args=(server,))
+t.start()
+
+# 1. a GET, with the response's headers
+with urllib.request.urlopen(base + "/hello") as r:
+    print(r.status, r.reason, r.getcode(), r.url == base + "/hello")
+    print(r.headers["Content-Type"], r.headers.get_content_type(), r.headers.get_content_charset())
+    print(r.getheader("x-custom"), r.getheader("X-Nothing"), r.getheader("X-Nothing", "dflt"))
+    print("x-custom" in r.headers, "x-other" in r.headers, r.headers.get_all("Set-Cookie"))
+    print(r.readline())
+    print(r.read(4), r.read())
+
+# 2. iterating a response gives its lines
+for line in urllib.request.urlopen(base + "/hello"):
+    print(line)
+
+# 3. a POST with a Request and headers
+req = urllib.request.Request(base + "/echo?q=1", data=b"payload", headers={"X-A": "one"})
+print(req.get_method(), req.full_url == base + "/echo?q=1", req.has_header("X-a"), req.header_items())
+req.add_header("x-b", "two")
+print(req.get_header("X-b"), req.data)
+print(urllib.request.urlopen(req).read().decode())
+
+# 4. data given to urlopen, and an explicit method
+print(urllib.request.urlopen(base + "/echo", data=urlencode({"k": "v w"}).encode()).read())
+print(urllib.request.urlopen(urllib.request.Request(base + "/echo", method="PUT")).read())
+
+# 5. errors: HTTPError is also the response
+try:
+    urllib.request.urlopen(base + "/missing")
+except urllib.error.HTTPError as e:
+    print(e, repr(e), e.code, e.reason, e.headers["X-Why"], e.read(), e.url == base + "/missing")
+except urllib.error.URLError as e:
+    print("wrong:", e)
+
+# 6. redirects are followed; chunked and until-close bodies
+r = urllib.request.urlopen(base + "/redirect")
+print(r.status, r.geturl() == base + "/hello", r.read())
+print(urllib.request.urlopen(base + "/chunked").read())
+print(urllib.request.urlopen(base + "/eof", timeout=5.0).read())
+t.join()
+
+try:
+    urllib.request.urlopen(base + "/gone")
+except urllib.error.URLError as e:
+    print("URLError:", e.reason)
+
+# urllib.parse
+p = urlparse("https://user:pw@Example.com:8080/a/b;p?q=1&r=two#frag")
+print(p)
+print(p.scheme, p.netloc, p.path, p.params, p.query, p.fragment)
+print(p.hostname, p.port, p.username, p.password, p.geturl())
+s = urlsplit("http://h/x;y?z")
+print(s.path, s.query, s.port)
+print(quote("a b/c?d=é"), quote("a b/c", safe=""), quote_plus("a b&c"))
+print(unquote("a%20b%2Fc%C3%A9"), unquote_plus("a+b%26c"))
+print(urlencode({"q": "hello world", "n": "3", "x": "a&b"}), urlencode([("a", "1"), ("a", "2")]))
+print(urlencode({"k": ["1", "2"]}, doseq=True))
+print(urljoin("http://h/a/b/c", "../d"), urljoin("http://h/a/b/c", "/e?f"), urljoin("http://h/a/", "g"))
+print(urljoin("http://h/a/b", "https://other/x"), urljoin("http://h/a/b", "//other/y"), urljoin("http://h/a/b?q", "?r"))
+print(parse_qs("a=1&b=2&a=3&c="), parse_qs("c=&d", keep_blank_values=True))
+print(parse_qsl("x=1&y=%20z+w"))

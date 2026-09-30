@@ -38,7 +38,7 @@ from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
     TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER,
-    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER,
+    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
@@ -267,6 +267,14 @@ class CodeGen:
                 return "sd::logging::Logger"
             case _ if t == CSV_WRITER:
                 return "sd::csv::Writer"
+            case _ if t == HTTP_RESPONSE:
+                return "sd::urlrequest::Response"
+            case _ if t == HTTP_HEADERS:
+                return "sd::urlrequest::Headers"
+            case _ if t == URL_REQUEST:
+                return "sd::urlrequest::Request"
+            case _ if t == URL_PARTS:
+                return "sd::urlparse::Parts"
             case _ if t == CSV_DICT_READER:
                 return "sd::csv::DictReader"
             case _ if t == CSV_DICT_WRITER:
@@ -978,6 +986,8 @@ class CodeGen:
             enter, exit_call = f"{ctx}.name()", f"{ctx}.cleanup()"
         elif info.kind == "executor":
             enter, exit_call = ctx, f"{ctx}.shutdown(true, false)"
+        elif info.kind == "response":
+            enter, exit_call = ctx, f"{ctx}.close()"
         else:
             st: StructType = item.context.ty
             arrow = "->" if st.kind == "class" else "."
@@ -990,7 +1000,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind not in ("file", "socket", "process", "tempdir", "executor"):  # still call __enter__ for its effects
+        elif info.kind not in ("file", "socket", "process", "tempdir", "executor", "response"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -2284,8 +2294,9 @@ class CodeGen:
             return f"{r}.update({self.expr(e.args[0])})"
         if recv_type in (CSV_WRITER, CSV_DICT_WRITER):
             return f"{r}.{name}({', '.join(self.expr(a) for a in e.args)})"
-        if isinstance(recv_type, (SyncType, ParserType, FutureType)) or recv_type in (EXECUTOR, LOGGER, LOG_HANDLER) or recv_type in (
-            SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, *DATETIME_TYPES
+        if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType)) or recv_type in (EXECUTOR, LOGGER, LOG_HANDLER) or recv_type in (
+            SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, *DATETIME_TYPES,
+            HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
         ):
             handler = builtins.method_for(recv_type, name)
             codes = []
@@ -2296,7 +2307,8 @@ class CodeGen:
                     codes.append(default[0])
                 else:
                     codes.append(self.expr_as(node, want) if isinstance(want, Type) else self.expr(node))
-            return f"{r}.{name}({', '.join(codes)})"
+            dot = "->" if isinstance(recv_type, StructType) else "."  # (a built-in exception: HTTPError.read())
+            return f"{r}{dot}{name}({', '.join(codes)})"
         match recv_type:
             case VarTupleType(elem):
                 return f"{r}.{name}({self.expr_as(e.args[0], elem)})"
@@ -2393,6 +2405,16 @@ class CodeGen:
             return self.itertools_call(name, e)
         if mod in ("hashlib", "hmac") and hasattr(e, "hash_args"):
             return self.hash_call(mod, name, e)
+        if mod == "urllib.request" and name in ("urlopen", "Request"):
+            args = e.url_args
+            opt = lambda k, t: self.expr_as(args[k], OptionalType(t)) if k in args else "std::nullopt"
+            if name == "Request":
+                headers = self.expr(args["headers"]) if "headers" in args else "sd::dict<std::string, std::string>{}"
+                return f"sd::urlrequest::Request({self.expr(args['url'])}, {opt('data', BYTES)}, {headers}, {opt('method', STR)})"
+            return f"sd::urlrequest::urlopen({self.expr(args['url'])}, {opt('data', BYTES)}, {opt('timeout', FLOAT)})"
+        if mod == "urllib.parse" and name == "urlencode":
+            doseq = e.args[1] if len(e.args) > 1 else self.keyword(e, "doseq")
+            return f"sd::urlparse::urlencode({self.expr(e.args[0])}, {self.expr(doseq) if doseq is not None else 'false'})"
         if mod == "csv" and name in ("reader", "writer", "DictReader", "DictWriter"):
             return self.csv_call(name, e)
         if mod == "logging" and hasattr(e, "log_call"):

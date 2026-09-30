@@ -1,0 +1,7 @@
+# `import a.b` binds `a`; the submodule's runtime must still be included.
+import urllib.parse
+import concurrent.futures
+
+print(urllib.parse.quote("a b"), urllib.parse.urlsplit("http://h:81/p").port)
+with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    print(pool.submit(len, "four").result())

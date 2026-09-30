@@ -201,6 +201,16 @@ class ImportCycle(Exception):
         self.chain = chain
 
 
+def with_submodules(mods: list[builtins.Module]) -> list[builtins.Module]:
+    """`import urllib.request` binds `urllib`; its submodules' headers and libraries are needed too."""
+    out: list[builtins.Module] = []
+    for m in mods:
+        out.append(m)
+        if not isinstance(m, builtins.UserModule):
+            out += with_submodules([s for s in m.members.values() if isinstance(s, builtins.Module)])
+    return out
+
+
 class Checker:
     def __init__(self, module_name: str = "__main__", loader=None) -> None:
         self.module_name = module_name
@@ -315,7 +325,7 @@ class Checker:
             functions=self.out_functions,
             globals=list(self.globals.values()),
             main_locals=[v for v in main_scope.locals if v.kind != "global"],
-            imports=list(self.modules.values()) + [m for m, _ in self.imported.values()],
+            imports=with_submodules(list(self.modules.values()) + [m for m, _ in self.imported.values()]),
             generics=self.generics,
             spawns=self.spawns,
         )
@@ -413,12 +423,19 @@ class Checker:
         return self.structs.get(name) or builtins.EXCEPTIONS.get(name)
 
     def module_struct(self, e: A.Expr) -> StructType | None:
-        """`zlib.error`: a class defined by a module."""
-        if isinstance(e, A.Attribute) and isinstance(e.value, A.Name) and e.value.id in self.modules:
-            if e.value.id not in self.state.names:
-                m = self.modules[e.value.id].members.get(e.attr)
-                return m if isinstance(m, StructType) else None
-        return None
+        """`zlib.error`, `urllib.error.HTTPError`: a class defined by a module."""
+        chain: list[str] = []
+        while isinstance(e, A.Attribute):
+            chain.insert(0, e.attr)
+            e = e.value
+        if not chain or not isinstance(e, A.Name) or e.id not in self.modules or e.id in self.state.names:
+            return None
+        m = self.modules[e.id]
+        for attr in chain:
+            if not isinstance(m, builtins.Module):
+                return None
+            m = m.members.get(attr)
+        return m if isinstance(m, StructType) else None
 
     def resolve_base(self, st: StructType) -> None:
         """`class Dog(Animal):` Classes inherit from one class; structs (values) can't inherit."""
@@ -1411,6 +1428,8 @@ class Checker:
             return WithInfo("lock", BOOL, None, False)
         if t == SOCKET:
             return WithInfo("socket", t, None, False)
+        if t == builtins.HTTP_RESPONSE:  # `with urlopen(url) as r:` closes the connection at the end
+            return WithInfo("response", t, None, False)
         if t == builtins.EXECUTOR:  # `with ThreadPoolExecutor() as pool:` waits for the work at the end
             return WithInfo("executor", t, None, False)
         if t == TEMPDIR:  # `with TemporaryDirectory() as tmp:` gives its name, removed at the end
@@ -2099,6 +2118,8 @@ class Checker:
                 raise self.error(f"comparing {lt} with {rt} using '{op}' is always {op == '!='}", e)
         elif op in ("in", "not in"):
             match rt:
+                case _ if rt == builtins.HTTP_HEADERS:  # "Content-Type" in headers
+                    ok = lt == STR
                 case ListType(elem) | SetType(elem) | DequeType(elem) | VarTupleType(elem) | GeneratorType(elem) | IterType(
                     elem, "range"
                 ):
@@ -2240,6 +2261,9 @@ class Checker:
             case VarTupleType(elem):
                 self.expect_type(index, INT, "tuple index")
                 return elem
+            case _ if vt == builtins.HTTP_HEADERS:  # headers["Content-Type"]: None if missing
+                self.expect_type(index, STR, "header name")
+                return OptionalType(STR)
             case MatchType():  # m[1] is m.group(1)
                 ctx = builtins.CallContext(self, A.Call(value, [index], loc=e.loc), "re.Match[...]", None, vt)
                 return builtins.match_group_arg(ctx, index)
@@ -2356,6 +2380,10 @@ class Checker:
                 return self.check_module_call(e, func.value.sym, func.attr, expected)
             if isinstance(owner, StructType):
                 method = owner.find_method(func.attr)
+                if method is None and (handler := builtins.method_for(owner, func.attr)) is not None:
+                    ctx = builtins.CallContext(self, e, f"{owner.name}.{func.attr}()", expected, receiver=owner)
+                    e.sym = CallTarget("builtin_method", (owner, func.attr))  # e.g. HTTPError.read()
+                    return handler(ctx)
                 if method is None or method.name == "__init__":
                     field = owner.find_field(func.attr)
                     if field is None:

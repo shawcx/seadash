@@ -1653,3 +1653,20 @@ def test_csv_types_and_errors():
     assert err("import csv\nr = csv.reader(['a'], delimeter=';')\n").message == (
         "csv.reader() got an unexpected keyword argument 'delimeter'"
     )
+
+
+def test_urllib_types_and_errors():
+    info = ok("import urllib.request\nfrom urllib.parse import urlparse\nfrom urllib.error import HTTPError\n"
+              "r = urllib.request.urlopen('http://h/')\nbody = r.read()\nct = r.headers['Content-Type']\n"
+              "p = urlparse('http://h:1/')\nport = p.port\n"
+              "try:\n    urllib.request.urlopen('http://h/')\nexcept HTTPError as e:\n    page = e.read()\n    code = e.code\n")
+    assert {"body: bytes", "ct: str?", "port: int?", "page: bytes", "code: int"} <= set(variables(info))
+    assert err("import urllib.request\nr = urllib.request.urlopen('http://h/', data='x=1')\n").message == (
+        "urlopen() data must be bytes, not str; use s.encode() (or urlencode(fields).encode() for a form)"
+    )
+    assert err("import urllib.request\nr = urllib.request.urlopen(3)\n").message == (
+        "urlopen() needs a URL (str) or a Request, not int"
+    )
+    assert err("from urllib.parse import urlencode\nq = urlencode('a=1')\n").message == (
+        "urlencode() needs a dict or a list of (key, value) pairs, not str"
+    )

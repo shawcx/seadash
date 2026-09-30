@@ -28,7 +28,7 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, DATETIME_TYPES,
-    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, EXECUTOR, LOGGER, LOG_HANDLER, LOG_FORMATTER, MatchType, PatternType, ProcessType, VarTupleType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
+    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, EXECUTOR, HTTP_HEADERS, HTTP_RESPONSE, URL_PARTS, URL_REQUEST, LOGGER, LOG_HANDLER, LOG_FORMATTER, MatchType, PatternType, ProcessType, VarTupleType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
 MUTATING_METHODS = frozenset(
@@ -56,6 +56,10 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
             return None
         case _ if t in (SOCKET, EXECUTOR, LOGGER, LOG_HANDLER, LOG_FORMATTER):  # (internally locked)
             return None
+        case _ if t in (URL_PARTS, URL_REQUEST, HTTP_HEADERS):  # values, copied
+            return None
+        case _ if t == HTTP_RESPONSE:
+            return "a response (reading it from two threads would interleave; pass what you read from it)"
         case FutureType(x):  # its result is copied out
             return unsendable(x, seen)
         case PatternType() | MatchType():  # immutable (a Match holds its own copy of the string)

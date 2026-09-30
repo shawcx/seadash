@@ -1582,6 +1582,18 @@ inline std::int64_t str_count(const std::string& s, const std::string& sub) {
     for (std::size_t pos = s.find(sub); pos != std::string::npos; pos = s.find(sub, pos + sub.size())) ++n;
     return n;
 }
+inline std::tuple<std::string, std::string, std::string> str_partition(const std::string& s, const std::string& sep) {
+    if (sep.empty()) raise("ValueError", "empty separator");
+    auto at = s.find(sep);
+    if (at == std::string::npos) return {s, "", ""};
+    return {s.substr(0, at), sep, s.substr(at + sep.size())};
+}
+inline std::tuple<std::string, std::string, std::string> str_rpartition(const std::string& s, const std::string& sep) {
+    if (sep.empty()) raise("ValueError", "empty separator");
+    auto at = s.rfind(sep);
+    if (at == std::string::npos) return {"", "", s};
+    return {s.substr(0, at), sep, s.substr(at + sep.size())};
+}
 inline std::string str_replace(const std::string& s, const std::string& from, const std::string& to) {
     if (from.empty()) return s;
     std::string out;
@@ -1721,6 +1733,14 @@ inline std::vector<bytes> as_bytes_list(const std::vector<std::string>& parts) {
 inline std::vector<bytes> bytes_split(const bytes& b) { return as_bytes_list(str_split(b.data)); }
 inline std::vector<bytes> bytes_split(const bytes& b, const bytes& sep) { return as_bytes_list(str_split(b.data, sep.data)); }
 inline std::vector<bytes> bytes_splitlines(const bytes& b) { return as_bytes_list(str_splitlines(b.data)); }
+inline std::tuple<bytes, bytes, bytes> bytes_partition(const bytes& b, const bytes& sep) {
+    auto [x, y, z] = str_partition(b.data, sep.data);
+    return {bytes(x), bytes(y), bytes(z)};
+}
+inline std::tuple<bytes, bytes, bytes> bytes_rpartition(const bytes& b, const bytes& sep) {
+    auto [x, y, z] = str_rpartition(b.data, sep.data);
+    return {bytes(x), bytes(y), bytes(z)};
+}
 inline bytes bytes_replace(const bytes& b, const bytes& from, const bytes& to) { return bytes(str_replace(b.data, from.data, to.data)); }
 template <class It>
 bytes bytes_join(const bytes& sep, It&& parts) {

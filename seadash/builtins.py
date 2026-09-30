@@ -19,7 +19,7 @@ from .types import (
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
     GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER,
-    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER,
+    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -195,7 +195,7 @@ def printable(t: Type) -> bool:
 
 
 def sized(t: Type) -> bool:
-    return t in (STR, BYTES, JSON_VALUE) or isinstance(t, (ListType, DictType, SetType, TupleType, DequeType, VarTupleType)) or bool(
+    return t in (STR, BYTES, JSON_VALUE, HTTP_HEADERS) or isinstance(t, (ListType, DictType, SetType, TupleType, DequeType, VarTupleType)) or bool(
         user_dunder(t, "__len__")
     )
 
@@ -652,6 +652,7 @@ STR_METHODS = {
     **{name: returns(INT, args=(STR,)) for name in ("find", "count")},
     "split": returns(ListType(STR), 0, 1, (STR,)),
     "splitlines": returns(ListType(STR)),
+    **{name: returns(TupleType((STR, STR, STR)), args=(STR,)) for name in ("partition", "rpartition")},
     "replace": returns(STR, args=(STR, STR)),
     "join": str_join,
     "encode": returns(BYTES, 0, 1, (STR,)),
@@ -675,6 +676,7 @@ BYTES_METHODS = {
     **{name: returns(BOOL) for name in ("isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower")},
     "split": returns(ListType(BYTES), 0, 1, (BYTES,)),
     "splitlines": returns(ListType(BYTES)),
+    **{name: returns(TupleType((BYTES, BYTES, BYTES)), args=(BYTES,)) for name in ("partition", "rpartition")},
     "replace": returns(BYTES, args=(BYTES, BYTES)),
     "join": bytes_join,
 }
@@ -839,6 +841,16 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             return EXECUTOR_METHODS.get(name)
         case _ if t == LOGGER:
             return LOGGER_METHODS.get(name)
+        case _ if t == HTTP_RESPONSE:
+            return RESPONSE_METHODS.get(name)
+        case _ if t == HTTP_HEADERS:
+            return HEADERS_METHODS.get(name)
+        case _ if t == URL_REQUEST:
+            return REQUEST_METHODS.get(name)
+        case _ if t == URL_PARTS:
+            return {"geturl": sync_method(STR)}.get(name)
+        case StructType() if (methods := EXCEPTION_METHODS.get(t.cpp_name)) is not None:
+            return methods.get(name)
         case _ if t == CSV_WRITER:
             return {"writerow": csv_writerow, "writerows": csv_writerows}.get(name)
         case _ if t == CSV_DICT_WRITER:
@@ -1689,6 +1701,16 @@ MATCH_ATTRIBUTES = {
 
 
 def type_attributes(t: Type) -> dict | None:
+    if t == HTTP_RESPONSE:
+        return {"status": lambda t: INT, "code": lambda t: INT, "reason": lambda t: STR, "url": lambda t: STR,
+                "headers": lambda t: HTTP_HEADERS}
+    if t == URL_REQUEST:
+        return {"full_url": lambda t: STR, "data": lambda t: OptionalType(BYTES), "method": lambda t: OptionalType(STR),
+                "headers": lambda t: DictType(STR, STR)}
+    if t == URL_PARTS:
+        return {**{f: (lambda t: STR) for f in ("scheme", "netloc", "path", "params", "query", "fragment")},
+                "hostname": lambda t: OptionalType(STR), "port": lambda t: OptionalType(INT),
+                "username": lambda t: OptionalType(STR), "password": lambda t: OptionalType(STR)}
     if t == CSV_DICT_READER:
         return {"fieldnames": lambda t: ListType(STR)}
     if t == LOGGER:
@@ -2906,6 +2928,130 @@ MODULES["csv"] = module_with_params(runtime_module(
 ))
 for _name, _t in (("writer", CSV_WRITER), ("DictReader", CSV_DICT_READER), ("DictWriter", CSV_DICT_WRITER)):
     MODULES["csv"].members[_name].as_type = _t
+
+
+# ---- urllib -------------------------------------------------------------------------------
+
+OPT_STR = OptionalType(STR)
+RESPONSE_METHODS = {
+    "read": sync_method(BYTES, ("amt", OptionalType(INT), "std::nullopt")),
+    "readline": sync_method(BYTES),
+    "readlines": sync_method(ListType(BYTES)),
+    "getheader": sync_method(OPT_STR, ("name", STR), ("default", OPT_STR, "std::nullopt")),
+    "getheaders": sync_method(ListType(TupleType((STR, STR)))),
+    "geturl": sync_method(STR),
+    "getcode": sync_method(INT),
+    "info": sync_method(HTTP_HEADERS),
+    "close": sync_method(NONE),
+}
+HEADERS_METHODS = {
+    "get": sync_method(OPT_STR, ("name", STR), ("failobj", OPT_STR, "std::nullopt")),
+    "get_all": sync_method(OptionalType(ListType(STR)), ("name", STR)),
+    "items": sync_method(ListType(TupleType((STR, STR)))),
+    "keys": sync_method(ListType(STR)),
+    "values": sync_method(ListType(STR)),
+    "get_content_type": sync_method(STR),
+    "get_content_charset": sync_method(OPT_STR),
+}
+REQUEST_METHODS = {
+    "add_header": sync_method(NONE, ("key", STR), ("val", STR)),
+    "has_header": sync_method(BOOL, ("header_name", STR)),
+    "get_header": sync_method(OPT_STR, ("header_name", STR), ("default", OPT_STR, "std::nullopt")),
+    "get_method": sync_method(STR),
+    "get_full_url": sync_method(STR),
+    "header_items": sync_method(ListType(TupleType((STR, STR)))),
+}
+EXCEPTION_METHODS = {  # methods of built-in exception classes: HTTPError is also a response
+    "sd::urlerror::HTTPError": {
+        "read": sync_method(BYTES, ("amt", OptionalType(INT), "std::nullopt")),
+        "getcode": sync_method(INT),
+        "geturl": sync_method(STR),
+        "info": sync_method(HTTP_HEADERS),
+    },
+}
+
+
+def url_data(ctx: CallContext, node: A.Expr, what: str) -> None:
+    t = ctx.checker.check_expr(node, BYTES)
+    if t != BYTES:
+        hint = "; use s.encode() (or urlencode(fields).encode() for a form)" if t == STR else ""
+        raise ctx.error(f"{what} must be bytes, not {t}{hint}", node)
+
+
+def url_request(ctx: CallContext) -> Type:
+    args = bind_args(ctx, (("url", STR), ("data", None, True), ("headers", None, True), ("origin_req_host", None, True),
+                           ("unverifiable", None, True), ("method", None, True)))
+    ctx.checker.expect_type(args["url"], STR, "Request url")
+    if "data" in args and not isinstance(args["data"], A.NoneLit):
+        url_data(ctx, args["data"], "Request data")
+    if "headers" in args:
+        ctx.checker.expect_type(args["headers"], DictType(STR, STR), "Request headers")
+    if "method" in args and not isinstance(args["method"], A.NoneLit):
+        ctx.checker.expect_type(args["method"], STR, "Request method")
+    for ignored in ("origin_req_host", "unverifiable"):
+        if ignored in args:
+            ctx.checker.check_expr(args[ignored])
+    ctx.call.url_args = args
+    return URL_REQUEST
+
+
+def url_open(ctx: CallContext) -> Type:
+    args = bind_args(ctx, (("url", None), ("data", None, True), ("timeout", None, True)))
+    t = ctx.checker.check_expr(args["url"])
+    if t not in (STR, URL_REQUEST):
+        raise ctx.error(f"urlopen() needs a URL (str) or a Request, not {t}", args["url"])
+    if "data" in args and not isinstance(args["data"], A.NoneLit):
+        url_data(ctx, args["data"], "urlopen() data")
+    if "timeout" in args and not isinstance(args["timeout"], A.NoneLit):
+        ctx.checker.expect_type(args["timeout"], FLOAT, "urlopen() timeout")
+    ctx.call.url_args = args
+    return HTTP_RESPONSE
+
+
+def url_encode(ctx: CallContext) -> Type:
+    ctx.arity(1, 2, keywords=("doseq",))
+    t = ctx.arg(0)
+    pairs = isinstance(t, DictType) or isinstance(element_type(t) or NONE, TupleType)
+    if not pairs:
+        raise ctx.error(f"urlencode() needs a dict or a list of (key, value) pairs, not {t}", ctx.args[0])
+    if len(ctx.args) == 2:
+        ctx.expect(1, BOOL)
+    ctx.keyword("doseq", BOOL)
+    return STR
+
+
+URL_ERROR = StructType("URLError", "class", None, base=EXCEPTIONS["OSError"], builtin=True, cpp_name="sd::urlerror::URLError")
+URL_ERROR.fields["reason"] = Field("reason", STR, None, Loc(0, 0))
+HTTP_ERROR = StructType("HTTPError", "class", None, base=URL_ERROR, builtin=True, cpp_name="sd::urlerror::HTTPError")
+for _field, _t in (("code", INT), ("msg", STR), ("headers", HTTP_HEADERS), ("url", STR)):
+    HTTP_ERROR.fields[_field] = Field(_field, _t, None, Loc(0, 0))
+
+URL_PARSE = module_with_params(runtime_module(
+    "urllib.parse", "modules/urllib.hpp", ("ssl", "crypto"),
+    quote=(signature(STR, ("string", STR), ("safe", STR, '"/"s')), "sd::urlparse::quote"),
+    quote_plus=(signature(STR, ("string", STR), ("safe", STR, '""s')), "sd::urlparse::quote_plus"),
+    unquote=(signature(STR, ("string", STR)), "sd::urlparse::unquote"),
+    unquote_plus=(signature(STR, ("string", STR)), "sd::urlparse::unquote_plus"),
+    urlencode=(url_encode, None),
+    urlparse=(signature(URL_PARTS, ("urlstring", STR), ("scheme", STR, '""s'), ("allow_fragments", BOOL, "true")),
+              "sd::urlparse::urlparse"),
+    urlsplit=(signature(URL_PARTS, ("urlstring", STR), ("scheme", STR, '""s'), ("allow_fragments", BOOL, "true")),
+              "sd::urlparse::urlsplit"),
+    urljoin=(signature(STR, ("base", STR), ("url", STR), ("allow_fragments", BOOL, "true")), "sd::urlparse::urljoin"),
+    parse_qs=(signature(DictType(STR, ListType(STR)), ("qs", STR), ("keep_blank_values", BOOL, "false"),
+                        ("strict_parsing", BOOL, "false")), "sd::urlparse::parse_qs"),
+    parse_qsl=(signature(ListType(TupleType((STR, STR))), ("qs", STR), ("keep_blank_values", BOOL, "false"),
+                         ("strict_parsing", BOOL, "false")), "sd::urlparse::parse_qsl"),
+))
+URL_REQUEST_MOD = module_with_params(runtime_module(
+    "urllib.request", "modules/urllib.hpp", ("ssl", "crypto"),
+    urlopen=(url_open, None),
+    Request=(url_request, None),
+))
+URL_REQUEST_MOD.members["Request"].as_type = URL_REQUEST
+URL_ERROR_MOD = Module("urllib.error", {"URLError": URL_ERROR, "HTTPError": HTTP_ERROR}, "modules/urllib.hpp",
+                       ("ssl", "crypto"))
+MODULES["urllib"] = Module("urllib", {"parse": URL_PARSE, "request": URL_REQUEST_MOD, "error": URL_ERROR_MOD})
 
 
 class AttributeUnavailable(Exception):

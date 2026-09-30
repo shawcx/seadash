@@ -44,6 +44,10 @@ LOG_FORMATTER = Prim("Formatter")  # logging.Formatter
 CSV_WRITER = Prim("csv.writer")
 CSV_DICT_READER = Prim("csv.DictReader")
 CSV_DICT_WRITER = Prim("csv.DictWriter")
+HTTP_RESPONSE = Prim("http.client.HTTPResponse")
+HTTP_HEADERS = Prim("http.client.HTTPMessage")
+URL_REQUEST = Prim("urllib.request.Request")
+URL_PARTS = Prim("urllib.parse.ParseResult")
 HMAC_T = Prim("HMAC")  # hmac.HMAC
 TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
 
@@ -547,6 +551,10 @@ def element_type(t: Type) -> Type | None:
             return BYTES if binary else STR  # a file iterates over its lines
         case _ if t == CSV_DICT_READER:
             return DictType(STR, STR)
+        case _ if t == HTTP_RESPONSE:
+            return BYTES  # its lines
+        case _ if t == HTTP_HEADERS:
+            return STR  # the header names
         case TupleType(elts) if elts:  # the type all the items share: (1, 2.5) -> float
             common = elts[0]
             for x in elts[1:]:
