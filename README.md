@@ -232,6 +232,7 @@ def work():
 | `concurrent.futures` | `ThreadPoolExecutor` (`submit`, `map`, `shutdown`, `with`), `Future`, `as_completed`, `wait`; work on the pool is checked for data races like threads are |
 | `itertools` | all of it, lazily: `count`, `cycle`, `repeat`, `accumulate`, `chain`, `groupby`, `islice`, `tee`, `zip_longest`, `product`, `permutations`, `combinations`, `pairwise`, `batched`... (`permutations(xs, 2)` gives `tuple[T, T]`) |
 | `struct` | `pack`, `unpack`, `unpack_from`, `iter_unpack`, `calcsize`, `Struct`: every format code, byte order and native alignment, with Python's errors; the format literal decides the types (`struct.unpack("<hf", data)` is a `tuple[int, float]`). Ints are 64-bit, so `Q`/`N` values above 2**63-1 aren't representable |
+| `secrets` | `token_bytes`/`token_hex`/`token_urlsafe`, `randbelow`, `randbits` (up to 63), `choice`, `compare_digest`, on OpenSSL's random source |
 | `hashlib`, `hmac` | every guaranteed algorithm (md5, sha1/2/3, blake2, shake) on OpenSSL, `pbkdf2_hmac`, `file_digest`; `hmac.new`, `hmac.digest`, `compare_digest` |
 | `string` | the character-set constants, `capwords`, and `Template` (`$name` / `${name}` with `substitute` and `safe_substitute`) |
 | `textwrap` | `wrap`, `fill`, `shorten`, `dedent`, `indent`, `TextWrapper`: a port of Python's algorithm (hyphens, em-dashes, `max_lines`), so lines break where Python's do |

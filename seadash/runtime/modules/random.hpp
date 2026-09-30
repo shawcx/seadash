@@ -187,6 +187,12 @@ template <class Seq>
 decltype(auto) as_sequence(const Seq& s) {
     if constexpr (is_vector<Seq>::value || std::is_same_v<Seq, std::string>) {
         return (s);
+    } else if constexpr (is_tuple<Seq>::value) {  // (its items have one type, or widen to one)
+        if constexpr (std::tuple_size_v<Seq> == 0) {
+            return std::vector<std::int64_t>{};
+        } else {
+            return std::apply([](const auto&... e) { return std::vector<std::common_type_t<std::remove_cvref_t<decltype(e)>...>>{e...}; }, s);
+        }
     } else {
         return to_list(s);
     }

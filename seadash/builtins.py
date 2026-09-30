@@ -3197,6 +3197,21 @@ MODULES["hmac"] = Module("hmac", {
 }, "modules/hashlib.hpp", ("crypto",))
 
 
+# ---- secrets -------------------------------------------------------------------------
+
+MODULES["secrets"] = module_with_params(runtime_module(
+    "secrets", "modules/secrets.hpp", ("crypto",),
+    token_bytes=(signature(BYTES, ("nbytes", OptionalType(INT), "std::nullopt")), "sd::secrets::token_bytes"),
+    token_hex=(signature(STR, ("nbytes", OptionalType(INT), "std::nullopt")), "sd::secrets::token_hex"),
+    token_urlsafe=(signature(STR, ("nbytes", OptionalType(INT), "std::nullopt")), "sd::secrets::token_urlsafe"),
+    randbelow=(signature(INT, ("exclusive_upper_bound", INT)), "sd::secrets::randbelow"),
+    randbits=(signature(INT, ("k", INT)), "sd::secrets::randbits"),
+    choice=(random_choice, "sd::secrets::choice"),
+    compare_digest=(compare_digest, "sd::secrets::compare_digest"),
+    DEFAULT_ENTROPY=(INT, "sd::secrets::DEFAULT_ENTROPY"),
+))
+
+
 # ---- concurrent.futures -------------------------------------------------------------------
 #
 # The work runs on other threads, so submit() and map() are checked like threading.Thread:
