@@ -78,6 +78,7 @@ struct KeyError : LookupError {
 };
 SD_EXCEPTION(ValueError, Exception)
 SD_EXCEPTION(TypeError, Exception)
+SD_EXCEPTION(AttributeError, Exception)
 SD_EXCEPTION(AssertionError, Exception)
 SD_EXCEPTION(RuntimeError, Exception)
 SD_EXCEPTION(NotImplementedError, RuntimeError)
@@ -152,6 +153,25 @@ struct Finally {
         }
     }
 };
+
+// A narrowed attribute (`if self.head is not None: self.head.value`). The checker
+// can't see every change (a method call may reset self.head), so this is checked:
+// a stale narrowing raises instead of reading an empty optional.
+template <class T>
+T& unwrap(std::optional<T>& o, const char* what) {
+    if (!o) raise<AttributeError>(std::string("'") + what + "' is None");
+    return *o;
+}
+template <class T>
+const T& unwrap(const std::optional<T>& o, const char* what) {
+    if (!o) raise<AttributeError>(std::string("'") + what + "' is None");
+    return *o;
+}
+template <class T>
+T unwrap(std::optional<T>&& o, const char* what) {
+    if (!o) raise<AttributeError>(std::string("'") + what + "' is None");
+    return std::move(*o);
+}
 
 // Tag for constructors generated from a user-written __init__.
 struct init_t {};

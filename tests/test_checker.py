@@ -993,3 +993,43 @@ def test_literal_items_take_types_from_siblings(expr, ty):
 
 def test_literal_items_that_really_differ():
     assert err('x = {"a": [1], "b": {}}').message.startswith("dict values have different types")
+
+
+# ---- attribute narrowing ----------------------------------------------------------
+
+NARROW_PRELUDE = """
+struct Address:
+    city: str
+class User:
+    name: str
+    address: Address?
+    nick: str?
+"""
+
+
+@pytest.mark.parametrize("body", [
+    "if u.address is not None:\n    print(u.address.city)",
+    "if u.address:\n    print(u.address.city)",
+    "if u.address is None:\n    return\nprint(u.address.city)",
+    "assert u.address is not None\nprint(u.address.city)",
+    "print(u.address.city if u.address is not None else '-')",
+    "if u.address is not None and u.address.city == 'x':\n    pass",
+    "if u.address is None or u.address.city == 'x':\n    pass",
+    "u.address = Address('x')\nprint(u.address.city)",
+    "if u.nick is not None:\n    n = len(u.nick)",
+    "while u.address is not None:\n    print(u.address.city)\n    u.address = None",
+])
+def test_attribute_narrowing(body):
+    ok(NARROW_PRELUDE + "def f(u: User):\n" + textwrap.indent(body, "    ") + "\n")
+
+
+@pytest.mark.parametrize("body", [
+    "print(u.address.city)",
+    "if u.address is not None:\n    u.address = None\n    print(u.address.city)",
+    "if u.address is not None:\n    u = User('b', None, None)\n    print(u.address.city)",
+    "if u.address is not None:\n    pass\nprint(u.address.city)",
+    "if u.address is not None:\n    g: () -> str = lambda: u.address.city",
+])
+def test_attribute_narrowing_is_undone(body):
+    e = err(NARROW_PRELUDE + "def f(u: User):\n" + textwrap.indent(body, "    ") + "\n")
+    assert "Address? might be None" in e.message

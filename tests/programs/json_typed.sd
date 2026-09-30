@@ -21,8 +21,7 @@ text = """
 """
 users: list[User] = json.loads(text)
 for u in users:
-    addr = u.address
-    city = addr.city if addr is not None else "-"
+    city = u.address.city if u.address is not None else "-"
     print(u.name, u.age, u.tags, city, u.scores)
 print(users[0])
 

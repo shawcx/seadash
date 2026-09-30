@@ -992,9 +992,15 @@ class CodeGen:
         obj = e.value
         field = ident(e.attr)
         if is_self(obj):
-            return f"{self.self_prefix(obj.sym.type)}{field}"
-        arrow = "->" if isinstance(obj.ty, StructType) and obj.ty.kind == "class" else "."
-        return f"{self.expr(obj)}{arrow}{field}"
+            code = f"{self.self_prefix(obj.sym.type)}{field}"
+        else:
+            arrow = "->" if isinstance(obj.ty, StructType) and obj.ty.kind == "class" else "."
+            code = f"{self.expr(obj)}{arrow}{field}"
+        declared = e.sym.type if hasattr(e.sym, "type") else e.ty
+        if isinstance(declared, OptionalType) and e.ty is not None and not isinstance(e.ty, OptionalType) and e.ty != NONE:
+            path = ".".join(attr_chain(e))
+            return f"sd::unwrap({code}, {cpp_string(path)[:-1]})"  # narrowed, but checked
+        return code
 
     def index(self, e: A.Index) -> str:
         v = self.expr(e.value)
@@ -1361,6 +1367,15 @@ def constant_int(e: A.Expr) -> int | None:
         case A.UnaryOp("-", A.IntLit(v)):
             return -v
     return None
+
+
+def attr_chain(e: A.Expr) -> list[str]:
+    match e:
+        case A.Name(name):
+            return [name]
+        case A.Attribute(value, attr):
+            return attr_chain(value) + [attr]
+    return ["..."]
 
 
 def has_call(e: A.Expr) -> bool:

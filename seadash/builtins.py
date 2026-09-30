@@ -716,6 +716,7 @@ EXCEPTION_TREE = [
     ("KeyError", "LookupError"),
     ("ValueError", "Exception"),
     ("TypeError", "Exception"),
+    ("AttributeError", "Exception"),
     ("AssertionError", "Exception"),
     ("RuntimeError", "Exception"),
     ("NotImplementedError", "RuntimeError"),

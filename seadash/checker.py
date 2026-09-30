@@ -68,20 +68,31 @@ Entry = Bound | Conflict | MaybeUnbound
 class State:
     names: dict[str, Entry] = field(default_factory=dict)
     dead: bool = False  # after return/break/continue: unreachable
+    # Attribute chains known not to be None here: ("u", "address") -> Address.
+    # Codegen dereferences these with a runtime check (a call could have changed them).
+    attrs: dict[tuple[str, ...], Type] = field(default_factory=dict)
 
     def copy(self) -> State:
-        return State(dict(self.names), self.dead)
+        return State(dict(self.names), self.dead, dict(self.attrs))
+
+    def forget_attrs(self, prefix: tuple[str, ...]) -> None:
+        """Assigning to `u` or `u.address` invalidates what we knew about u.address.city etc."""
+        for path in [p for p in self.attrs if p[: len(prefix)] == prefix]:
+            del self.attrs[path]
 
 
 def merge(states: list[State]) -> State:
     live = [s for s in states if not s.dead]
     if not live:
         # Keep the names so unreachable code after e.g. `return` still checks sensibly.
-        return State(dict(states[0].names), dead=True)
+        return State(dict(states[0].names), dead=True, attrs=dict(states[0].attrs))
     merged = State()
     for name in {n for s in live for n in s.names}:
         entries = [s.names.get(name) for s in live]
         merged.names[name] = merge_entries(entries)
+    # An attribute stays narrowed only if every path agrees.
+    first = live[0].attrs
+    merged.attrs = {p: t for p, t in first.items() if all(s.attrs.get(p) == t for s in live[1:])}
     return merged
 
 
@@ -679,6 +690,8 @@ class Checker:
             self.bind(target, result, stmt)
         elif not assignable(result, current):
             raise self.error(f"'{op}=' would change this {current} into a {result}", stmt)
+        elif isinstance(target, A.Attribute) and isinstance(target.sym, Field):
+            self.note_attr_assignment(target, target.sym.type, result)
         # For codegen: what was read (and its type there) and the operation's
         # result type. target.sym is the variable written, which may differ.
         stmt.sym = (read_sym, current, result)
@@ -698,6 +711,7 @@ class Checker:
                     raise self.error(f"field '{attr}' is {f.type}, can't assign {t}", value)
                 target.ty = f.type
                 target.sym = f
+                self.note_attr_assignment(target, f.type, t)
             case A.Index(container, index):
                 ct = self.check_expr(container)
                 match ct:
@@ -759,8 +773,19 @@ class Checker:
         if isinstance(var.type, OptionalType) and t != NONE and not isinstance(t, OptionalType):
             view = var.type.inner  # just assigned a real value: known not None
         self.state.names[name.id] = Bound(var, view)
+        self.state.forget_attrs((name.id,))
         name.sym = var
         name.ty = var.type
+
+    def note_attr_assignment(self, target: A.Attribute, field_type: Type, value_type: Type) -> None:
+        """After `u.address = x`, forget narrowings under u.address; if x is definitely
+        not None, u.address is now narrowed (like a plain variable)."""
+        path = attr_path(target)
+        if path is None:
+            return
+        self.state.forget_attrs(path)
+        if isinstance(field_type, OptionalType) and value_type != NONE and not isinstance(value_type, OptionalType):
+            self.state.attrs[path] = field_type.inner
 
     def variable(self, name: str, t: Type, loc: Loc) -> Var:
         scope = self.scope
@@ -1033,13 +1058,16 @@ class Checker:
         return self.state.copy(), self.state.copy()
 
     def narrowed(self, subject: A.Expr) -> State:
-        """A copy of the state where `subject` (a name or walrus) is known not to be None."""
+        """A copy of the state where `subject` (a name, walrus, or attribute chain
+        like self.head) is known not to be None."""
         state = self.state.copy()
         name = subject.target if isinstance(subject, A.NamedExpr) else subject
         if isinstance(name, A.Name):
             entry = state.names.get(name.id)
             if isinstance(entry, Bound) and isinstance(entry.ty, OptionalType):
                 state.names[name.id] = Bound(entry.var, entry.ty.inner)
+        elif (path := attr_path(subject)) and isinstance(subject.ty, OptionalType):
+            state.attrs[path] = subject.ty.inner
         return state
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
@@ -1530,6 +1558,8 @@ class Checker:
         if isinstance(vt, StructType):
             if f := vt.find_field(attr):
                 e.sym = f
+                if isinstance(f.type, OptionalType) and (path := attr_path(e)) in self.state.attrs:
+                    return self.state.attrs[path]  # narrowed: `if u.address is not None:`
                 return f.type
             if (method := vt.find_method(attr)) and method.name != "__init__":
                 e.sym = method  # a bound method: remembers its object
@@ -1842,6 +1872,17 @@ def count_assignments(stmts: list[A.Stmt]) -> dict[str, int]:
 def is_scalar(t: Type) -> bool:
     """Values C++ converts implicitly where needed (int -> float); containers need re-checking."""
     return t in (INT, FLOAT, BOOL, STR, BYTES)
+
+
+def attr_path(e: A.Expr) -> tuple[str, ...] | None:
+    """`u.address.city` -> ("u", "address", "city"); None unless it's a chain rooted at a name."""
+    match e:
+        case A.Attribute(A.Name(name), attr):
+            return (name, attr)
+        case A.Attribute(value, attr):
+            base = attr_path(value)
+            return base + (attr,) if base else None
+    return None
 
 
 def needs_context(e: A.Expr) -> bool:

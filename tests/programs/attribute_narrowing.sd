@@ -1,0 +1,40 @@
+class Node:
+    value: int
+    next: Node?
+
+class LinkedList:
+    head: Node?
+    size: int = 0
+
+    def push(self, v: int):
+        self.head = Node(v, self.head)
+        self.size += 1
+
+    def first(self) -> int:
+        if self.head is None:
+            return -1
+        return self.head.value
+
+    def second(self) -> int:
+        if self.head is not None and self.head.next is not None:
+            return self.head.next.value
+        return -1
+
+    def clear_and_peek(self) -> int:
+        if self.head is not None:
+            self.reset()                 # the checker can't see this set head to None...
+            return self.head.value       # ...so this access is checked at runtime
+        return 0
+
+    def reset(self):
+        self.head = None
+
+xs = LinkedList(None)
+print(xs.first(), xs.second())
+xs.push(1)
+xs.push(2)
+print(xs.first(), xs.second(), xs.size)
+try:
+    xs.clear_and_peek()
+except AttributeError as e:
+    print("caught:", e)
