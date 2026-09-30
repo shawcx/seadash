@@ -16,8 +16,10 @@ The name is final (a nod to the author's two kids).
   `@value` comes from `from seadash import value` (it was a `struct` keyword, which broke
   `import struct`); internally its kind is still "struct" and the C++ is a plain struct.
   Lists, dicts and sets are shared references like Python's (`sd::list` is a handle to a
-  vector); a value class copies its lists with it. Anything crossing into another thread is copied all the
-  way down (`sd::value_copy`). The design is in `docs/values-and-references.md`.
+  vector); a value class copies its lists with it, its fields must be values, and changing
+  a copy then dropping it is an error (`flow.py` has the statement-level analyses).
+  Anything crossing into another thread is copied all the way down (`sd::value_copy`).
+  The design is in `docs/values-and-references.md`.
 - **Closures share captured variables** like Python (cells).
 - **Threads without a GIL**, made safe by the checker (`threads.py`): threads receive copies
   or thread-safe objects (Lock, Queue, Mutex[T], RWMutex[T], Atomic, Synchronized classes); unsafe

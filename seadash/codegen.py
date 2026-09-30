@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from . import ast as A
 from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
+from .flow import last_use, mark_copy_outs, sub_blocks
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
     TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T,
@@ -400,6 +401,7 @@ class CodeGen:
             if not isinstance(s, (A.FunctionDef, A.ClassDef, A.Import, A.ImportFrom)) or hasattr(s, "decorated")
         ]
         self.func = None
+        mark_copy_outs(top_level)
         self.open("void module_main()")
         self.hoist(self.info.main_locals)
         self.block(top_level)
@@ -765,6 +767,7 @@ class CodeGen:
             self.lambda_self += 1
         self.hoist(fn.locals)
         self.hoist_makers(fn.node.body)
+        mark_copy_outs(fn.node.body)
         self.cell_params(fn)
         self.block(fn.node.body)
         if coroutine_self:
@@ -1495,6 +1498,8 @@ class CodeGen:
             if isinstance(e, A.TupleLit):  # `for x in (a, b, c)`: build the list directly
                 return f"{self.cpp_type(ListType(elem))}{{{', '.join(self.expr_as(x, elem) for x in e.elts)}}}"
             return self.tuple_as_list(self.expr_code(e), e.ty, elem)
+        if getattr(e, "copy_out", False):  # a @value class's list used as a value: a copy of it
+            return f"sd::value_copy({self.expr_code(e)})"
         return self.expr_code(e)
 
     def tuple_as_list(self, code: str, t: TupleType, elem: Type) -> str:
@@ -2868,92 +2873,6 @@ def holds_references(t: Type) -> bool:
         case TupleType(elts):
             return any(holds_references(e) for e in elts)
     return False
-
-
-# ---- last use: when handing a list to another thread can move it instead of copying ----
-
-
-def sub_blocks(stmt: A.Stmt) -> list[list[A.Stmt]]:
-    match stmt:
-        case A.If(_, body, orelse) | A.While(_, body, orelse) | A.For(_, _, body, orelse):
-            return [body, orelse]
-        case A.With(_, body):
-            return [body]
-        case A.Try(body, handlers, orelse, finalbody):
-            return [body, *(h.body for h in handlers), orelse, finalbody]
-        case A.Match(_, cases):
-            return [c.body for c in cases]
-    return []  # (a nested def's body belongs to another function)
-
-
-def statement_path(block: list[A.Stmt], node: A.Node) -> list[tuple[list[A.Stmt], int]] | None:
-    """The blocks and statement indexes leading from `block` down to the innermost
-    statement containing `node`."""
-    from .checker import walk
-
-    for i, stmt in enumerate(block):
-        for sub in sub_blocks(stmt):
-            if (path := statement_path(sub, node)) is not None:
-                return [(block, i), *path]
-        if not isinstance(stmt, A.FunctionDef) and any(n is node for n in walk(stmt)):
-            return [(block, i)]
-    return None
-
-
-def mentions(node: A.Node, var: Var) -> int:
-    from .checker import walk
-
-    return sum(1 for n in walk(node) if isinstance(n, A.Name) and n.sym is var)
-
-
-def jumps(stmt: A.Stmt) -> bool:
-    """Could this statement leave its block early (other than by returning)?"""
-    from .checker import walk
-
-    return any(isinstance(n, (A.Break, A.Continue, A.Raise)) for n in walk(stmt))
-
-
-def rebinds(stmt: A.Stmt, var: Var) -> bool:
-    """`x = ...` / `x: T = ...` replacing var's value without reading it."""
-    match stmt:
-        case A.Assign([A.Name() as t], value) | A.AnnAssign(A.Name() as t, _, value) if value is not None:
-            return t.sym is var and not mentions(value, var)
-    return False
-
-
-def last_use(body: list[A.Stmt], node: A.Name) -> bool:
-    """Is `node` the last time its (local) variable is read: after this, the variable is
-    reassigned or never mentioned again? Conservative: loops, jumps and exception handlers
-    that could reach another read say no."""
-    var = node.sym
-    path = statement_path(body, node)
-    if path is None:
-        return False
-    block, i = path[-1]
-    if mentions(block[i], var) != 1 or isinstance(block[i], (A.For, A.While)):
-        return False  # read again in the same statement, or in a loop header
-    for depth in range(len(path) - 1, -1, -1):
-        block, i = path[depth]
-        for stmt in block[i + 1:]:
-            if mentions(stmt, var):
-                return rebinds(stmt, var)  # `batch = []`: the old list is never read again
-            if jumps(stmt):
-                return False  # (a continue, break or exception could reach a read elsewhere)
-        if depth > 0:
-            outer, j = path[depth - 1]
-            owner = outer[j]
-            if isinstance(owner, (A.For, A.While)):
-                # The next iteration reads it unless the loop body replaces it first, before any read.
-                header = owner.test if isinstance(owner, A.While) else A.TupleLit([owner.target, owner.iter])
-                if block is not owner.body or mentions(header, var) or any(mentions(s, var) for s in owner.orelse):
-                    return False
-                before = next((s for s in owner.body[:i] if mentions(s, var)), None)
-                if before is None or not rebinds(before, var):
-                    return False
-            if isinstance(owner, A.Try) and any(mentions(s, var) for s in [*owner.orelse, *owner.finalbody]
-                                                 + [s for h in owner.handlers for s in h.body]):
-                return False
-    return True
 
 
 def synchronized_copy(fn: FuncInfo | None, t: Type) -> bool:

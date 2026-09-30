@@ -34,7 +34,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 
 from . import ast as A
-from . import builtins, threads
+from . import builtins, flow, threads
 from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
@@ -332,6 +332,7 @@ class Checker:
 
         for info in self.all_functions():
             self.check_function_body(info)
+        self.check_dropped_changes([], top_level, module=True)
         self.module_checked = True
         self.check_pending_instances()
 
@@ -535,6 +536,17 @@ class Checker:
                     f"@value class '{st.name}' can't contain itself (field '{f.name}'): it would be infinitely "
                     f"large. Remove @value to make it an ordinary class, or use a list", f.loc,
                 )
+            if reason := threads.not_a_value(f.type):
+                fix = (f"store an id instead, remove @value to make {st.origin or st.name} an ordinary class, or make "
+                       f"{f.type.name} a @value class" if isinstance(f.type, StructType)
+                       else f"store something that can be copied instead (e.g. an int or a str), or remove @value to "
+                            f"make {st.origin or st.name} an ordinary class")
+                direct = threads.not_a_value(f.type) == reason and not isinstance(
+                    f.type, (ListType, SetType, DictType, DequeType, TupleType, VarTupleType, OptionalType))
+                raise self.error(
+                    f"fields of a @value class must be values, but '{f.name}' {'is' if direct else 'holds'} {reason}. "
+                    f"Copying {st.origin or st.name} would share it: {fix}", f.loc,
+                )
 
     def resolve_signature(self, node: A.FunctionDef, owner: StructType | None, kind: str = "method") -> FuncInfo:
         if node.type_params and not self.type_env:
@@ -643,6 +655,7 @@ class Checker:
             pnode.sym = var
         self.enter(scope, state)
         self.check_block(node.body)
+        self.check_dropped_changes(param_nodes, node.body)
         if not self.state.dead and info.ret != NONE and not isinstance(info.ret, OptionalType) and not info.generator:
             raise self.error(
                 f"function '{info.name}' can reach its end without returning a value "
@@ -653,6 +666,23 @@ class Checker:
     # Generics: each distinct use is checked (and generated) separately, like a
     # C++ template, so a generic body can do anything its type arguments support.
     # =========================================================================
+
+    def check_dropped_changes(self, params: list, body: list[A.Stmt], module: bool = False) -> None:
+        """Changing a copy of a @value class (or of its list) and then never reading it is a
+        mistake: the change is lost. (The module's own names are left alone if a function
+        reads them.)"""
+        for stmt, var, what in flow.dropped_changes(params, body):
+            if module and any(flow.mentions(f.node.body, var) for f in self.all_functions()):
+                continue
+            if var.kind == "param":
+                fix = f"Return it (and have the caller keep the result), or make {var.type.name} an ordinary class"
+            elif what.startswith("a copy of an item"):
+                source = what.split("a copy of an item of ", 1)[1].split(" (")[0]
+                fix = f"Loop over the indexes and change {source}[i] instead, or write the copy back"
+            else:
+                source = what.split("a copy of ", 1)[1]
+                fix = f"Write it back (`{source} = {var.name}`), or change {source} in place"
+            raise self.error(f"this changes '{var.name}', {what}, and then never uses it. {fix}", stmt)
 
     def set_class_kind(self, node: A.ClassDef) -> None:
         """`@value class Point:` (from seadash import value) is a value type, kind 'struct';

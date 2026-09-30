@@ -1,0 +1,3 @@
+['x', 'in place', 'filled'] [[1], [2]]
+['x', 'in place', 'filled', 'alias'] ['x', 'in place', 'filled', 'roster'] ['x', 'in place', 'filled', 'kept'] [['x', 'in place', 'filled', 'registry']] [1, 9] [[1], [2, 8]] [['x', 'in place', 'filled', 'other']]
+x in place filled 3 True

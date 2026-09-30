@@ -1840,3 +1840,73 @@ def test_str_format_that_is_fine():
         fmt = "{}"
         print("{0} {x!r:>5} {0[0]:{w}}".format(xs, x="a", w=3), fmt.format(xs, 2), format(xs), format(xs, ""))
     """)
+
+
+VALUE_HEADER = """
+from seadash import value
+import threading
+class Customer:
+    n: int
+@value
+class P:
+    x: int
+    def move(self):
+        self.x += 1
+@value
+class T:
+    members: list[str]
+"""
+
+
+@pytest.mark.parametrize("field,msg", [
+    ("customer: Customer", "fields of a @value class must be values, but 'customer' is Customer, an ordinary class "
+                           "(a shared reference). Copying Order would share it: store an id instead, remove @value to "
+                           "make Order an ordinary class, or make Customer a @value class"),
+    ("names: list[Customer]", "but 'names' holds Customer, an ordinary class"),
+    ("lock: threading.Lock", "but 'lock' is a Lock, a thread-safe object shared by reference"),
+    ("callback: (int) -> int", "but 'callback' is a function"),
+    ("counts: dict[str, list[Customer]]", "but 'counts' holds Customer"),
+])
+def test_value_class_fields_must_be_values(field, msg):
+    e = err(VALUE_HEADER + f"@value\nclass Order:\n    {field}\n")
+    assert msg in e.message
+
+
+@pytest.mark.parametrize("body,msg", [
+    ("p = ps[0]\n    p.x += 1", "this changes 'p', a copy of ps[0], and then never uses it. Write it back (`ps[0] = p`), "
+                               "or change ps[0] in place"),
+    ("for p in ps:\n        p.x += 1", "this changes 'p', a copy of an item of ps (looping over @value classes gives "
+                                       "copies), and then never uses it. Loop over the indexes and change ps[i] instead"),
+    ("for p in ps:\n        p.move()", "a copy of an item of ps"),
+    ("xs = t.members\n    xs.append('a')", "this changes 'xs', a copy of t.members, and then never uses it. "
+                                          "Write it back (`t.members = xs`)"),
+    ("p = ps[0]\n    print(p)\n    p.x = 5", "this changes 'p', a copy of ps[0]"),
+    ("p = ps[0]\n    p.x = 5\n    p = ps[1]\n    print(p)", "this changes 'p', a copy of ps[0]"),
+    ("q.x = 3", "this changes 'q', the function's own copy of the caller's P, and then never uses it. Return it"),
+])
+def test_changing_a_copy_and_dropping_it(body, msg):
+    e = err(VALUE_HEADER + f"def f(ps: list[P], t: T, q: P):\n    {body}\n")
+    assert msg in e.message
+
+
+def test_changing_a_copy_and_using_it():
+    ok(VALUE_HEADER + """
+def f(ps: list[P], t: T, q: P) -> P:
+    p = ps[0]
+    p.x += 1
+    ps[0] = p
+    for r in ps:
+        r.move()
+        print(r)
+    for i in range(len(ps)):
+        ps[i].x += 1
+    xs = t.members
+    xs.append("a")
+    t.members = xs
+    t.members.append("in place")
+    print(t)
+    fresh = P(1)
+    fresh.x = 2
+    q.x = 3
+    return q
+""")

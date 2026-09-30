@@ -1,0 +1,58 @@
+# seadash-only: a @value class's lists are its own. Used in place (or passed to a function
+# that only changes them) they are the class's; bound to a name, returned or kept anywhere
+# else they are copied.
+from seadash import value
+
+
+@value
+class Team:
+    name: str
+    members: list[str]
+    grid: list[list[int]]
+
+    def roster(self) -> list[str]:
+        return self.members
+
+    def add(self, who: str):
+        self.members.append(who)
+
+
+class Registry:
+    teams: list[list[str]]
+
+    def keep(self, names: list[str]):
+        self.teams.append(names)
+
+
+def fill(names: list[str]):
+    names.append("filled")
+
+
+def keeper(names: list[str]) -> list[str]:
+    return names
+
+
+t = Team("a", ["x"], [[1], [2]])
+t.members.append("in place")
+fill(t.members)
+alias = t.members
+alias.append("alias")
+r = t.roster()
+r.append("roster")
+k = keeper(t.members)
+k.append("kept")
+reg = Registry([])
+reg.keep(t.members)
+reg.teams[0].append("registry")
+row = t.grid[0]
+row.append(9)
+rows = list(t.grid)
+rows[1].append(8)
+other: list[list[str]] = []
+other.append(t.members)
+other[0].append("other")
+print(t.members, t.grid)
+print(alias, r, k, reg.teams, row, rows, other)
+for m in t.members:
+    print(m, end=" ")
+print(len(t.members), "x" in t.members)

@@ -304,7 +304,14 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
    nested def, or one defined more than once, keeps the older rule (the enclosing function
    mustn't change what it shares). Not done: `Future.result()` still copies on every call.
 3. **Done.** `Mutex` ownership (`Moved` in the checker's flow state) and `RWMutex`.
-4. Value class rules: value fields only, list fields, the modified-copy check.
+4. **Done.** Fields of a `@value` class must be values (`threads.not_a_value`), so every
+   value class copies to a thread as is. A value class's list used as a value is copied
+   (`flow.mark_copy_outs`: bound, returned, stored, put in a literal, or passed to a function
+   that keeps its parameter; calls through a function value always get a copy). A change to
+   a copy that's never read afterwards is an error (`flow.dropped_changes`), for @value
+   parameters, names bound to a copy, and `for p in ps` over @value classes. Not done: the
+   file-descriptor functions (`os.open`, `os.fdopen`, `f.fileno()`...), next as their own
+   feature.
 5. Frozen types and `dataclasses.replace`; sharing deeply immutable values across threads.
 6. Performance: non-escaping parameters as plain references, inline locals. Compare with
    the benchmarks before and after each phase.

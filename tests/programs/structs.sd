@@ -37,5 +37,7 @@ print(p)
 ps = [p, Particle(Vec(0), "rock", [])]
 ps[1].pos.y = 7
 for q in ps:
-    q.name = "renamed"   # q is a copy
+    q.name = "renamed"   # q is a copy: ps is unchanged
+    print(q.name, end=" ")
+print()
 print([q.name for q in ps], ps[1].pos)

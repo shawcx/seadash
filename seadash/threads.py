@@ -36,7 +36,7 @@ from .errors import CheckError, Loc
 from .types import (
     element_type,
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, DATETIME_TYPES,
-    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, EXECUTOR, HTTP_HEADERS, HTTP_RESPONSE, URL_PARTS, URL_REQUEST, LOGGER, LOG_HANDLER, LOG_FORMATTER, MatchType, PatternType, ProcessType, VarTupleType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
+    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, EXECUTOR, HTTP_HEADERS, HTTP_RESPONSE, URL_PARTS, URL_REQUEST, LOGGER, LOG_HANDLER, LOG_FORMATTER, MatchType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
 MUTATING_METHODS = frozenset(
@@ -118,9 +118,7 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
         case TupleType(xs):
             return next((r for x in xs if (r := unsendable(x, seen))), None)
         case StructType() if t.kind == "struct":
-            if t in seen:
-                return None
-            return next((r for f in t.all_fields().values() if (r := unsendable(f.type, seen | {t}))), None)
+            return None  # a @value class holds only values (checked where it's defined), so it copies
         case StructType() if is_synchronized(t):
             return None
         case StructType():
@@ -128,6 +126,39 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
         case FuncType():
             return "a function value (it could share variables it captured)"
     return f"a {t} can't be shared between threads"
+
+
+def not_a_value(t: Type) -> str | None:
+    """Why a @value class can't have a field of type t (it has identity: copying the class
+    would share it), or None. A @value class is a value all the way down."""
+    match t:
+        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE, PATH, *DATETIME_TYPES, URL_PARTS):
+            return None
+        case ListType(x) | SetType(x) | OptionalType(x) | DequeType(x) | VarTupleType(x):
+            return not_a_value(x)
+        case DictType(k, v) if not isinstance(t, DefaultDictType):
+            return not_a_value(k) or not_a_value(v)
+        case TupleType(xs):
+            return next((r for x in xs if (r := not_a_value(x))), None)
+        case StructType() if t.kind == "struct":
+            return None
+        case PatternType() | MatchType() | ProcessType(kind="CompletedProcess"):
+            return None  # (immutable)
+        case StructType():
+            return f"{t.name}, an ordinary class (a shared reference)"
+        case SyncType():
+            return f"a {t.kind}, a thread-safe object shared by reference"
+        case DefaultDictType():
+            return "a defaultdict (its factory function could share what it captured; use a dict)"
+        case FuncType():
+            return "a function (it could share the variables it captured)"
+        case GeneratorType():
+            return "an iterator (it's shared, and runs code when read; store list(it))"
+        case FileType():
+            return "an open file (a @value class may keep its descriptor, f.fileno(), as an int)"
+        case _ if t == SOCKET:
+            return "a socket (a @value class may keep its descriptor, sock.fileno(), as an int)"
+    return f"a {t} (it has identity: copying the @value class would share it)"
 
 
 def shareable(t: Type) -> bool:
