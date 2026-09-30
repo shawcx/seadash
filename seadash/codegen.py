@@ -38,6 +38,7 @@ from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
     TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER,
+    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
@@ -264,6 +265,12 @@ class CodeGen:
                 return "sd::futures::ThreadPoolExecutor"
             case _ if t == LOGGER:
                 return "sd::logging::Logger"
+            case _ if t == CSV_WRITER:
+                return "sd::csv::Writer"
+            case _ if t == CSV_DICT_READER:
+                return "sd::csv::DictReader"
+            case _ if t == CSV_DICT_WRITER:
+                return "sd::csv::DictWriter"
             case _ if t == LOG_HANDLER:
                 return "sd::logging::Handler"
             case _ if t == LOG_FORMATTER:
@@ -302,8 +309,8 @@ class CodeGen:
                 return f"sd::defaultdict<{self.cpp_type(key)}, {self.cpp_type(value)}>"
             case DictType(key, value):
                 return f"sd::dict<{self.cpp_type(key)}, {self.cpp_type(value)}>"
-            case TupleType(elts):
-                return f"std::tuple<{', '.join(self.cpp_type(e) for e in elts)}>"
+            case TupleType(elts):  # (a None item is a std::nullopt_t, which shows as None)
+                return f"std::tuple<{', '.join('std::nullopt_t' if e == NONE else self.cpp_type(e) for e in elts)}>"
             case OptionalType(inner):
                 return f"std::optional<{self.cpp_type(inner)}>"
             case StructType(kind="class"):
@@ -1753,6 +1760,43 @@ class CodeGen:
                 return f"{cpp}({self.expr(extra['items'])}, {ml})"
         raise NotImplementedError(f"codegen for {t}()")
 
+    # ---- csv --------------------------------------------------------------------------
+
+    def csv_call(self, name: str, e: A.Call) -> str:
+        kw = e.csv if name in ("DictReader", "DictWriter") else {**e.csv}
+        dialect_node = kw.get("dialect") or (e.args[1] if name in ("reader", "writer") and len(e.args) > 1 else None)
+        opt = lambda k, t: f"std::optional<{t}>({self.expr(kw[k])})" if k in kw else "std::nullopt"
+        if "quotechar" in kw:
+            q = kw["quotechar"]
+            inner = "std::optional<std::string>()" if isinstance(q, A.NoneLit) else f"std::optional<std::string>({self.expr(q)})"
+            quotechar = f"std::optional<std::optional<std::string>>({inner})"
+        else:
+            quotechar = "std::nullopt"
+        escape = kw.get("escapechar")
+        dialect = (f"sd::csv::make_dialect({self.expr(dialect_node) if dialect_node is not None else chr(34) + 'excel' + chr(34) + 's'}, "
+                   f"{opt('delimiter', 'std::string')}, {quotechar}, "
+                   f"{'std::nullopt' if escape is None or isinstance(escape, A.NoneLit) else opt('escapechar', 'std::string')}, "
+                   f"{opt('doublequote', 'bool')}, {opt('skipinitialspace', 'bool')}, {opt('lineterminator', 'std::string')}, "
+                   f"{opt('quoting', 'std::int64_t')}, {opt('strict', 'bool')})")
+        match name:
+            case "reader":
+                return f"sd::csv::reader({self.expr(e.args[0])}, {dialect})"
+            case "writer":
+                return f"sd::csv::Writer({self.expr(e.args[0])}, {dialect})"
+            case "DictReader":
+                names = kw.get("fieldnames")
+                names_code = "std::nullopt" if names is None or isinstance(names, A.NoneLit) else (
+                    f"std::optional<sd::list<std::string>>(sd::to_list({self.expr(names)}))")
+                restval = kw.get("restval")
+                restval_code = "std::nullopt" if restval is None or isinstance(restval, A.NoneLit) else (
+                    f"std::optional<std::string>({self.expr(restval)})")
+                return f"sd::csv::DictReader({self.expr(kw['f'])}, {names_code}, {restval_code}, {dialect})"
+            case "DictWriter":
+                restval = f"sd::str({self.expr(kw['restval'])})" if "restval" in kw else '""s'
+                extras = self.expr(kw["extrasaction"]) if "extrasaction" in kw else '"raise"s'
+                return f"sd::csv::DictWriter({self.expr(kw['f'])}, {self.expr(kw['fieldnames'])}, {restval}, {extras}, {dialect})"
+        raise NotImplementedError(name)
+
     # ---- logging ----------------------------------------------------------------------
 
     def log_call(self, e: A.Call, target: str) -> str:
@@ -2117,6 +2161,8 @@ class CodeGen:
                 return a
             case "iter":
                 return f"sd::iterate<{self.cpp_type(e.ty.elem)}>(sd::to_list({a}))"
+            case "next" if e.args[0].ty == CSV_DICT_READER:
+                return f"sd::next({a}.stream())"
             case "next" if len(e.args) == 2:
                 return f"sd::next_or<{self.cpp_type(e.ty)}>({a}, {self.expr_as(e.args[1], e.ty)})"
             case "next":
@@ -2146,8 +2192,13 @@ class CodeGen:
         mode_code = self.expr(mode) if mode else '"r"s'
         if e.ty.binary:
             return f"sd::open_binary({path}, {mode_code})"
-        encoding = self.keyword(e, "encoding")
-        return f"sd::open_text({', '.join([path, mode_code, *([self.expr(encoding)] if encoding else [])])})"
+        encoding, newline = self.keyword(e, "encoding"), self.keyword(e, "newline")
+        args = [path, mode_code]
+        if encoding or newline:
+            args.append(self.expr(encoding) if encoding else '"utf-8"s')
+        if newline is not None and not isinstance(newline, A.NoneLit):
+            args.append(f"std::optional<std::string>({self.expr(newline)})")
+        return f"sd::open_text({', '.join(args)})"
 
     def argument_spec(self, e: A.Call) -> str:
         """An argparse Spec built from the literal add_argument(...) call."""
@@ -2231,6 +2282,8 @@ class CodeGen:
             return f"{r}.add_done_callback({self.expr_as(e.args[0], FuncType((recv_type,), NONE))})"
         if recv_type in (HASH, HMAC_T) and name == "update":
             return f"{r}.update({self.expr(e.args[0])})"
+        if recv_type in (CSV_WRITER, CSV_DICT_WRITER):
+            return f"{r}.{name}({', '.join(self.expr(a) for a in e.args)})"
         if isinstance(recv_type, (SyncType, ParserType, FutureType)) or recv_type in (EXECUTOR, LOGGER, LOG_HANDLER) or recv_type in (
             SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, *DATETIME_TYPES
         ):
@@ -2340,6 +2393,8 @@ class CodeGen:
             return self.itertools_call(name, e)
         if mod in ("hashlib", "hmac") and hasattr(e, "hash_args"):
             return self.hash_call(mod, name, e)
+        if mod == "csv" and name in ("reader", "writer", "DictReader", "DictWriter"):
+            return self.csv_call(name, e)
         if mod == "logging" and hasattr(e, "log_call"):
             return self.log_call(e, "sd::logging::root_log")
         if mod == "logging" and name == "basicConfig":

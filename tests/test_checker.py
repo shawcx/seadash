@@ -1640,3 +1640,16 @@ def test_logging_types_and_errors():
         "setLevel() must be a level: logging.INFO (an int) or 'INFO', not float"
     )
     assert err("import logging\nlogging.info()\n").message == "logging.info() needs a message"
+
+
+def test_csv_types_and_errors():
+    info = ok("import csv\nrows = list(csv.reader(['a,b']))\nw = csv.DictReader(['a', '1'])\nnames = w.fieldnames\n"
+              "first = next(w)\n")
+    assert {"rows: list[list[str]]", "w: csv.DictReader", "names: list[str]", "first: dict[str, str]"} <= set(variables(info))
+    assert err("import csv\nr = csv.reader([1, 2])\n").message == (
+        "csv.reader() reads lines of text (a file opened in text mode, or strs), not int"
+    )
+    assert err("import csv\nr = csv.DictReader(['a'], restkey='x')\n").message.startswith("restkey isn't supported")
+    assert err("import csv\nr = csv.reader(['a'], delimeter=';')\n").message == (
+        "csv.reader() got an unexpected keyword argument 'delimeter'"
+    )

@@ -1,0 +1,19 @@
+[['a', 'b', 'c'], [' x', ' "q', 'uo"', 'dq"x'], [], ['multiline', 'end'], ['tab\there']]
+[['a', 'b', 'c']] [['a,b', 'c']]
+[['a"b"c', ' "x"y']] [['a', 'b']] [['a', 'b']]
+37
+'name,note,score,ratio,missing,flag,\nann,"says ""hi"", twice",3,2.5,,True,\nbob,"multi\nline",7,0.1,,False,x\ncy,,0,1.0,,True,y\n'
+['name', 'note', 'score', 'ratio', 'missing', 'flag', '']
+['ann', 'says "hi", twice', '3', '2.5', '', 'True', '']
+['bob', 'multi\nline', '7', '0.1', '', 'False', 'x']
+['cy', '', '0', '1.0', '', 'True', 'y']
+['name', 'note', 'score', 'ratio', 'missing', 'flag', '']
+ann says "hi", twice
+bob 'multi\nline' 7
+cy '' 0
+ValueError: dict contains fields not in fieldnames: 'nope'
+'name,age\nann,30\nx,\n'
+[{'name': 'ann', 'age': '30'}, {'name': 'x', 'age': ''}]
+'"x",1,2.0\n"","",-3\n"a","1",""\n""\n'
+Error: need to escape, but no escapechar set
+0 1 2 3 4 5

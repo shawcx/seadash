@@ -1,0 +1,3 @@
+'a\nb\nc\n' ['a', 'b', 'c']
+['a\n', 'b\n', 'c\n']
+'a\r\nb\rc\n'

@@ -1,0 +1,11 @@
+# Reading text files uses Python's universal newlines (\r\n and \r become \n);
+# open(..., newline="") reads lines as they are.
+from pathlib import Path
+p = Path("crlf.txt")
+p.write_bytes(b"a\r\nb\rc\n")
+print(repr(p.read_text()), p.read_text().splitlines())
+with open(p) as f:
+    print([line for line in f])
+with open(p, newline="") as f:
+    print(repr(f.read()))
+p.unlink()

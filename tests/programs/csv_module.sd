@@ -1,0 +1,57 @@
+# csv: reading and writing, with Python's quoting rules.
+import csv
+import tempfile
+from pathlib import Path
+
+rows = list(csv.reader(["a,b,c", ' x, "q,uo","dq""x"', "", '"multi', 'line",end', "tab\there"]))
+print(rows)
+print(list(csv.reader(["a;b; c"], delimiter=";", skipinitialspace=True)), list(csv.reader(["a\\,b,c"], escapechar="\\")))
+print(list(csv.reader(['a"b"c, "x"y'])), list(csv.reader(["a\tb"], dialect="excel-tab")), list(csv.reader(["a,b\r\n"])))
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / "people.csv"
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        print(w.writerow(["name", "note", "score", "ratio", "missing", "flag", ""]))
+        w.writerow(("ann", 'says "hi", twice', 3, 2.5, None, True, ""))
+        w.writerows([("bob", "multi\nline", 7, 0.1, None, False, "x"), ("cy", "", 0, 1.0, None, True, "y")])
+    print(repr(path.read_text()))
+    with open(path, newline="") as f:
+        for row in csv.reader(f):
+            print(row)
+    with open(path, newline="") as f:
+        people = csv.DictReader(f)
+        print(people.fieldnames)
+        first = next(people)
+        print(first["name"], first["note"])
+        for person in people:
+            print(person["name"], repr(person["note"]), person["score"])
+
+    out = Path(tmp) / "out.csv"
+    with open(out, "w", newline="") as f:
+        dw = csv.DictWriter(f, fieldnames=["name", "age"], lineterminator="\n")
+        dw.writeheader()
+        dw.writerow({"name": "ann", "age": "30"})
+        dw.writerow({"name": "x"})
+        try:
+            dw.writerow({"nope": "1"})
+        except ValueError as e:
+            print("ValueError:", e)
+    print(repr(out.read_text()))
+    with open(out, newline="") as f:
+        print([dict(r) for r in csv.DictReader(f)])
+
+    q = Path(tmp) / "q.csv"
+    with open(q, "w", newline="") as f:
+        qw = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC, lineterminator="\n")
+        qw.writerow(("x", 1, 2.0))
+        qw.writerow(("", None, -3))
+        csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\n").writerow(("a", 1, None))
+        csv.writer(f).writerow([""])
+    print(repr(q.read_text()))
+    try:
+        with open(q, "w") as f:
+            csv.writer(f, quoting=csv.QUOTE_NONE).writerow(["a,b"])
+    except csv.Error as e:
+        print("Error:", e)
+print(csv.QUOTE_MINIMAL, csv.QUOTE_ALL, csv.QUOTE_NONNUMERIC, csv.QUOTE_NONE, csv.QUOTE_STRINGS, csv.QUOTE_NOTNULL)

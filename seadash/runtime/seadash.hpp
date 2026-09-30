@@ -1837,7 +1837,7 @@ struct LineRange {
         Line line;
         bool done = false;
         void advance() {
-            line = Line(file->readline_raw());
+            line = Line(file->readline());  // (a text file's lines get universal newlines)
             done = line.empty();
         }
         const Line& operator*() const { return line; }
@@ -1855,13 +1855,48 @@ struct LineRange {
     sentinel end() const { return {}; }
 };
 
+// Python's universal newlines: reading text turns \r\n (and a lone \r) into \n, unless the
+// file was opened with newline="" (as the csv module wants).
+inline std::string universal(std::string s) {
+    if (s.find('\r') == std::string::npos) return s;
+    std::string out;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\r') {
+            out += '\n';
+            if (i + 1 < s.size() && s[i + 1] == '\n') ++i;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
 struct TextFile : FileBase {
     using FileBase::FileBase;
-    std::string read(std::int64_t n = -1) { return read_raw(n); }
-    std::string readline() { return readline_raw(); }
+    bool translate_newlines = true;
+    std::string text(std::string s) const { return translate_newlines ? universal(std::move(s)) : s; }
+    std::string read(std::int64_t n = -1) { return text(read_raw(n)); }
+    std::string readline() {
+        if (!translate_newlines) return readline_raw();
+        std::FILE* f = handle();  // a line ends at \n, \r\n or a lone \r (read as \n)
+        std::string out;
+        ::flockfile(f);
+        for (int c; (c = getc_unlocked(f)) != EOF;) {
+            if (c == '\r') {
+                int next = getc_unlocked(f);
+                if (next != '\n' && next != EOF) ungetc(next, f);
+                out += '\n';
+                break;
+            }
+            out += static_cast<char>(c);
+            if (c == '\n') break;
+        }
+        ::funlockfile(f);
+        return out;
+    }
     std::vector<std::string> readlines() {
         std::vector<std::string> out;
-        for (std::string line; !(line = readline_raw()).empty();) out.push_back(line);
+        for (std::string line; !(line = readline()).empty();) out.push_back(line);
         return out;
     }
     std::int64_t write(const std::string& s) { return write_raw(s); }
@@ -1935,9 +1970,12 @@ inline std::FILE* open_file(const std::string& path, const std::string& mode) {
 }
 
 inline std::shared_ptr<TextFile> open_text(const std::string& path, const std::string& mode = "r",
-                                           const std::string& encoding = "utf-8") {
+                                           const std::string& encoding = "utf-8",
+                                           std::optional<std::string> newline = std::nullopt) {
     check_encoding(encoding);
-    return std::make_shared<TextFile>(open_file(path, mode), path, mode);
+    auto f = std::make_shared<TextFile>(open_file(path, mode), path, mode);
+    f->translate_newlines = !newline;  // newline="" (or "\n", ...): lines are read as they are
+    return f;
 }
 inline std::shared_ptr<BinaryFile> open_binary(const std::string& path, const std::string& mode) {
     return std::make_shared<BinaryFile>(open_file(path, mode), path, mode);

@@ -41,6 +41,9 @@ EXECUTOR = Prim("ThreadPoolExecutor")  # concurrent.futures.ThreadPoolExecutor
 LOGGER = Prim("Logger")  # logging.Logger
 LOG_HANDLER = Prim("Handler")  # logging.StreamHandler / FileHandler / NullHandler
 LOG_FORMATTER = Prim("Formatter")  # logging.Formatter
+CSV_WRITER = Prim("csv.writer")
+CSV_DICT_READER = Prim("csv.DictReader")
+CSV_DICT_WRITER = Prim("csv.DictWriter")
 HMAC_T = Prim("HMAC")  # hmac.HMAC
 TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
 
@@ -542,6 +545,8 @@ def element_type(t: Type) -> Type | None:
             return JSON_VALUE  # iterating a JSON array
         case FileType(binary):
             return BYTES if binary else STR  # a file iterates over its lines
+        case _ if t == CSV_DICT_READER:
+            return DictType(STR, STR)
         case TupleType(elts) if elts:  # the type all the items share: (1, 2.5) -> float
             common = elts[0]
             for x in elts[1:]:
