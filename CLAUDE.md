@@ -13,7 +13,9 @@ The name is final (a nod to the author's two kids).
   (name, type) gets its own C++ variable. `T?` / `T | None` is optional, and the checker
   narrows it (also on attributes, `isinstance`, `args.command == "add"`...).
 - **`struct` is a value, `class` is a shared reference** (`std::shared_ptr`). Lists, dicts
-  and sets are values too: passing one to a function copies it.
+  and sets are shared references like Python's (`sd::list` is a handle to a vector); a
+  struct copies its lists with it. Anything crossing into another thread is copied all the
+  way down (`sd::value_copy`). The design is in `docs/values-and-references.md`.
 - **Closures share captured variables** like Python (cells).
 - **Threads without a GIL**, made safe by the checker (`threads.py`): threads receive copies
   or thread-safe objects (Lock, Queue, Mutex[T], Atomic, Synchronized classes); unsafe
@@ -78,6 +80,10 @@ headers (Homebrew's `pcre2` and `openssl@3` on macOS).
 - Coroutines (generators, lazy builtins, itertools) outlive the call that made them: pass
   what they need by value, never capture by reference. Generator methods take their object
   at the call (`generator_method` in codegen).
+- `sd::list`/`dict`/`set`/`deque` are handles: `out = a; out.push_back(x)` changes `a`
+  too. Use `a.copy()` / `sd::shallow_copy` for a new container and `sd::value_copy` for one
+  sharing nothing (struct fields, thread boundaries). A moved-from handle is a fresh,
+  empty container. Runtime code may use `.vec()` (the `std::vector`) with std algorithms.
 - Arguments that only instruct the compiler (`type=int`, `digestmod=hashlib.sha256`) are
   marked `compile_time` so codegen doesn't evaluate them as values.
 - C library names that are macros (`stdout`, `st_mtime`...) are renamed by `codegen.ident`.

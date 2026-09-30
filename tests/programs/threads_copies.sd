@@ -1,0 +1,78 @@
+# seadash-only: lists, dicts and sets are shared references within a thread, but anything
+# that crosses into another thread is copied (all the way down), so threads never share one.
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+grid = [[1, 2], [3]]
+
+
+def fill(rows: list[list[int]], out: queue.Queue[list[list[int]]]):
+    rows[0].append(99)  # the thread's own copy
+    out.put(rows)
+
+
+results: queue.Queue[list[list[int]]] = queue.Queue()
+t = threading.Thread(target=fill, args=(grid, results))
+t.start()
+t.join()
+received = results.get()
+print(grid, received)
+
+# a queue hands the receiver its own copy
+q: queue.Queue[list[int]] = queue.Queue()
+sent = [1]
+q.put(sent)
+sent.append(2)
+print(q.get(), sent)
+
+# a Mutex copies what goes in and what comes out
+original = {"a": [1]}
+box = threading.Mutex(original)
+original["a"].append(2)
+with box as d:
+    d["a"].append(3)
+out = box.get()
+out["a"].append(4)
+print(original, box.get(), out)
+box.set(out)
+out["a"].clear()
+print(box.get())
+
+
+# a Synchronized class copies the lists its methods take and return
+class Registry(threading.Synchronized):
+    names: list[str]
+
+    def add_all(self, more: list[str]):
+        self.names.extend(more)
+
+    def replace(self, names: list[str]):
+        self.names = names
+
+    def snapshot(self) -> list[str]:
+        return self.names
+
+
+mine = ["x"]
+reg = Registry(mine)
+mine.append("changed")
+reg.replace(mine)
+mine.append("again")
+snap = reg.snapshot()
+snap.append("local")
+print(mine, reg.snapshot(), snap)
+
+
+# work on a pool gets copies of its arguments, and each result() is a copy
+def grow(xs: list[int]) -> list[int]:
+    xs.append(len(xs))
+    return xs
+
+
+base = [0]
+with ThreadPoolExecutor(max_workers=2) as pool:
+    f = pool.submit(grow, base)
+    r1 = f.result()
+    r1.append(-1)
+    print(base, r1, f.result())

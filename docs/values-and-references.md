@@ -1,7 +1,7 @@
 # Design: values, references and the thread boundary
 
-Status: **agreed in discussion, not implemented.** This replaces the current rule that
-lists, dicts and sets are values.
+Status: **phase 1 implemented** (see Phases). This replaces the earlier rule that lists,
+dicts and sets were values.
 
 ## Summary
 
@@ -266,10 +266,21 @@ References bring aliasing, and with C++ containers aliasing can mean undefined b
 
 ### Phases
 
-1. Lists, dicts and sets as references (reference-counted, non-atomic), classes moved to
-   the same scheme; iteration guards. Update tests whose output depends on copying.
-2. Thread boundary: deep copies, moves, the "modifying a copy in a thread" error.
-3. `Mutex` ownership and non-escaping views; `RWMutex`.
+1. **Done.** Lists, dicts, sets, deques, `Counter` and `defaultdict` are references
+   (`sd::list` and friends are handles to shared storage); iteration guards; `is` on them;
+   in-place `+=`, `*=`, `|=`... Structs copy their lists (`sd::value_copy` in generated copy
+   constructors, constructors and field assignments). To keep threads safe, this phase also
+   brought in the copies at the thread boundary (`Thread` args, `Queue.put`,
+   `executor.submit` args and `Future.result()`, `Mutex` in and out, `Synchronized` method
+   arguments and results), the "changed through an alias or a function" rule for shared
+   globals and captures, and the rule that a `with m as data:` view can't escape.
+   Differences from the plan: reference counts are `std::shared_ptr`'s (atomic), because
+   threads may still read a shared global or captured list and copy its handle; classes
+   stay on `std::shared_ptr`. Both are left to the performance phase. Deep copies don't
+   keep aliasing inside the copied data yet (two entries sharing a list become two lists).
+2. Thread boundary: moves, keeping aliasing in deep copies, the "modifying a copy in a
+   thread" error.
+3. `Mutex` ownership; `RWMutex`.
 4. Struct rules: value fields only, list fields, the modified-copy check.
 5. Frozen types and `dataclasses.replace`; sharing deeply immutable values across threads.
 6. Performance: non-escaping parameters as plain references, inline locals. Compare with

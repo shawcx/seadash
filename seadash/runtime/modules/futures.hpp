@@ -104,7 +104,7 @@ public:
         if (!wait_done(lk, timeout)) throw Thrown{std::make_shared<TimeoutError>("")};
         if (s_->status == Status::cancelled) throw Thrown{std::make_shared<CancelledError>("")};
         if (s_->error) throw Thrown{s_->error};
-        if constexpr (!std::is_void_v<T>) return *s_->value;
+        if constexpr (!std::is_void_v<T>) return value_copy(*s_->value);  // (any thread may ask)
     }
     std::optional<std::shared_ptr<Exception>> exception(std::optional<double> timeout = std::nullopt) const {
         std::unique_lock lk(s_->mu);
@@ -266,7 +266,7 @@ public:
         {
             std::lock_guard lk(s_->mu);
             if (s_->shutting_down) raise("RuntimeError", "cannot schedule new futures after shutdown");
-            s_->tasks.push_back([fut, fn = std::move(fn), args = std::make_tuple(std::move(args)...)]() mutable {
+            s_->tasks.push_back([fut, fn = std::move(fn), args = std::make_tuple(value_copy(args)...)]() mutable {
                 if (!fut.start()) return;  // cancelled while queued
                 fut.run([&]() -> R { return std::apply(fn, args); });
             });

@@ -34,4 +34,4 @@ print(matrix)
 
 ys = xs
 ys.append(-1)
-print(len(xs), len(ys))  # lists are values in seadash: ys is a copy
+print(len(xs), len(ys))  # ys is the same list, as in Python

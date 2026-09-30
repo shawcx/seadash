@@ -95,6 +95,27 @@ SAFE = {
         log = Log([])
         threading.Thread(target=log.write, args=("x",)).start()
     """,
+    "reading nested lists through aliases": """
+        GRID = [[1, 2], [3]]
+        def work():
+            for row in GRID:
+                print(len(row), sorted(row))
+            total = sum(len(r) for r in GRID)
+            copy = [list(r) for r in GRID]
+            copy[0].append(total)
+        threading.Thread(target=work).start()
+    """,
+    "mutex view used in place": """
+        box = threading.Mutex([[0]])
+        def work():
+            with box as rows:
+                rows[0].append(1)
+                for r in rows:
+                    r.append(2)
+                n = len(rows)
+                snapshot = [list(r) for r in rows]
+        threading.Thread(target=work).start()
+    """,
 }
 
 
@@ -188,6 +209,42 @@ UNSAFE = [
                     pass
         main()
      """, "the thread's function uses 'items' from the enclosing function, but the enclosing function changes 'items'"),
+    # lists are shared references: aliases, and functions they're passed to, can change them
+    ("""
+        LIMITS = [1, 2]
+        def work():
+            print(len(LIMITS))
+        threading.Thread(target=work).start()
+        other = LIMITS
+        other.append(3)
+     """, "thread code uses the module-level 'LIMITS' (list[int]), but it's modified"),
+    ("""
+        LIMITS = [1, 2]
+        def grow(xs: list[int]):
+            xs.append(3)
+        def work():
+            print(len(LIMITS))
+        threading.Thread(target=work).start()
+        grow(LIMITS)
+     """, "thread code uses the module-level 'LIMITS' (list[int]), but it's modified"),
+    ("""
+        GRID = [[1], [2]]
+        def work():
+            for row in GRID:
+                row.append(0)
+        threading.Thread(target=work).start()
+     """, "thread code uses the module-level 'GRID' (list[list[int]]), but it's modified"),
+    ("""
+        def keep(xs: list[int]) -> list[int]:
+            return xs
+        def main():
+            items = [1]
+            def run():
+                print(len(items))
+            threading.Thread(target=run).start()
+            keep(items)
+        main()
+     """, "the thread's function uses 'items' from the enclosing function, but the enclosing function changes 'items'"),
 ]
 
 
@@ -211,3 +268,21 @@ def test_executor_work_is_checked_like_threads():
     assert e.message.startswith("can't pass this to a thread: a Box is a class instance")
     compile_ok(FUTURES + "import queue\nq: queue.Queue[int] = queue.Queue()\nwith ThreadPoolExecutor() as pool:\n"
                "    pool.submit(abs, -1).add_done_callback(lambda f: q.put(f.result()))\n")
+
+
+@pytest.mark.parametrize("body,msg", [
+    ("saved = rows", "'rows' is only valid while the mutex is held, and this would let the data in it escape the lock"),
+    ("first = rows[0]", "'rows' is only valid while the mutex is held"),
+    ("for r in rows:\n                keep = r", "'rows' is only valid while the mutex is held"),
+    ("everything = list(rows)", "or copy each item too, e.g. [list(row) for row in rows]"),
+    ("print(helper(rows))", "'rows' is only valid while the mutex is held"),
+])
+def test_mutex_view_cant_escape(body, msg):
+    e = compile_error(f"""
+        box = threading.Mutex([[0]])
+        def helper(xs: list[list[int]]) -> int:
+            return len(xs)
+        with box as rows:
+            {body}
+    """)
+    assert msg in e.message

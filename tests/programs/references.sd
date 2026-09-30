@@ -1,0 +1,140 @@
+# Lists, dicts and sets are shared references, as in Python: assigning or passing one
+# shares it; copy(), list(), dict(), set() and slicing make new ones.
+from collections import Counter, defaultdict, deque
+from dataclasses import dataclass
+
+
+def dfs(graph: dict[int, list[int]], node: int, visited: set[int]) -> None:
+    visited.add(node)  # the caller's set
+    for n in graph[node]:
+        if n not in visited:
+            dfs(graph, n, visited)
+
+
+def collect(n: int, out: list[int]) -> None:
+    if n > 0:
+        out.append(n)
+        collect(n - 1, out)
+
+
+def rebind(xs: list[int]) -> None:
+    xs = [99]  # a new local list: the caller's is untouched
+    xs.append(100)
+
+
+# aliasing
+a = [1, 2]
+b = a
+b.append(3)
+print(a, b, a is b, a == [1, 2, 3], a is [1, 2, 3])
+c = a.copy()
+c.append(4)
+d = list(a)
+d.append(5)
+e = a[:]
+e.append(6)
+print(a, c, d, e, c is a)
+
+# functions change the caller's lists, dicts and sets
+graph = {1: [2, 3], 2: [4], 3: [4], 4: [1]}
+seen: set[int] = set()
+dfs(graph, 1, seen)
+print(sorted(seen))
+found: list[int] = []
+collect(4, found)
+print(found)
+keep = [1]
+rebind(keep)
+print(keep)
+
+# dicts and sets
+scores = {"ann": 1}
+alias = scores
+alias["bob"] = 2
+snapshot = dict(scores)
+snapshot["cy"] = 3
+print(scores, snapshot, scores is alias)
+tags = {"x"}
+more = tags
+more.add("y")
+fresh = set(tags)
+fresh.add("z")
+print(sorted(tags), sorted(fresh))
+
+# nested lists share their rows
+grid = [[0] * 2] * 2
+grid[0][0] = 7
+print(grid)
+rows = [[0] * 2 for _ in range(2)]
+rows[0][0] = 7
+first = rows[0]
+first.append(9)
+print(rows)
+
+# in-place operators change the list or set every reference sees
+xs = [1]
+ys = xs
+xs += [2]
+xs *= 2
+s1 = {1, 2}
+s2 = s1
+s1 |= {3}
+s1 -= {1}
+print(xs, ys, s1, s2)
+zs = xs
+xs = xs + [0]  # a new list
+print(xs, zs)
+
+# lists inside dicts and classes are shared too
+groups: dict[str, list[str]] = {}
+members = groups.setdefault("a", [])
+members.append("ann")
+print(groups)
+
+
+@dataclass
+class Team:
+    names: list[str]
+
+
+roster = ["x"]
+team = Team(roster)
+roster.append("y")
+print(team.names)
+
+# collections
+counts = Counter("abca")
+same = counts
+same["z"] += 1
+by_len: defaultdict[int, list[str]] = defaultdict(list)
+view = by_len
+view[1].append("a")
+q = deque([1])
+q2 = q
+q2.append(2)
+print(counts == same, dict(by_len), list(q), q.copy() is q)
+
+# a loop sees items appended during it; changing a dict or set's size is an error
+nums = [1, 2, 3]
+for n in nums:
+    if n < 3:
+        nums.append(n + 10)
+print(nums)
+table = {"a": 1}
+try:
+    for k in table:
+        table[k + "!"] = 0
+except RuntimeError as err:
+    print("RuntimeError:", err)
+bag = {1}
+try:
+    for v in bag:
+        bag.add(v + 1)
+except RuntimeError as err:
+    print("RuntimeError:", err)
+line = deque([1])
+try:
+    for v in line:
+        line.append(v)
+except RuntimeError as err:
+    print("RuntimeError:", err)

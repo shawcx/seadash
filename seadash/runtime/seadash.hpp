@@ -373,16 +373,198 @@ struct Bool {
     auto operator<=>(const Bool&) const = default;
 };
 
+// ============================================================================
+// list: a shared reference to a vector, like a Python list
+// ============================================================================
+//
+// Copying a list shares it (b = a, passing it to a function); copy() makes a new
+// one. The handle is "shallowly const": a const list can still be changed, the
+// way a Python list passed to a function can. Its begin()/end() are the vector's,
+// for the runtime's own use; `for x in xs` goes through iter(), which tolerates
+// the list changing during the loop (list_range).
+
 template <class T>
-using list = std::vector<std::conditional_t<std::is_same_v<T, bool>, Bool, T>>;
+class list {
+public:
+    using value_type = std::conditional_t<std::is_same_v<T, bool>, Bool, T>;
+    using vector_type = std::vector<value_type>;
+    using iterator = typename vector_type::iterator;
+    using const_iterator = iterator;
+    using reverse_iterator = typename vector_type::reverse_iterator;
+    using size_type = std::size_t;
+    using reference = value_type&;
+    using const_reference = value_type&;
+
+private:
+    // (null only after being moved from; vec() then starts a new, empty list)
+    mutable std::shared_ptr<vector_type> p_;
+    template <class U> friend class list;
+
+public:
+    list() : p_(std::make_shared<vector_type>()) {}
+    list(std::initializer_list<value_type> init) : p_(std::make_shared<vector_type>(init)) {}
+    list(vector_type v) : p_(std::make_shared<vector_type>(std::move(v))) {}  // (runtime helpers build vectors)
+    explicit list(size_type n, const value_type& x = value_type()) : p_(std::make_shared<vector_type>(n, x)) {}
+    template <class It>
+        requires(!std::is_integral_v<It>)
+    list(It first, It last) : p_(std::make_shared<vector_type>(first, last)) {}
+    // list[bool] and list[Bool] store the same thing: share it.
+    template <class U>
+        requires(!std::is_same_v<U, T> && std::is_same_v<typename list<U>::vector_type, vector_type>)
+    list(const list<U>& o) : p_((o.vec(), o.p_)) {}
+
+    vector_type& vec() const {
+        if (!p_) [[unlikely]]
+            p_ = std::make_shared<vector_type>();
+        return *p_;
+    }
+    operator vector_type&() const { return vec(); }
+    list copy() const { return list(vec()); }
+    bool is(const list& o) const { return &vec() == &o.vec(); }
+    const void* identity() const { return &vec(); }
+
+    size_type size() const { return vec().size(); }
+    bool empty() const { return vec().empty(); }
+    value_type& operator[](size_type i) const { return (vec())[i]; }
+    value_type& front() const { return vec().front(); }
+    value_type& back() const { return vec().back(); }
+    value_type* data() const { return vec().data(); }
+    iterator begin() const { return vec().begin(); }
+    iterator end() const { return vec().end(); }
+    reverse_iterator rbegin() const { return vec().rbegin(); }
+    reverse_iterator rend() const { return vec().rend(); }
+    size_type capacity() const { return vec().capacity(); }
+
+    template <class X>
+    void push_back(X&& x) const { vec().push_back(std::forward<X>(x)); }
+    template <class... A>
+    value_type& emplace_back(A&&... a) const { return vec().emplace_back(std::forward<A>(a)...); }
+    void pop_back() const { vec().pop_back(); }
+    template <class... A>
+    iterator insert(iterator pos, A&&... a) const { return vec().insert(pos, std::forward<A>(a)...); }
+    iterator erase(iterator pos) const { return vec().erase(pos); }
+    iterator erase(iterator first, iterator last) const { return vec().erase(first, last); }
+    void clear() const { vec().clear(); }
+    void reserve(size_type n) const { vec().reserve(n); }
+    void resize(size_type n) const { vec().resize(n); }
+    void resize(size_type n, const value_type& x) const { vec().resize(n, x); }
+    template <class... A>
+    void assign(A&&... a) const { vec().assign(std::forward<A>(a)...); }
+
+    friend bool operator==(const list& a, const list& b) { return a.vec() == b.vec(); }
+    friend auto operator<=>(const list& a, const list& b) { return a.vec() <=> b.vec(); }
+};
+
+// `for x in xs` over a list: by index, holding the list, so the loop sees items
+// appended during it and nothing dangles if the list grows or is rebound.
+template <class T>
+struct list_range {
+    list<T> xs;
+    struct sentinel {};
+    struct iterator {
+        typename list<T>::vector_type* v;
+        std::size_t i;
+        typename list<T>::value_type& operator*() const { return (*v)[i]; }
+        iterator& operator++() {
+            ++i;
+            return *this;
+        }
+        bool operator!=(sentinel) const { return i < v->size(); }
+        bool operator==(sentinel) const { return i >= v->size(); }
+    };
+    iterator begin() const { return {&xs.vec(), 0}; }
+    sentinel end() const { return {}; }
+    std::size_t size() const { return xs.size(); }
+};
+
+// A set: a shared reference to a std::set (so it prints sorted), like list.
+template <class T>
+class set {
+public:
+    using value_type = T;
+    using set_type = std::set<T>;
+    using iterator = typename set_type::const_iterator;
+    using const_iterator = iterator;
+    using size_type = std::size_t;
+
+private:
+    mutable std::shared_ptr<set_type> p_;  // (null only after being moved from)
+
+public:
+    set() : p_(std::make_shared<set_type>()) {}
+    set(std::initializer_list<T> init) : p_(std::make_shared<set_type>(init)) {}
+    set(set_type s) : p_(std::make_shared<set_type>(std::move(s))) {}
+    template <class It>
+    set(It first, It last) : p_(std::make_shared<set_type>(first, last)) {}
+
+    set_type& std_set() const {
+        if (!p_) [[unlikely]]
+            p_ = std::make_shared<set_type>();
+        return *p_;
+    }
+    operator set_type&() const { return std_set(); }
+    set copy() const { return set(std_set()); }
+    bool is(const set& o) const { return &std_set() == &o.std_set(); }
+    const void* identity() const { return &std_set(); }
+
+    size_type size() const { return std_set().size(); }
+    bool empty() const { return std_set().empty(); }
+    iterator begin() const { return std_set().begin(); }
+    iterator end() const { return std_set().end(); }
+    iterator find(const T& x) const { return std_set().find(x); }
+    size_type count(const T& x) const { return std_set().count(x); }
+    bool contains(const T& x) const { return std_set().contains(x); }
+    template <class X>
+    auto insert(X&& x) const { return std_set().insert(std::forward<X>(x)); }
+    template <class It>
+    void insert(It first, It last) const { std_set().insert(first, last); }
+    iterator insert(iterator hint, const T& x) const { return std_set().insert(hint, x); }
+    size_type erase(const T& x) const { return std_set().erase(x); }
+    iterator erase(iterator it) const { return std_set().erase(it); }
+    void clear() const { std_set().clear(); }
+
+    friend bool operator==(const set& a, const set& b) { return a.std_set() == b.std_set(); }
+};
+
+// `for x in s`: raises, as Python does, if the set changes size during the loop
+// (a std::set iterator would dangle if its item were removed).
+template <class T>
+struct set_range {
+    set<T> s;
+    struct sentinel {};
+    struct iterator {
+        const std::set<T>* p;
+        typename std::set<T>::const_iterator it;
+        std::size_t size;
+        const T& operator*() const { return *it; }
+        iterator& operator++() {
+            if (p->size() != size) raise("RuntimeError", "Set changed size during iteration");
+            ++it;
+            return *this;
+        }
+        bool operator!=(sentinel) const { return it != p->end(); }
+        bool operator==(sentinel) const { return it == p->end(); }
+    };
+    iterator begin() const { return {&s.std_set(), s.std_set().begin(), s.size()}; }
+    sentinel end() const { return {}; }
+    std::size_t size() const { return s.size(); }
+};
 
 template <class K, class V>
 class dict;
 
 template <class T> struct is_vector : std::false_type {};
 template <class T, class A> struct is_vector<std::vector<T, A>> : std::true_type {};
+template <class T> struct is_vector<list<T>> : std::true_type {};
+template <class T> struct is_list : std::false_type {};
+template <class T> struct is_list<list<T>> : std::true_type {};
+template <class L> struct list_elem;
+template <class T> struct list_elem<list<T>> { using type = T; };
 template <class T> struct is_set : std::false_type {};
 template <class T, class C, class A> struct is_set<std::set<T, C, A>> : std::true_type {};
+template <class T> struct is_set<set<T>> : std::true_type {};
+template <class T> struct is_sd_set : std::false_type {};
+template <class T> struct is_sd_set<set<T>> : std::true_type {};
 template <class T> struct is_dict : std::false_type {};
 template <class K, class V> struct is_dict<dict<K, V>> : std::true_type {};
 // A dict or a type built on one (collections.defaultdict / Counter).
@@ -448,11 +630,20 @@ std::string str(const T& x) {
 
 template <class K, class V>
 class dict {
-    std::vector<std::pair<K, V>> items_;
-    std::vector<std::size_t> hashes_;
-    std::vector<char> alive_;
-    std::vector<std::int32_t> table_;  // entry index, or EMPTY / DELETED
-    std::size_t live_ = 0;
+    // Shared by every copy of the handle: a dict is a reference, like in Python.
+    struct Data {
+        std::vector<std::pair<K, V>> items;
+        std::vector<std::size_t> hashes;
+        std::vector<char> alive;
+        std::vector<std::int32_t> table;  // entry index, or EMPTY / DELETED
+        std::size_t live = 0;
+    };
+    mutable std::shared_ptr<Data> p_ = std::make_shared<Data>();  // (null only after a move)
+    Data& data() const {
+        if (!p_) [[unlikely]]
+            p_ = std::make_shared<Data>();
+        return *p_;
+    }
 
     static constexpr std::int32_t EMPTY = -1, DELETED = -2;
 
@@ -464,61 +655,64 @@ class dict {
         return h;
     }
 
-    // Index of k in items_, or -1. `insert_at` gets the table slot where k would go.
+    // Index of k in data().items, or -1. `insert_at` gets the table slot where k would go.
     std::int64_t lookup(const K& k, std::size_t h, std::size_t* insert_at = nullptr) const {
-        if (table_.empty()) return -1;
-        std::size_t mask = table_.size() - 1;
+        Data& D = data();
+        if (D.table.empty()) return -1;
+        std::size_t mask = D.table.size() - 1;
         std::size_t first_deleted = SIZE_MAX;
         for (std::size_t i = h & mask;; i = (i + 1) & mask) {
-            std::int32_t slot = table_[i];
+            std::int32_t slot = D.table[i];
             if (slot == EMPTY) {
                 if (insert_at) *insert_at = first_deleted != SIZE_MAX ? first_deleted : i;
                 return -1;
             }
             if (slot == DELETED) {
                 if (first_deleted == SIZE_MAX) first_deleted = i;
-            } else if (hashes_[slot] == h && items_[slot].first == k) {
+            } else if (D.hashes[slot] == h && D.items[slot].first == k) {
                 return slot;
             }
         }
     }
 
-    void rebuild(std::size_t capacity) {
-        if (live_ != items_.size()) {  // compact out deleted entries
+    void rebuild(std::size_t capacity) const {
+        Data& D = data();
+        if (D.live != D.items.size()) {  // compact out deleted entries
             std::size_t j = 0;
-            for (std::size_t i = 0; i < items_.size(); ++i) {
-                if (!alive_[i]) continue;
+            for (std::size_t i = 0; i < D.items.size(); ++i) {
+                if (!D.alive[i]) continue;
                 if (i != j) {
-                    items_[j] = std::move(items_[i]);
-                    hashes_[j] = hashes_[i];
+                    D.items[j] = std::move(D.items[i]);
+                    D.hashes[j] = D.hashes[i];
                 }
                 ++j;
             }
-            items_.resize(j);
-            hashes_.resize(j);
-            alive_.assign(j, 1);
+            D.items.resize(j);
+            D.hashes.resize(j);
+            D.alive.assign(j, 1);
         }
         std::size_t size = 8;
         while (size * 2 < capacity * 3) size *= 2;  // keep the load factor under 2/3
-        table_.assign(size, EMPTY);
+        D.table.assign(size, EMPTY);
         std::size_t mask = size - 1;
-        for (std::size_t n = 0; n < items_.size(); ++n) {
-            std::size_t i = hashes_[n] & mask;
-            while (table_[i] != EMPTY) i = (i + 1) & mask;
-            table_[i] = static_cast<std::int32_t>(n);
+        for (std::size_t n = 0; n < D.items.size(); ++n) {
+            std::size_t i = D.hashes[n] & mask;
+            while (D.table[i] != EMPTY) i = (i + 1) & mask;
+            D.table[i] = static_cast<std::int32_t>(n);
         }
     }
 
-    std::size_t insert_new(K key, V value, std::size_t h) {
-        if ((items_.size() + 1) * 3 >= table_.size() * 2) rebuild(live_ + 1 > 4 ? (live_ + 1) * 2 : 8);
+    std::size_t insert_new(K key, V value, std::size_t h) const {
+        Data& D = data();
+        if ((D.items.size() + 1) * 3 >= D.table.size() * 2) rebuild(D.live + 1 > 4 ? (D.live + 1) * 2 : 8);
         std::size_t at = 0;
         lookup(key, h, &at);
-        std::size_t n = items_.size();
-        items_.emplace_back(std::move(key), std::move(value));
-        hashes_.push_back(h);
-        alive_.push_back(1);
-        table_[at] = static_cast<std::int32_t>(n);
-        ++live_;
+        std::size_t n = D.items.size();
+        D.items.emplace_back(std::move(key), std::move(value));
+        D.hashes.push_back(h);
+        D.alive.push_back(1);
+        D.table[at] = static_cast<std::int32_t>(n);
+        ++D.live;
         return n;
     }
 
@@ -528,50 +722,100 @@ public:
         for (const auto& [k, v] : init) (*this)[k] = v;
     }
 
+    // A new dict with the same items (dict(d), d.copy()); copying the handle shares it.
+    dict copy() const {
+        dict out;
+        out.data() = data();
+        return out;
+    }
+    bool is(const dict& o) const { return &data() == &o.data(); }
+    const void* identity() const { return &data(); }
+    // `for k in d`: the keys, raising (as Python does) if the dict changes size meanwhile.
+    struct key_range {
+        std::shared_ptr<Data> p;
+        struct sentinel {};
+        struct iterator {
+            Data* d;
+            std::size_t i, size;
+            void skip() {
+                while (i < d->items.size() && !d->alive[i]) ++i;
+            }
+            const K& operator*() const { return d->items[i].first; }
+            iterator& operator++() {
+                if (d->live != size) raise("RuntimeError", "dictionary changed size during iteration");
+                ++i;
+                skip();
+                return *this;
+            }
+            bool operator!=(sentinel) const { return i < d->items.size(); }
+        };
+        iterator begin() const {
+            iterator it{p.get(), 0, p->live};
+            it.skip();
+            return it;
+        }
+        sentinel end() const { return {}; }
+        std::size_t size() const { return p->live; }
+    };
+    key_range sd_keys() const { return {(data(), p_)}; }
+
+    // For value_copy: stop sharing (a Counter or defaultdict keeps its own type).
+    void detach() { p_ = std::make_shared<Data>(data()); }
+    template <class F>
+    void for_each_value(F f) const {
+        Data& D = data();
+        for (std::size_t i = 0; i < D.items.size(); ++i)
+            if (D.alive[i]) f(D.items[i].second);
+    }
+
     // d[k] = v : inserts if missing (assignment)
-    V& operator[](const K& k) {
+    V& operator[](const K& k) const {
+        Data& D = data();
         std::size_t h = hash_of(k);
         std::int64_t i = lookup(k, h);
-        if (i >= 0) return items_[i].second;
-        return items_[insert_new(k, V{}, h)].second;
+        if (i >= 0) return D.items[i].second;
+        return D.items[insert_new(k, V{}, h)].second;
     }
 
     // d[k] as a value: KeyError if missing
-    V& at(const K& k) {
+    V& at(const K& k) const {
+        Data& D = data();
         std::int64_t i = lookup(k, hash_of(k));
         if (i < 0) raise("KeyError", repr(k));
-        return items_[i].second;
+        return D.items[i].second;
     }
-    const V& at(const K& k) const { return const_cast<dict*>(this)->at(k); }
 
     const V* find(const K& k) const {
+        Data& D = data();
         std::int64_t i = lookup(k, hash_of(k));
-        return i < 0 ? nullptr : &items_[i].second;
+        return i < 0 ? nullptr : &D.items[i].second;
     }
 
     bool contains(const K& k) const { return lookup(k, hash_of(k)) >= 0; }
-    std::size_t size() const { return live_; }
-    bool empty() const { return live_ == 0; }
-    void clear() {
-        items_.clear();
-        hashes_.clear();
-        alive_.clear();
-        table_.clear();
-        live_ = 0;
+    std::size_t size() const { return data().live; }
+    bool empty() const { return data().live == 0; }
+    void clear() const {
+        Data& D = data();
+        D.items.clear();
+        D.hashes.clear();
+        D.alive.clear();
+        D.table.clear();
+        D.live = 0;
     }
 
-    bool erase(const K& k) {
+    bool erase(const K& k) const {
+        Data& D = data();
         std::size_t h = hash_of(k);
-        std::size_t mask = table_.empty() ? 0 : table_.size() - 1;
-        if (table_.empty()) return false;
+        std::size_t mask = D.table.empty() ? 0 : D.table.size() - 1;
+        if (D.table.empty()) return false;
         for (std::size_t i = h & mask;; i = (i + 1) & mask) {
-            std::int32_t slot = table_[i];
+            std::int32_t slot = D.table[i];
             if (slot == EMPTY) return false;
-            if (slot >= 0 && hashes_[slot] == h && items_[slot].first == k) {
-                table_[i] = DELETED;
-                alive_[slot] = 0;
-                items_[slot] = std::pair<K, V>{};  // release the memory now
-                --live_;
+            if (slot >= 0 && D.hashes[slot] == h && D.items[slot].first == k) {
+                D.table[i] = DELETED;
+                D.alive[slot] = 0;
+                D.items[slot] = std::pair<K, V>{};  // release the memory now
+                --D.live;
                 return true;
             }
         }
@@ -579,13 +823,13 @@ public:
 
     // Iteration skips deleted entries; yields (key, value) pairs in insertion order.
     struct const_iterator {
-        const dict* d;
+        const Data* d;
         std::size_t i;
         void skip() {
-            while (i < d->items_.size() && !d->alive_[i]) ++i;
+            while (i < d->items.size() && !d->alive[i]) ++i;
         }
-        const std::pair<K, V>& operator*() const { return d->items_[i]; }
-        const std::pair<K, V>* operator->() const { return &d->items_[i]; }
+        const std::pair<K, V>& operator*() const { return d->items[i]; }
+        const std::pair<K, V>* operator->() const { return &d->items[i]; }
         const_iterator& operator++() {
             ++i;
             skip();
@@ -595,27 +839,27 @@ public:
         bool operator==(const const_iterator& o) const { return i == o.i; }
     };
     const_iterator begin() const {
-        const_iterator it{this, 0};
+        const_iterator it{&data(), 0};
         it.skip();
         return it;
     }
-    const_iterator end() const { return {this, items_.size()}; }
+    const_iterator end() const { return {&data(), data().items.size()}; }
 
     std::vector<K> keys() const {
         std::vector<K> out;
-        out.reserve(live_);
+        out.reserve(data().live);
         for (const auto& [k, v] : *this) out.push_back(k);
         return out;
     }
     list<V> values() const {
         list<V> out;
-        out.reserve(live_);
+        out.reserve(data().live);
         for (const auto& [k, v] : *this) out.push_back(v);
         return out;
     }
     std::vector<std::tuple<K, V>> items() const {
         std::vector<std::tuple<K, V>> out;
-        out.reserve(live_);
+        out.reserve(data().live);
         for (const auto& [k, v] : *this) out.emplace_back(k, v);
         return out;
     }
@@ -629,6 +873,69 @@ public:
         return true;
     }
 };
+
+// ============================================================================
+// value_copy: a copy sharing nothing that can change
+// ============================================================================
+//
+// Lists, dicts and sets are references; value_copy copies them, and what's inside
+// them, all the way down. Structs copy themselves (their copy constructors
+// value_copy their fields). Class instances and thread-safe objects are shared.
+// Used where seadash promises a copy: struct fields, and values crossing into
+// another thread.
+
+template <class T>
+T value_copy(const T& x) {
+    if constexpr (requires { x.sd_value_copy(); }) {
+        return x.sd_value_copy();
+    } else if constexpr (is_list<T>::value) {
+        T out;
+        out.reserve(x.size());
+        for (const auto& e : x) out.push_back(value_copy(e));
+        return out;
+    } else if constexpr (is_set<T>::value) {
+        if constexpr (requires { x.copy(); }) {
+            return x.copy();
+        } else {
+            return x;
+        }
+    } else if constexpr (is_dict_like<T>::value) {
+        T out = x;
+        out.detach();
+        out.for_each_value([](auto& v) { v = value_copy(v); });
+        return out;
+    } else if constexpr (is_optional<T>::value) {
+        return x ? T(value_copy(*x)) : T();
+    } else if constexpr (is_tuple<T>::value) {
+        return std::apply([](const auto&... e) { return T(value_copy(e)...); }, x);
+    } else {
+        return x;
+    }
+}
+
+// xs *= 2, s |= t: Python changes the container in place (every reference to it sees
+// the change), so the result replaces its contents rather than rebinding the name.
+template <class T>
+void assign_contents(const T& target, T&& value) {
+    if constexpr (is_list<T>::value) {
+        target.vec() = std::move(value.vec());
+    } else {
+        target.std_set() = std::move(value.std_set());
+    }
+}
+
+// xs.copy(), dict(d), d.copy(): a new container holding the same items. (A Counter or
+// defaultdict stays one.)
+template <class T>
+T shallow_copy(const T& x) {
+    if constexpr (is_dict_like<T>::value) {
+        T out = x;
+        out.detach();
+        return out;
+    } else {
+        return x.copy();
+    }
+}
 
 // ============================================================================
 // bytes: raw binary data (a std::string underneath, but a distinct type)
@@ -1025,6 +1332,10 @@ template <class T>
 const T& index(const std::vector<T>& v, std::int64_t i) {
     return v[norm_index(i, v.size(), "list")];
 }
+template <class T>
+auto& index(const list<T>& v, std::int64_t i) {
+    return v[norm_index(i, v.size(), "list")];
+}
 inline std::string index(const std::string& s, std::int64_t i) {
     return std::string(1, s[norm_index(i, s.size(), "string")]);
 }
@@ -1116,7 +1427,11 @@ decltype(auto) iter(T&& x) {
         for (unsigned char c : x.data) out.push_back(c);
         return out;
     } else if constexpr (is_dict_like<U>::value) {
-        return x.keys();
+        return x.sd_keys();
+    } else if constexpr (is_list<U>::value) {
+        return list_range<typename list_elem<U>::type>{x};
+    } else if constexpr (is_sd_set<U>::value) {
+        return set_range<typename U::value_type>{x};
     } else if constexpr (requires { file_lines(x); }) {
         return file_lines(x);
     } else if constexpr (requires { x.sd_iter(); }) {
@@ -1228,8 +1543,8 @@ auto sorted_by(It&& it, F&& key, bool reverse = false) {
 }
 
 template <class T, class F>
-void list_sort_by(std::vector<T>& v, F&& key, bool reverse = false) {
-    sort_by_key(v, key, reverse);
+void list_sort_by(const list<T>& v, F&& key, bool reverse = false) {
+    sort_by_key(v.vec(), key, reverse);
 }
 
 template <class It, class F>
@@ -1338,7 +1653,7 @@ struct vtuple {
     auto operator<=>(const vtuple&) const = default;
     bool operator==(const vtuple&) const = default;
     friend vtuple operator+(const vtuple& a, const vtuple& b) {
-        vtuple out = a;
+        vtuple out(a.items.copy());
         out.items.insert(out.items.end(), b.items.begin(), b.items.end());
         return out;
     }
@@ -1411,6 +1726,12 @@ std::vector<T> concat(const std::vector<T>& a, const std::vector<T>& b) {
     out.insert(out.end(), b.begin(), b.end());
     return out;
 }
+template <class T>
+list<T> concat(const list<T>& a, const list<T>& b) {
+    list<T> out = a.copy();
+    out.insert(out.end(), b.begin(), b.end());
+    return out;
+}
 
 // s * n: allocate once, then keep doubling the filled part (fast even for b"x" * 10**8).
 template <class Seq>
@@ -1438,7 +1759,15 @@ bool contains(const std::vector<T>& v, const X& x) {
     return std::find(v.begin(), v.end(), x) != v.end();
 }
 template <class T, class X>
+bool contains(const list<T>& v, const X& x) {
+    return std::find(v.begin(), v.end(), x) != v.end();
+}
+template <class T, class X>
 bool contains(const std::set<T>& s, const X& x) {
+    return s.count(x) != 0;
+}
+template <class T, class X>
+bool contains(const set<T>& s, const X& x) {
     return s.count(x) != 0;
 }
 template <class K, class V>
@@ -1466,26 +1795,26 @@ bool contains(const std::tuple<Ts...>& t, const X& x) {
 }
 
 template <class T>
-std::set<T> set_or(const std::set<T>& a, const std::set<T>& b) {
-    std::set<T> out = a;
+set<T> set_or(const set<T>& a, const set<T>& b) {
+    set<T> out = a.copy();
     out.insert(b.begin(), b.end());
     return out;
 }
 template <class T>
-std::set<T> set_and(const std::set<T>& a, const std::set<T>& b) {
-    std::set<T> out;
+set<T> set_and(const set<T>& a, const set<T>& b) {
+    set<T> out;
     std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::inserter(out, out.end()));
     return out;
 }
 template <class T>
-std::set<T> set_sub(const std::set<T>& a, const std::set<T>& b) {
-    std::set<T> out;
+set<T> set_sub(const set<T>& a, const set<T>& b) {
+    set<T> out;
     std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::inserter(out, out.end()));
     return out;
 }
 template <class T>
-std::set<T> set_xor(const std::set<T>& a, const std::set<T>& b) {
-    std::set<T> out;
+set<T> set_xor(const set<T>& a, const set<T>& b) {
+    set<T> out;
     std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::inserter(out, out.end()));
     return out;
 }
@@ -2514,7 +2843,7 @@ inline std::string input(const std::string& prompt = "") {
 // ============================================================================
 
 template <class T>
-T list_pop(std::vector<T>& v, std::int64_t i = -1) {
+T list_pop(const list<T>& v, std::int64_t i = -1) {
     if (v.empty()) raise("IndexError", "pop from empty list");
     if (i < 0) i += static_cast<std::int64_t>(v.size());
     if (i < 0 || i >= static_cast<std::int64_t>(v.size())) raise("IndexError", "pop index out of range");
@@ -2523,41 +2852,41 @@ T list_pop(std::vector<T>& v, std::int64_t i = -1) {
     return out;
 }
 template <class T, class X>
-void list_insert(std::vector<T>& v, std::int64_t i, X&& x) {
+void list_insert(const list<T>& v, std::int64_t i, X&& x) {
     std::int64_t n = static_cast<std::int64_t>(v.size());
     if (i < 0) i = std::max<std::int64_t>(0, i + n);
     v.insert(v.begin() + std::min(i, n), std::forward<X>(x));
 }
 template <class T, class X>
-void list_remove(std::vector<T>& v, const X& x) {
+void list_remove(const list<T>& v, const X& x) {
     auto it = std::find(v.begin(), v.end(), x);
     if (it == v.end()) raise("ValueError", "list.remove(x): x not in list");
     v.erase(it);
 }
 template <class T, class X>
-std::int64_t list_index(const std::vector<T>& v, const X& x) {
+std::int64_t list_index(const list<T>& v, const X& x) {
     auto it = std::find(v.begin(), v.end(), x);
     if (it == v.end()) raise("ValueError", repr(x) + " is not in list");
     return it - v.begin();
 }
 template <class T, class X>
-std::int64_t list_count(const std::vector<T>& v, const X& x) {
+std::int64_t list_count(const list<T>& v, const X& x) {
     return std::count(v.begin(), v.end(), x);
 }
 template <class T, class It>
-void list_extend(std::vector<T>& v, It&& it) {
+void list_extend(const list<T>& v, It&& it) {
     auto items = to_list(std::forward<It>(it));  // copy first: `xs.extend(xs)` is fine
     v.insert(v.end(), items.begin(), items.end());
 }
 template <class T>
-void list_sort(std::vector<T>& v, bool reverse = false) {
+void list_sort(const list<T>& v, bool reverse = false) {
     if (reverse)
-        sort_values(v, [](const T& a, const T& b) { return b < a; });
+        sort_values(v.vec(), [](const auto& a, const auto& b) { return b < a; });
     else
-        sort_values(v, std::less<>{});
+        sort_values(v.vec(), std::less<>{});
 }
 template <class T>
-void list_reverse(std::vector<T>& v) {
+void list_reverse(const list<T>& v) {
     std::reverse(v.begin(), v.end());
 }
 
@@ -2602,11 +2931,11 @@ void dict_update(dict<K, V>& d, const dict<K, V>& other) {
 }
 
 template <class T>
-void set_remove(std::set<T>& s, const std::type_identity_t<T>& x) {
+void set_remove(const set<T>& s, const std::type_identity_t<T>& x) {
     if (!s.erase(x)) raise("KeyError", repr(x));
 }
 template <class T>
-bool set_issubset(const std::set<T>& a, const std::set<T>& b) {
+bool set_issubset(const set<T>& a, const set<T>& b) {
     return std::includes(b.begin(), b.end(), a.begin(), a.end());
 }
 

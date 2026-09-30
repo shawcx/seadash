@@ -127,7 +127,8 @@ class Queue {
 public:
     explicit Queue(std::int64_t maxsize = 0) : s_(std::make_shared<State>()) { s_->maxsize = maxsize; }
 
-    void put(T item, bool block = true, std::optional<double> timeout = std::nullopt) {
+    void put(const T& value, bool block = true, std::optional<double> timeout = std::nullopt) {
+        T item = value_copy(value);  // the receiver gets its own
         std::optional<std::optional<Clock::time_point>> until;
         while (!try_put(item)) {
             if (!block) throw Thrown{std::make_shared<Full>("")};

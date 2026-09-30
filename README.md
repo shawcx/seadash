@@ -121,7 +121,8 @@ a = str(a)          # fine: a is now a str
 total: float = 0    # annotate when you want to
 ```
 
-**`struct` is a value, `class` is a shared reference.** Lists, dicts and sets are values too.
+**`struct` is a value, `class` is a shared reference.** Lists, dicts and sets are shared
+references, as in Python; a struct's lists are part of its value, so they're copied with it.
 
 ```python
 struct Point:
@@ -137,6 +138,8 @@ p = Point(1, 2)
 q = p          # a copy: changing q.x leaves p alone
 c = Counter(0)
 d = c          # the same object: d.bump() changes c.n
+xs = [1, 2]
+ys = xs        # the same list, as in Python: ys.append(3) changes xs
 ```
 
 **None-safety.** `T?` (or `T | None`) is "T or None", and the checker makes you handle the `None` case. Checks narrow the type, including checks on attributes and `isinstance`.
@@ -178,9 +181,12 @@ match shape:                         # a json.Value
 - **Modules:** `import` of your own `.sd` files and packages.
 
 **Threads without a GIL, checked for data races.** Threads are real OS threads running in
-parallel. The checker only lets them share values that are copied, or thread-safe
-objects (`Lock`, `queue.Queue`, `threading.Mutex[T]`, `threading.Atomic`, and
-`threading.Synchronized` classes):
+parallel. Anything that crosses into another thread (`Thread` arguments, `queue.Queue`
+items, `executor.submit` arguments and results, what goes into and out of a `Mutex`) is
+copied, lists and all, unless it's a thread-safe object (`Lock`, `queue.Queue`,
+`threading.Mutex[T]`, `threading.Atomic`, `threading.Synchronized` classes). Threads may
+read module globals and captured variables that nothing changes; changing a list through
+another name, or passing it to a function that could change it, counts:
 
 ```python
 total = 0
@@ -225,7 +231,8 @@ def work():
 
 seadash borrows Python's syntax, not all of its semantics:
 
-- **Lists, dicts and sets are values.** Assigning or passing one makes a copy, so a function that appends to its list parameter changes its own copy, not yours. Use a `class` when you want sharing.
+- **Threads get copies.** A list, dict or set passed to a thread, put on a queue, returned from a `Future` or stored in a `Mutex` or `Synchronized` object is copied (all the way down), so changes made on one side aren't seen on the other. Share with a `threading.Mutex` or send results back through a `queue.Queue`. Inside `with m as data:`, `data` can't escape the block.
+- **A struct's lists are part of its value**, copied with the struct and when stored in it (`struct` isn't Python).
 - **Static types.** Containers hold one type (`list[int]`, not a mix), and there's no dynamic typing or `eval`. Mixed numbers widen, so `[1, 2.5]` is a `list[float]`.
 - **Generators** don't support `send()`/`throw()`, and nested functions can't be generators yet. (Generators, generator expressions, `map`, `filter`, `zip` and `enumerate` are all lazy, as in Python.)
 - **Strings are UTF-8 bytes.** Indexes and lengths count bytes.

@@ -13,7 +13,7 @@ apple s 195 120
 ['grape', 'date', 'banana', 'banana', 'banana', 'banana'] ['grape', 'grape', 'grape', 'grape', 'grape', 'grape', 'grape', 'elderberry']
 ['y', 'y', 'y', 'y', 'y', 'z', 'y', 'y', 'z', 'y']
 b'\x14Z\x08\xc0\x03\xda\xb3' 33
-[2, 3, 4, 5, 1] True
+[2, 3, 4, 5, 1] False
 ValueError: empty range for randrange()
 ValueError: empty range in randrange(5, 2)
 ValueError: zero step for randrange()

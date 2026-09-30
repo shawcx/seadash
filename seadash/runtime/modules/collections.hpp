@@ -1,5 +1,5 @@
-// The `collections` module: defaultdict, Counter and deque. All are values, like
-// list and dict: assigning or passing one makes a copy.
+// The `collections` module: defaultdict, Counter and deque. All are references, like
+// list and dict: assigning or passing one shares it.
 #pragma once
 
 #include <algorithm>
@@ -19,19 +19,13 @@ class defaultdict : public dict<K, V> {
 public:
     defaultdict() = default;
     defaultdict(std::function<V()> factory, std::string factory_repr, base init = {})
-        : base(std::move(init)), factory_(std::move(factory)), factory_repr_(std::move(factory_repr)) {}
+        : base(init.copy()), factory_(std::move(factory)), factory_repr_(std::move(factory_repr)) {}
 
-    V& operator[](const K& k) {
+    V& operator[](const K& k) const {
         if (const V* v = this->find(k)) return const_cast<V&>(*v);
         if (!factory_) return this->at(k);  // raises KeyError
         V value = factory_();
         return base::operator[](k) = std::move(value);
-    }
-    // Reading through a const reference can't store the new value; it still gets one.
-    V get_or_make(const K& k) const {
-        if (const V* v = this->find(k)) return *v;
-        if (!factory_) return this->at(k);
-        return factory_();
     }
     std::string sd_repr() const {
         return "defaultdict(" + (factory_repr_.empty() ? std::string("None") : factory_repr_) + ", " +
@@ -40,12 +34,8 @@ public:
 };
 
 template <class K, class V>
-V& index(defaultdict<K, V>& d, const std::type_identity_t<K>& k) {
-    return d[k];
-}
-template <class K, class V>
-V index(const defaultdict<K, V>& d, const std::type_identity_t<K>& k) {
-    return d.get_or_make(k);
+V& index(const defaultdict<K, V>& d, const std::type_identity_t<K>& k) {
+    return d[k];  // stores factory() for a missing key, even when only reading it, like Python
 }
 
 // A dict of counts. c[k] reads 0 for a missing key (without storing it); c[k] += 1 stores.
@@ -55,7 +45,7 @@ class Counter : public dict<K, std::int64_t> {
 
 public:
     Counter() = default;
-    explicit Counter(base counts) : base(std::move(counts)) {}
+    explicit Counter(const base& counts) : base(counts.copy()) {}
     template <class It>
     static Counter from_items(const It& xs) {
         Counter c;
@@ -139,10 +129,18 @@ std::int64_t index(const Counter<K>& c, const std::type_identity_t<K>& k) {
 // items from the other.
 template <class T>
 class deque {
-    std::deque<T> d_;
-    std::optional<std::int64_t> maxlen_;
+    struct State {
+        std::deque<T> d;
+        std::optional<std::int64_t> maxlen;
+    };
+    mutable std::shared_ptr<State> s_ = std::make_shared<State>();  // shared by copies, like list
+    State& st() const {
+        if (!s_) [[unlikely]]
+            s_ = std::make_shared<State>();  // (only after being moved from)
+        return *s_;
+    }
 
-    bool full() const { return maxlen_ && static_cast<std::int64_t>(d_.size()) >= *maxlen_; }
+    bool full() const { return st().maxlen && static_cast<std::int64_t>(st().d.size()) >= *st().maxlen; }
     template <class It>
     static std::vector<T> snapshot(const It& xs) {  // so d.extend(d) works
         std::vector<T> out;
@@ -153,7 +151,8 @@ class deque {
 public:
     using value_type = T;
     deque() = default;
-    explicit deque(std::optional<std::int64_t> maxlen) : maxlen_(maxlen) {
+    explicit deque(std::optional<std::int64_t> maxlen) {
+        st().maxlen = maxlen;
         if (maxlen && *maxlen < 0) raise("ValueError", "maxlen must be non-negative");
     }
     template <class It>
@@ -161,93 +160,117 @@ public:
         extend(xs);
     }
 
-    void append(T x) {
-        if (maxlen_ && *maxlen_ == 0) return;
-        if (full()) d_.pop_front();
-        d_.push_back(std::move(x));
+    void append(T x) const {
+        if (st().maxlen && *st().maxlen == 0) return;
+        if (full()) st().d.pop_front();
+        st().d.push_back(std::move(x));
     }
-    void appendleft(T x) {
-        if (maxlen_ && *maxlen_ == 0) return;
-        if (full()) d_.pop_back();
-        d_.push_front(std::move(x));
+    void appendleft(T x) const {
+        if (st().maxlen && *st().maxlen == 0) return;
+        if (full()) st().d.pop_back();
+        st().d.push_front(std::move(x));
     }
-    T pop() {
-        if (d_.empty()) raise("IndexError", "pop from an empty deque");
-        T x = std::move(d_.back());
-        d_.pop_back();
+    T pop() const {
+        if (st().d.empty()) raise("IndexError", "pop from an empty deque");
+        T x = std::move(st().d.back());
+        st().d.pop_back();
         return x;
     }
-    T popleft() {
-        if (d_.empty()) raise("IndexError", "pop from an empty deque");
-        T x = std::move(d_.front());
-        d_.pop_front();
+    T popleft() const {
+        if (st().d.empty()) raise("IndexError", "pop from an empty deque");
+        T x = std::move(st().d.front());
+        st().d.pop_front();
         return x;
     }
     template <class It>
-    void extend(const It& xs) {
+    void extend(const It& xs) const {
         for (auto& x : snapshot(xs)) append(std::move(x));
     }
     template <class It>
-    void extendleft(const It& xs) {
+    void extendleft(const It& xs) const {
         for (auto& x : snapshot(xs)) appendleft(std::move(x));
     }
-    void rotate(std::int64_t n = 1) {  // to the right; negative rotates left
-        auto size = static_cast<std::int64_t>(d_.size());
+    void rotate(std::int64_t n = 1) const {  // to the right; negative rotates left
+        auto size = static_cast<std::int64_t>(st().d.size());
         if (size <= 1) return;
         n = ((n % size) + size) % size;
-        std::rotate(d_.begin(), d_.end() - n, d_.end());
+        std::rotate(st().d.begin(), st().d.end() - n, st().d.end());
     }
-    void clear() { d_.clear(); }
-    void reverse() { std::reverse(d_.begin(), d_.end()); }
-    void insert(std::int64_t i, T x) {
+    void clear() const { st().d.clear(); }
+    void reverse() const { std::reverse(st().d.begin(), st().d.end()); }
+    void insert(std::int64_t i, T x) const {
         if (full()) raise("IndexError", "deque already at its maximum size");
-        auto size = static_cast<std::int64_t>(d_.size());
+        auto size = static_cast<std::int64_t>(st().d.size());
         if (i < 0) i = std::max<std::int64_t>(i + size, 0);
-        d_.insert(d_.begin() + std::min(i, size), std::move(x));
+        st().d.insert(st().d.begin() + std::min(i, size), std::move(x));
     }
-    std::int64_t count(const T& x) const { return std::count(d_.begin(), d_.end(), x); }
+    std::int64_t count(const T& x) const { return std::count(st().d.begin(), st().d.end(), x); }
     std::int64_t index(const T& x) const {
-        auto it = std::find(d_.begin(), d_.end(), x);
-        if (it == d_.end()) raise("ValueError", repr(x) + " is not in deque");
-        return it - d_.begin();
+        auto it = std::find(st().d.begin(), st().d.end(), x);
+        if (it == st().d.end()) raise("ValueError", repr(x) + " is not in deque");
+        return it - st().d.begin();
     }
-    void remove(const T& x) {
-        auto it = std::find(d_.begin(), d_.end(), x);
-        if (it == d_.end()) raise("ValueError", "deque.remove(x): x not in deque");
-        d_.erase(it);
+    void remove(const T& x) const {
+        auto it = std::find(st().d.begin(), st().d.end(), x);
+        if (it == st().d.end()) raise("ValueError", "deque.remove(x): x not in deque");
+        st().d.erase(it);
     }
-    std::optional<std::int64_t> maxlen() const { return maxlen_; }
+    std::optional<std::int64_t> maxlen() const { return st().maxlen; }
 
-    T& at(std::int64_t i) { return d_[norm_index(i, d_.size(), "deque")]; }
-    const T& at(std::int64_t i) const { return d_[norm_index(i, d_.size(), "deque")]; }
-    auto begin() const { return d_.begin(); }
-    auto end() const { return d_.end(); }
-    auto begin() { return d_.begin(); }
-    auto end() { return d_.end(); }
-    std::size_t size() const { return d_.size(); }
-    bool empty() const { return d_.empty(); }
-    bool operator==(const deque& o) const { return d_ == o.d_; }  // maxlen doesn't matter, like Python
+    T& at(std::int64_t i) const { return st().d[norm_index(i, st().d.size(), "deque")]; }
+    auto begin() const { return st().d.begin(); }
+    auto end() const { return st().d.end(); }
+    const void* identity() const { return &st(); }
+    deque copy() const {
+        deque out;
+        out.st() = st();
+        return out;
+    }
+    deque sd_value_copy() const {
+        deque out(st().maxlen);
+        for (const auto& x : st().d) out.st().d.push_back(value_copy(x));
+        return out;
+    }
+
+    // `for x in d`: raises, as Python does, if the deque changes during the loop.
+    struct range {
+        deque q;
+        struct sentinel {};
+        struct iterator {
+            std::shared_ptr<State> s;
+            std::size_t i, size;
+            T& operator*() const { return s->d[i]; }
+            iterator& operator++() {
+                if (s->d.size() != size) raise("RuntimeError", "deque mutated during iteration");
+                ++i;
+                return *this;
+            }
+            bool operator!=(sentinel) const { return i < s->d.size(); }
+        };
+        iterator begin() const { return {(q.st(), q.s_), 0, q.size()}; }
+        sentinel end() const { return {}; }
+    };
+    range sd_iter() const { return {*this}; }
+    std::size_t size() const { return st().d.size(); }
+    bool empty() const { return st().d.empty(); }
+    bool operator==(const deque& o) const { return st().d == o.st().d; }  // maxlen doesn't matter, like Python
 
     std::string sd_repr() const {
         std::string out = "deque([";
         bool first = true;
-        for (const auto& x : d_) {
+        for (const auto& x : st().d) {
             if (!first) out += ", ";
             first = false;
             out += repr(x);
         }
         out += "]";
-        if (maxlen_) out += ", maxlen=" + std::to_string(*maxlen_);
+        if (st().maxlen) out += ", maxlen=" + std::to_string(*st().maxlen);
         return out + ")";
     }
 };
 
 template <class T>
-T& index(deque<T>& d, std::int64_t i) {
-    return d.at(i);
-}
-template <class T>
-const T& index(const deque<T>& d, std::int64_t i) {
+T& index(const deque<T>& d, std::int64_t i) {
     return d.at(i);
 }
 template <class T, class X>

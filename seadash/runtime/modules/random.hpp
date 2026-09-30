@@ -208,7 +208,7 @@ auto choice(const Seq& population) {
 }
 
 template <class T>
-void shuffle(std::vector<T>& x) {
+void shuffle(const list<T>& x) {
     SD_RANDOM_LOCK;
     for (std::size_t i = x.size(); i-- > 1;) {
         std::size_t j = static_cast<std::size_t>(randbelow(static_cast<std::int64_t>(i) + 1));

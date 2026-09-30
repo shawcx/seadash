@@ -1409,12 +1409,26 @@ class Checker:
         for s in stmt.body:
             self.check_stmt(s)
             snapshots.append(self.state.copy())
+        escaped = threads.escapes(stmt.body) if any(i.sym.kind == "mutex" for i in stmt.items) else {}
         for item in stmt.items:
             if item.sym.kind == "mutex" and isinstance(item.target, A.Name):
                 var = item.target.sym
                 if var.captured:
                     raise self.error(
                         f"'{item.target.id}' is only valid while the mutex is held, so a closure can't use it", item.target
+                    )
+                if id(var) in escaped:
+                    name = item.target.id
+                    elem = element_type(var.type)
+                    if elem is not None and threads.holds_references(elem):
+                        copy = f"copy each item too, e.g. [list(row) for row in {name}]"
+                    else:
+                        kind = {ListType: "list", DictType: "dict", SetType: "set"}.get(type(var.type), "list")
+                        copy = f"take a copy: {kind}({name})"
+                    raise CheckError(
+                        f"'{name}' is only valid while the mutex is held, and this would let the data in it escape the "
+                        f"lock (another thread could then change it). Work on it inside the with block, or {copy}",
+                        escaped[id(var)],
                     )
                 if not self.state.dead:
                     self.state.names[item.target.id] = MaybeUnbound()  # gone once the lock is released
@@ -2473,11 +2487,16 @@ class Checker:
             is_none_check = (isinstance(right, A.NoneLit) and (isinstance(lt, OptionalType) or lt == NONE)) or (
                 isinstance(left, A.NoneLit) and isinstance(rt, OptionalType)
             )
-            same_object = lt == rt and isinstance(lt, StructType) and lt.kind == "class"
+            same_object = lt == rt and (
+                (isinstance(lt, StructType) and lt.kind == "class")
+                or isinstance(lt, (ListType, DictType, SetType, DequeType, CounterType, DefaultDictType))
+            )
             if not (is_none_check or same_object):
                 if isinstance(right, A.NoneLit):
                     raise self.error(f"{lt} can never be None (only T? types can)", e)
-                raise self.error(f"'{op}' is for None checks and class instances; use '==' to compare values", e)
+                raise self.error(
+                    f"'{op}' is for None checks, class instances, lists, dicts and sets; use '==' to compare values", e
+                )
 
     def check_attribute(self, e: A.Attribute, value: A.Expr, attr: str, expected: Type | None = None) -> Type:
         if (member := self.class_member(e)) is not None:  # timezone.utc

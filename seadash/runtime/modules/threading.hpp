@@ -1,5 +1,5 @@
 // The `threading` module: real OS threads (no global lock). The checker makes this
-// safe: threads only share values that are copied, or the thread-safe types below.
+// safe: threads only share values that are copied (sd::value_copy), or the thread-safe types below.
 // All of them are handles: copying one shares the same underlying lock/queue/etc.
 #pragma once
 
@@ -168,7 +168,8 @@ class Mutex {
 
 public:
     Mutex() : s_(std::make_shared<State>()) {}
-    explicit Mutex(T value) : s_(std::make_shared<State>()) { s_->value = std::move(value); }
+    // Every way in and out copies (lists, dicts and sets are shared references otherwise).
+    explicit Mutex(const T& value) : s_(std::make_shared<State>()) { s_->value = value_copy(value); }
     struct Guard {
         std::unique_lock<std::mutex> lk;
         T* v;
@@ -177,11 +178,12 @@ public:
     Guard lock() { return Guard{std::unique_lock(s_->mu), &s_->value}; }
     T get() const {
         std::lock_guard lk(s_->mu);
-        return s_->value;
+        return value_copy(s_->value);
     }
-    void set(T value) {
+    void set(const T& value) {
+        T copy = value_copy(value);
         std::lock_guard lk(s_->mu);
-        s_->value = std::move(value);
+        s_->value = std::move(copy);
     }
     std::string sd_repr() const { return "Mutex(" + repr(get()) + ")"; }
 };

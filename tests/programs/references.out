@@ -1,0 +1,18 @@
+[1, 2, 3] [1, 2, 3] True True False
+[1, 2, 3] [1, 2, 3, 4] [1, 2, 3, 5] [1, 2, 3, 6] False
+[1, 2, 3, 4]
+[4, 3, 2, 1]
+[1]
+{'ann': 1, 'bob': 2} {'ann': 1, 'bob': 2, 'cy': 3} True
+['x', 'y'] ['x', 'y', 'z']
+[[7, 0], [7, 0]]
+[[7, 0, 9], [0, 0]]
+[1, 2, 1, 2] [1, 2, 1, 2] {2, 3} {2, 3}
+[1, 2, 1, 2, 0] [1, 2, 1, 2]
+{'a': ['ann']}
+['x', 'y']
+True {1: ['a']} [1, 2] False
+[1, 2, 3, 11, 12]
+RuntimeError: dictionary changed size during iteration
+RuntimeError: Set changed size during iteration
+RuntimeError: deque mutated during iteration

@@ -6,15 +6,19 @@ The rule: a thread may only reach
   * thread-safe objects: Lock, RLock, Event, Queue[T], Mutex[T], Atomic, Thread,
     and instances of threading.Synchronized classes (their methods hold a lock).
 
-Values are copied when they cross into a thread (lists, dicts, structs... are values in
-seadash), so the only ways to *share* memory are class instances, closure-captured
-variables, and module globals. This module checks each Thread(...) call:
+Values are copied (all the way down: sd::value_copy) when they cross into a thread, so
+the only ways to *share* memory are class instances, closure-captured variables, and
+module globals. This module checks each Thread(...) call:
 
   * its args must be sendable (copyable values or thread-safe objects);
   * its target is followed through every function/method it can call, and every module
     global it touches must be thread-safe, or a sendable value that nothing modifies;
   * if the target is a closure, each captured variable must be thread-safe, or a
     sendable value the enclosing function never changes.
+
+Lists, dicts and sets are shared references, so "modifies" includes changing one through
+another name (`other = xs; other.append(1)`, `for row in grid: row.append(0)`) and
+passing it anywhere that could keep or change it (see `uses`).
 
 Races on *logic* (check-then-act) are still possible, as in any language; races on
 memory are not.
@@ -27,6 +31,7 @@ import dataclasses
 from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
+    element_type,
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, DATETIME_TYPES,
     DefaultDictType, DequeType, DictType, FutureType, GeneratorType, EXECUTOR, HTTP_HEADERS, HTTP_RESPONSE, URL_PARTS, URL_REQUEST, LOGGER, LOG_HANDLER, LOG_FORMATTER, MatchType, PatternType, ProcessType, VarTupleType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
@@ -35,6 +40,37 @@ MUTATING_METHODS = frozenset(
     "append insert pop remove extend sort reverse clear update setdefault add discard "
     "appendleft popleft extendleft rotate subtract".split()
 )
+
+# Built-in functions that only read their arguments (or copy them): passing a list to
+# one doesn't let anything change it later...
+READING_BUILTINS = frozenset(
+    "len print str repr ascii format sorted list set dict tuple sum min max any all enumerate zip map "
+    "filter reversed iter hash isinstance bool abs round int float".split()
+)
+# ...except that these hand back its items, which are shared if they're lists themselves.
+ITEM_BUILTINS = frozenset("sorted list set dict tuple min max enumerate zip map filter reversed iter".split())
+
+
+# Built-in methods that copy (put, submit, Mutex.set) or only read a list they're given.
+# Others (d.get(k, xs), xs.append(ys)...) may hand it back or keep it.
+READING_METHODS = frozenset(
+    "put put_nowait submit map set count index union intersection difference symmetric_difference "
+    "issubset issuperset isdisjoint".split()
+)
+
+
+def holds_references(t: Type) -> bool:
+    """Does a value of type t contain a list, dict or set (a shared reference)?"""
+    match t:
+        case ListType() | SetType() | DictType() | DequeType() | DefaultDictType():
+            return True
+        case OptionalType(inner) | VarTupleType(inner):
+            return holds_references(inner)
+        case TupleType(elts):
+            return any(holds_references(e) for e in elts)
+        case StructType() if t.kind == "struct":
+            return False  # (a struct copies its lists)
+    return False
 
 
 class ThreadSafetyError(CheckError):
@@ -134,8 +170,51 @@ def target_vars(target: A.Expr) -> list[Var]:
 
 def changes(nodes) -> tuple[dict[int, int], dict[int, Loc]]:
     """Per variable (by id): how many times it's assigned, and where it's first modified in place."""
+    assigned, modified, _ = uses(nodes)
+    return assigned, modified
+
+
+def escapes(nodes) -> dict[int, Loc]:
+    """Per variable (by id): where a list, dict or set it holds first escapes (is bound to
+    another name, stored, returned or passed on), so something else could reach it."""
+    return uses(nodes)[2]
+
+
+def uses(nodes) -> tuple[dict[int, int], dict[int, Loc], dict[int, Loc]]:
     assigned: dict[int, int] = {}
     modified: dict[int, Loc] = {}
+    escaped: dict[int, Loc] = {}
+
+    # `for row in grid`: row is one of grid's lists, so changing or keeping row reaches grid.
+    aliases: dict[int, list[Var]] = {}
+
+    def sources(var: Var) -> list[Var]:
+        out, todo, seen = [], [var], set()
+        while todo:
+            v = todo.pop()
+            if id(v) in seen:
+                continue
+            seen.add(id(v))
+            out.append(v)
+            todo.extend(aliases.get(id(v), []))
+        return out
+
+    looped: set[int] = set()  # the iterables of for loops and comprehensions: enumerate(grid)
+
+    def targets_of(ts: list[A.Expr]) -> None:  # `a, b = ...`: a tuple of targets, not of values
+        for t in ts:
+            for n in walk(t):
+                if isinstance(n, (A.TupleLit, A.ListLit)):
+                    copied.add(id(n))
+
+    def alias(targets: list[Var], iterable: A.Expr) -> None:
+        looped.add(id(iterable))
+        elem = element_type(iterable.ty) if iterable.ty is not None else None
+        roots = [n.sym for n in walk(iterable) if isinstance(n, A.Name) and isinstance(n.sym, Var)
+                 and holds_references(n.sym.type)]
+        if roots and (elem is None or holds_references(elem)):
+            for v in targets:
+                aliases.setdefault(id(v), []).extend(roots)
 
     def assign(var: Var | None) -> None:
         if var is not None:
@@ -143,7 +222,26 @@ def changes(nodes) -> tuple[dict[int, int], dict[int, Loc]]:
 
     def modify(var: Var | None, loc: Loc) -> None:
         if var is not None:
-            modified.setdefault(id(var), loc)
+            for v in sources(var):
+                modified.setdefault(id(v), loc)
+
+    copied: set[int] = set()  # literals handed straight to something that copies them: Thread(args=(xs,))
+
+    def escape(e: A.Expr | None) -> None:
+        """A list, dict or set used as a value (bound to another name, stored, returned,
+        passed to a function) could be changed through that other reference: count it as
+        modified."""
+        if isinstance(e, (A.Name, A.Attribute, A.Index)) and e.ty is not None and holds_references(e.ty):
+            modify(base_var(e), e.loc)
+            if (var := base_var(e)) is not None:
+                for v in sources(var):
+                    escaped.setdefault(id(v), e.loc)
+        elif isinstance(e, A.IfExp):
+            escape(e.body)
+            escape(e.orelse)
+        elif isinstance(e, A.BoolOp):
+            escape(e.left)
+            escape(e.right)
 
     def visit(n: A.Node, in_loop: bool) -> None:
         handle(n, in_loop)
@@ -163,12 +261,40 @@ def changes(nodes) -> tuple[dict[int, int], dict[int, Loc]]:
     def handle(n: A.Node, in_loop: bool) -> None:
         targets: list[A.Expr] = []
         match n:
-            case A.Assign(ts):
+            case A.Assign(ts, value):
                 targets = ts
-            case A.AnnAssign(t) | A.AugAssign(t) | A.For(t):
+                targets_of(ts)
+                escape(value)
+            case A.AnnAssign(t, _, value):
                 targets = [t]
-            case A.NamedExpr(t):
+                escape(value)
+            case A.For(t, iterable):
                 targets = [t]
+                targets_of([t])
+                alias(target_vars(t), iterable)
+            case A.AugAssign(t):
+                targets = [t]
+            case A.ListComp(elt, gens) | A.SetComp(elt, gens) | A.GeneratorExp(elt, gens):
+                for g in gens:
+                    targets_of([g.target])
+                    alias(target_vars(g.target), g.iter)
+                escape(elt)
+            case A.DictComp(_, value, gens):
+                for g in gens:
+                    targets_of([g.target])
+                    alias(target_vars(g.target), g.iter)
+                escape(value)
+            case A.NamedExpr(t, value):
+                targets = [t]
+                escape(value)
+            case A.Return(value) | A.Yield(value):
+                escape(value)
+            case A.ListLit(elts) | A.TupleLit(elts) | A.SetLit(elts) if id(n) not in copied:
+                for elt in elts:
+                    escape(elt)
+            case A.DictLit(keys, values) if id(n) not in copied:
+                for v in values:
+                    escape(v)
             case A.WithItem(_, t) if t is not None:
                 targets = [t]
             case A.MatchAs(_, t) | A.MatchStar(t) | A.MatchMapping(_, _, t) if t is not None:
@@ -176,6 +302,21 @@ def changes(nodes) -> tuple[dict[int, int], dict[int, Loc]]:
             case A.Call(func, args):
                 ct = n.sym
                 kind = getattr(ct, "kind", None)
+                reads_only = (
+                    (kind == "builtin" and ct.target in READING_BUILTINS)
+                    or (kind == "builtin_method" and isinstance(func, A.Attribute) and func.attr in READING_METHODS)
+                    or kind in ("module_func", "sync_new", "collection_new", "isinstance")  # (these copy, or only read)
+                    or (kind == "ctor" and isinstance(ct.target, StructType) and ct.target.kind == "struct")  # (copies)
+                )
+                if not reads_only:
+                    for arg in [*args, *(k.value for k in n.keywords)]:
+                        escape(arg)
+                elif kind == "builtin" and ct.target in ITEM_BUILTINS and id(n) not in looped:
+                    for arg in args:  # list(grid) shares grid's rows
+                        if arg.ty is not None and (elem := element_type(arg.ty)) is not None and holds_references(elem):
+                            escape(arg)
+                elif kind != "builtin":  # (a built-in function returns a new value; these take a copy)
+                    copied.update(id(a) for a in [*args, *(k.value for k in n.keywords)])
                 if kind == "builtin_method" and isinstance(func, A.Attribute) and func.attr in MUTATING_METHODS:
                     modify(base_var(func.value), n.loc)
                 elif kind == "method" and isinstance(func, A.Attribute):
@@ -198,7 +339,7 @@ def changes(nodes) -> tuple[dict[int, int], dict[int, Loc]]:
 
     for root in nodes:
         visit(root, False)
-    return assigned, modified
+    return assigned, modified, escaped
 
 
 @dataclasses.dataclass

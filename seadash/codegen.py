@@ -299,7 +299,7 @@ class CodeGen:
             case ListType(elem):
                 return f"sd::list<{self.cpp_type(elem)}>"
             case SetType(elem):
-                return f"std::set<{self.cpp_type(elem)}>"
+                return f"sd::set<{self.cpp_type(elem)}>"
             case DequeType(elem):
                 return f"sd::deque<{self.cpp_type(elem)}>"
             case VarTupleType(elem):
@@ -461,8 +461,20 @@ class CodeGen:
             self.line(f"{name}({params});")
         elif st.fields:
             params = ", ".join(f"{self.cpp_type(f.type)} sd_{f.name}" for f in st.fields.values())
-            inits = ", ".join(f"{ident(f.name)}(std::move(sd_{f.name}))" for f in st.fields.values())
+            inits = ", ".join(
+                f"{ident(f.name)}(sd::value_copy(sd_{f.name}))" if holds_references(f.type) else f"{ident(f.name)}(std::move(sd_{f.name}))"
+                for f in st.fields.values()
+            )
             self.line(f"{name}({params}) : {inits} {{}}")
+        if any(holds_references(f.type) for f in st.fields.values()):
+            # A struct is a value all the way down: copying one copies its lists, dicts and sets.
+            copies = [(ident(f.name), f"sd::value_copy(o.{ident(f.name)})" if holds_references(f.type) else f"o.{ident(f.name)}")
+                      for f in st.fields.values()]
+            self.line(f"{name}(const {name}& o) : {', '.join(f'{n}({c})' for n, c in copies)} {{}}")
+            self.line(f"{name}({name}&&) = default;")
+            assigns = " ".join(f"{n} = {c};" for n, c in copies)
+            self.line(f"{name}& operator=(const {name}& o) {{ if (this != &o) {{ {assigns} }} return *this; }}")
+            self.line(f"{name}& operator=({name}&&) = default;")
         for m in st.methods.values():
             if m.name != "__init__":
                 static = "static " if is_static(m) else ""
@@ -622,7 +634,11 @@ class CodeGen:
         if st.kind == "class" and self.own_init(st) and "__init__" not in st.methods:
             fields_all = list(st.all_fields().values())
             params = ", ".join(f"{self.cpp_type(f.type)} sd_a{i}" for i, f in enumerate(fields_all))
-            sets = " ".join(f"this->{ident(f.name)} = std::move(sd_a{i});" for i, f in enumerate(fields_all))
+            sets = " ".join(
+                f"this->{ident(f.name)} = sd::value_copy(sd_a{i});" if is_synchronized(st) and holds_references(f.type)
+                else f"this->{ident(f.name)} = std::move(sd_a{i});"
+                for i, f in enumerate(fields_all)
+            )
             self.line(f"void {name}::sd_init({params}) {{ {sets} }}")
             self.line()
         for m in st.methods.values():
@@ -689,7 +705,7 @@ class CodeGen:
                 name = f"sd_arg_{var.cpp_name}" if var.captured else ident(p.name)
                 out.append(f"{t} {name}")
             else:
-                own_copy = var.captured or p.name in modified_names(fn.node.body)
+                own_copy = var.captured or p.name in modified_names(fn.node.body) or synchronized_copy(fn, p.type)
                 out.append(f"const {t}& {f'sd_arg_{var.cpp_name}' if own_copy else ident(p.name)}")
         return out
 
@@ -772,14 +788,18 @@ class CodeGen:
 
     def cell_params(self, fn: FuncInfo) -> None:
         """Parameters captured by a closure are copied into cells on entry; parameters the
-        body modifies get a local copy (the caller's value is untouched: values semantics)."""
+        body modifies get a local variable (a struct is copied, so the caller's is untouched;
+        a list is a shared handle, so changes reach the caller as in Python)."""
         modified = modified_names(fn.node.body)
         for var in self.param_vars(fn):
             t = self.cpp_type(var.type)
+            arg = f"sd_arg_{var.cpp_name}"
+            if synchronized_copy(fn, var.type):  # a Synchronized object keeps nothing its caller can reach
+                arg = f"sd::value_copy({arg})"
             if var.captured:
-                self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>(sd_arg_{var.cpp_name});")
-            elif var.name in modified and not by_value(var.type):
-                self.line(f"{t} {ident(var.cpp_name)} = sd_arg_{var.cpp_name};")
+                self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>({arg});")
+            elif (var.name in modified and not by_value(var.type)) or synchronized_copy(fn, var.type):
+                self.line(f"{t} {ident(var.cpp_name)} = {arg};")
 
     # =========================================================================
     # Statements
@@ -923,6 +943,8 @@ class CodeGen:
             self.line("return;")
         elif value is None:
             self.line("return std::nullopt;" if isinstance(ret, OptionalType) else "return;")
+        elif synchronized_copy(self.func, ret):
+            self.line(f"return sd::value_copy({self.expr_as(value, ret)});")  # nothing escapes the lock shared
         else:
             self.line(f"return {self.expr_as(value, ret)};")
 
@@ -1292,7 +1314,10 @@ class CodeGen:
                 setter: FuncInfo = target.sym[1]
                 self.line(f"{self.member(target.value, setter)}({self.coerce(code, ty, setter.params[0].type)});")
             case A.Attribute():
-                self.line(f"{self.attribute(target)} = {self.coerce(code, ty, target.ty)};")
+                value = self.coerce(code, ty, target.ty)
+                if isinstance(target.value.ty, StructType) and target.value.ty.kind == "struct" and holds_references(target.ty):
+                    value = f"sd::value_copy({value})"  # a struct is a value all the way down
+                self.line(f"{self.attribute(target)} = {value};")
             case A.Index(container, index):
                 c = self.expr(container)
                 if target.dunder is not None:  # obj[k] = v -> obj.__setitem__(k, v)
@@ -1342,6 +1367,12 @@ class CodeGen:
             if op == "+" and isinstance(read_type, ListType) and write is read_var:
                 self.line(f"sd::list_extend({self.var_ref(write)}, {self.expr(value)});")
                 return
+            if isinstance(read_type, (ListType, SetType)) and write is read_var and result == read_type and s.dunder is None:
+                # xs *= 2, s |= t: in place, so other references to the list or set see it
+                current = self.var_code(read_var, read_type)
+                new = self.binop_code(op, current, read_type, self.expr(value), value.ty, result, s.dunder)
+                self.line(f"sd::assign_contents({current}, {new});")
+                return
             current = self.var_code(read_var, read_type)
             if write is read_var and read_type == result == write.type == value.ty and (
                 (op in ("+", "-", "*") and is_numeric(result)) or (op == "+" and result == STR)
@@ -1372,7 +1403,12 @@ class CodeGen:
         self.open("")
         self.line(f"auto& {ref} = {lvalue};")
         new = self.binop_code(op, ref, read_type, self.expr(value), value.ty, result, s.dunder)
-        self.line(f"{ref} = {self.coerce(new, result, read_type)};")
+        if isinstance(read_type, ListType) and op == "+" and s.dunder is None:
+            self.line(f"sd::list_extend({ref}, {self.expr(value)});")  # obj.xs += ys extends it in place
+        elif isinstance(read_type, (ListType, SetType)) and result == read_type and s.dunder is None:
+            self.line(f"sd::assign_contents({ref}, {new});")
+        else:
+            self.line(f"{ref} = {self.coerce(new, result, read_type)};")
         self.close()
 
     # =========================================================================
@@ -1771,6 +1807,8 @@ class CodeGen:
                 return f"sd::contains({rc}, {lc})"
             case "not in":
                 return f"(!sd::contains({rc}, {lc}))"
+            case "is" | "is not" if not isinstance(left.ty, StructType):  # the same list, dict or set
+                return f"({lc}.identity() {'==' if op == 'is' else '!='} {rc}.identity())"
             case "is":
                 return f"({lc}.get() == {rc}.get())"  # identity, whatever __eq__ says
             case "is not":
@@ -2263,7 +2301,7 @@ class CodeGen:
             packed = "std::make_tuple()"
         name = self.expr(extra["name"]) if extra["name"] is not None else "std::nullopt"
         daemon = self.expr(extra["daemon"]) if extra["daemon"] is not None else "false"
-        body = f"[sd_f = {self.expr(extra['target'])}, sd_a = {packed}]() mutable {{ std::apply(sd_f, sd_a); }}"
+        body = f"[sd_f = {self.expr(extra['target'])}, sd_a = sd::value_copy({packed})]() mutable {{ std::apply(sd_f, sd_a); }}"
         return f"sd::threading::Thread({body}, {name}, {cpp_string(extra['target_name'])}, {daemon})"
 
     def call_args(self, slots: list[A.Expr | None], fn: FuncInfo) -> str:
@@ -2382,7 +2420,7 @@ class CodeGen:
                 k, v = e.ty.key, e.ty.value
                 return f"sd::dict_from_pairs<{self.cpp_type(k)}, {self.cpp_type(v)}>({a})"
             case "dict" if a:
-                return f"{self.cpp_type(e.ty)}({a})"  # a copy (of a plain dict, defaultdict or Counter)
+                return f"{self.cpp_type(e.ty)}(sd::shallow_copy({a}))"  # a copy (of a plain dict, defaultdict or Counter)
             case "dict":
                 return f"{self.cpp_type(e.ty)}{{}}"
             case "input":
@@ -2543,7 +2581,7 @@ class CodeGen:
                 return self.match_method(r, name, e)
             case DequeType(elem):
                 if name == "copy":
-                    return f"{self.cpp_type(recv_type)}({r})"
+                    return f"sd::shallow_copy({r})"
                 if name in ("append", "appendleft", "count", "index", "remove"):
                     return f"{r}.{name}({self.expr_as(e.args[0], elem)})"
                 if name == "insert":
@@ -2561,7 +2599,7 @@ class CodeGen:
                     case "clear":
                         return f"{r}.clear()"
                     case "copy":
-                        return f"{self.cpp_type(recv_type)}({r})"
+                        return f"sd::shallow_copy({r})"
                     case "sort":
                         rev = self.keyword(e, "reverse")
                         rev_code = self.expr(rev) if rev else "false"
@@ -2580,7 +2618,7 @@ class CodeGen:
                     case "keys" | "values" | "items" | "clear":
                         return f"{r}.{name}()"
                     case "copy":
-                        return f"{self.cpp_type(recv_type)}({r})"
+                        return f"sd::shallow_copy({r})"
                 return f"sd::dict_{name}({r}{rest})"
             case SetType():
                 match name:
@@ -2591,7 +2629,7 @@ class CodeGen:
                     case "clear":
                         return f"{r}.clear()"
                     case "copy":
-                        return f"{self.cpp_type(recv_type)}({r})"
+                        return f"sd::shallow_copy({r})"
                     case "remove":
                         return f"sd::set_remove({r}{rest})"
                     case "union":
@@ -2743,6 +2781,25 @@ def is_static(fn: FuncInfo) -> bool:
 
 def is_synchronized(st: StructType) -> bool:
     return any(t.builtin and t.name == "Synchronized" for t in st.ancestors())
+
+
+def holds_references(t: Type) -> bool:
+    """Does a value of type t contain a list, dict or set (which a struct must copy, not share)?
+    Structs inside copy themselves; class instances are always shared."""
+    match t:
+        case ListType() | SetType() | DictType() | DequeType() | CounterType() | DefaultDictType():
+            return True
+        case OptionalType(inner) | VarTupleType(inner):
+            return holds_references(inner)
+        case TupleType(elts):
+            return any(holds_references(e) for e in elts)
+    return False
+
+
+def synchronized_copy(fn: FuncInfo | None, t: Type) -> bool:
+    """A Synchronized class's methods copy the lists, dicts and sets they take and return,
+    so its state is never shared with code that doesn't hold its lock."""
+    return fn is not None and fn.owner is not None and is_synchronized(fn.owner) and holds_references(t)
 
 
 def by_value(t: Type) -> bool:
