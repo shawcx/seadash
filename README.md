@@ -70,10 +70,13 @@ Python you write and gives you the C++ you'd want underneath.
 |---|---:|---:|---:|
 | `lists_dicts`: building and querying lists and dicts | 2.08s | 0.28s | **7.5x** |
 | `objects`: classes, virtual methods, floats, recursion | 2.51s | 0.03s | **73x** |
-| `threads`: parallel CPU work, queues, locks | 7.42s | 0.20s | **37x** |
+| `threads`: parallel CPU work, queues, locks | 7.45s | 0.21s | **35x** |
+| `hashing`: hashlib/hmac on small messages, bulk data, pbkdf2 | 1.22s | 0.90s | 1.4x |
+| `sockets`: localhost TCP round trips, bulk transfer, connections | 2.00s | 1.74s | 1.2x |
 
 The threads benchmark shows what real parallelism looks like: on CPython, 8 threads take
-exactly as long as 1.
+exactly as long as 1. The last two are honest about where seadash can't help much: most
+of their time is spent in OpenSSL and in the kernel, the same code for both languages.
 
 ## Getting started
 

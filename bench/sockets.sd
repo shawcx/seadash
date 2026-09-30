@@ -1,0 +1,76 @@
+# Runs unchanged under python3 and seadash: a localhost TCP echo server in a thread,
+# measuring request/response round trips, bulk throughput, and connection setup.
+import socket
+import threading
+
+ROUND_TRIPS = 80_000
+MESSAGE = 32
+BULK_BYTES = 400 * 1024 * 1024
+CHUNK = 64 * 1024
+CONNECTIONS = 4_000
+
+
+def recv_exact(conn: socket.socket, n: int) -> bytes:
+    data = b""
+    while len(data) < n:
+        part = conn.recv(n - len(data))
+        if not part:
+            break
+        data += part
+    return data
+
+
+def serve(server: socket.socket):
+    # 1. echo fixed-size messages
+    conn, _ = server.accept()
+    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    for _ in range(ROUND_TRIPS):
+        conn.sendall(recv_exact(conn, MESSAGE))
+    # 2. count a bulk upload, then report how much arrived
+    received = 0
+    while received < BULK_BYTES:
+        part = conn.recv(CHUNK)
+        if not part:
+            break
+        received += len(part)
+    conn.sendall(str(received).encode())
+    conn.close()
+    # 3. many short connections: read a byte, answer with a byte
+    for _ in range(CONNECTIONS):
+        c, _ = server.accept()
+        c.sendall(recv_exact(c, 1))
+        c.close()
+
+
+server = socket.create_server(("127.0.0.1", 0))
+port = server.getsockname()[1]
+t = threading.Thread(target=serve, args=(server,))
+t.start()
+
+client = socket.create_connection(("127.0.0.1", port))
+client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+checksum = 0
+for i in range(ROUND_TRIPS):
+    message = (str(i) * MESSAGE)[:MESSAGE].encode()
+    client.sendall(message)
+    reply = recv_exact(client, MESSAGE)
+    checksum = (checksum * 31 + reply[0] + reply[-1]) % 1_000_003
+print("round trips:", ROUND_TRIPS, "checksum:", checksum)
+
+chunk = b"x" * CHUNK
+sent = 0
+while sent < BULK_BYTES:
+    client.sendall(chunk)
+    sent += len(chunk)
+print("bulk bytes received:", int(recv_exact(client, len(str(BULK_BYTES))).decode()))
+client.close()
+
+answered = 0
+for _ in range(CONNECTIONS):
+    c = socket.create_connection(("127.0.0.1", port))
+    c.sendall(b"!")
+    answered += len(recv_exact(c, 1))
+    c.close()
+print("connections answered:", answered)
+t.join()
+server.close()

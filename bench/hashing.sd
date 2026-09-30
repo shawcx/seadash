@@ -1,0 +1,34 @@
+# Runs unchanged under python3 and seadash: hashlib and hmac on many small messages
+# (where per-call overhead matters), on bulk data, and key derivation.
+import hashlib
+import hmac
+
+# Many small messages: a fresh hash object per message.
+digest_bytes = 0
+for i in range(300_000):
+    digest_bytes += hashlib.sha256(str(i).encode()).digest()[0]
+print("sha256 of small messages:", digest_bytes)
+
+# One incremental hash over many small updates.
+h = hashlib.md5()
+for i in range(1_000_000):
+    h.update(str(i).encode())
+print("md5 of a counter stream:", h.hexdigest())
+
+# Message authentication codes.
+key = b"secret key"
+mac_bytes = 0
+for i in range(200_000):
+    mac_bytes += hmac.new(key, str(i).encode(), hashlib.sha256).digest()[-1]
+print("hmac-sha256:", mac_bytes)
+
+# Bulk data: dominated by OpenSSL itself in both.
+block = bytes(range(256)) * 4096  # 1 MiB
+for name in ["sha1", "sha256", "sha512", "blake2b", "sha3_256"]:
+    bulk = hashlib.new(name)
+    for _ in range(64):
+        bulk.update(block)
+    print(name, "of 64 MiB:", bulk.hexdigest()[:16])
+
+# Key derivation.
+print("pbkdf2:", hashlib.pbkdf2_hmac("sha256", b"password", b"salt", 200_000).hex()[:32])
