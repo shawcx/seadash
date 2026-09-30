@@ -2557,6 +2557,16 @@ MODULES["string"] = module_with_params(runtime_module(
 MODULES["string"].members["Template"].as_type = STR_TEMPLATE
 
 
+# ---- shlex ----------------------------------------------------------------------------
+
+MODULES["shlex"] = module_with_params(runtime_module(
+    "shlex", "modules/shlex.hpp",
+    split=(signature(ListType(STR), ("s", STR), ("comments", BOOL, "false"), ("posix", BOOL, "true")), "sd::shlex::split"),
+    quote=(signature(STR, ("s", STR)), "sd::shlex::quote"),
+    join=(signature(STR, ("split_command", ListType(STR))), "sd::shlex::join"),
+))
+
+
 # ---- hashlib, hmac ------------------------------------------------------------------------
 
 HASH_NAMES = ("md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3_224", "sha3_256", "sha3_384", "sha3_512",

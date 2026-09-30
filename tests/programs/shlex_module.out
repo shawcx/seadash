@@ -1,0 +1,36 @@
+'ls -l /tmp' -> ['ls', '-l', '/tmp']
+'echo \'hello world\' "quoted \\"inner\\" text" plain' -> ['echo', 'hello world', 'quoted "inner" text', 'plain']
+'a\\ b c\\\\d \'e\\f\' "g\\h" "i\\\\j" "k\\$l"' -> ['a b', 'c\\d', 'e\\f', 'g\\h', 'i\\j', 'k\\$l']
+'  leading and   multiple   spaces\t\ttabs\n' -> ['leading', 'and', 'multiple', 'spaces', 'tabs']
+'empty \'\' "" args' -> ['empty', '', '', 'args']
+'mixed\'quo\'tes"in"one\\ word' -> ['mixedquotesinone word']
+"unicode café 'naïve ☃' 日本語" -> ['unicode', 'café', 'naïve ☃', '日本語']
+'trailing\\' -> ValueError: No escaped character
+'' -> []
+'   ' -> []
+'\'single\'\'adjacent\'"double"' -> ['singleadjacentdouble']
+'back\\\\slash "in \\\\ quotes" \'and \\\\ here\'' -> ['back\\slash', 'in \\ quotes', 'and \\\\ here']
+'path/to/file.txt --flag=value -x=1,2' -> ['path/to/file.txt', '--flag=value', '-x=1,2']
+"unterminated 'quote" -> ValueError: No closing quotation
+'open "double' -> ValueError: No closing quotation
+'a b\\' -> ValueError: No escaped character
+['run', 'this', '#', 'not', 'this', 'and', 'this', '#', 'nor', 'this', '#hash', 'in', 'quotes', '#comment']
+['run', 'this', 'and', 'this', '#hash', 'in', 'quotes']
+[] ['x']
+'simple' -> simple
+'two words' -> 'two words'
+"it's" -> 'it'"'"'s'
+'' -> ''
+'a"b' -> 'a"b'
+'$HOME' -> '$HOME'
+'café' -> 'café'
+'naïve ☃' -> 'naïve ☃'
+'@safe%chars+=:,./-' -> @safe%chars+=:,./-
+'semi;colon' -> 'semi;colon'
+'new\nline' -> 'new
+line'
+'tab\there' -> 'tab	here'
+simple 'two words' 'it'"'"'s' '' 'a"b' '$HOME' 'café' 'naïve ☃' @safe%chars+=:,./- 'semi;colon' 'new
+line' 'tab	here'
+echo 'hello world' 'it'"'"'s fine'
+True

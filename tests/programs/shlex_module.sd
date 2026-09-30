@@ -1,0 +1,40 @@
+import shlex
+
+commands = [
+    "ls -l /tmp",
+    "echo 'hello world' \"quoted \\\"inner\\\" text\" plain",
+    "a\\ b c\\\\d 'e\\f' \"g\\h\" \"i\\\\j\" \"k\\$l\"",
+    "  leading and   multiple   spaces\t\ttabs\n",
+    "empty '' \"\" args",
+    "mixed'quo'tes\"in\"one\\ word",
+    "unicode café 'naïve ☃' 日本語",
+    "trailing\\",
+    "",
+    "   ",
+    "'single''adjacent'\"double\"",
+    "back\\\\slash \"in \\\\ quotes\" 'and \\\\ here'",
+    "path/to/file.txt --flag=value -x=1,2",
+]
+for command in commands:
+    try:
+        print(repr(command), "->", shlex.split(command))
+    except ValueError as e:
+        print(repr(command), "-> ValueError:", e)
+
+for bad in ["unterminated 'quote", 'open "double', "a b\\"]:
+    try:
+        print(shlex.split(bad))
+    except ValueError as e:
+        print(repr(bad), "-> ValueError:", e)
+
+with_comments = "run this # not this\nand this # nor this\n'#hash' in quotes #comment"
+print(shlex.split(with_comments))
+print(shlex.split(with_comments, comments=True))
+print(shlex.split("# only a comment", comments=True), shlex.split("x #y", True))
+
+words = ["simple", "two words", "it's", "", "a\"b", "$HOME", "café", "naïve ☃", "@safe%chars+=:,./-", "semi;colon", "new\nline", "tab\there"]
+for word in words:
+    print(repr(word), "->", shlex.quote(word))
+print(shlex.join(words))
+print(shlex.join(["echo", "hello world", "it's fine"]))
+print(shlex.split(shlex.join(words)) == words)

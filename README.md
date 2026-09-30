@@ -202,6 +202,7 @@ def work():
 | module | notes |
 |---|---|
 | `base64`, `zlib` | encode, decode, compress |
+| `shlex` | `split`, `quote`, `join` (POSIX mode) |
 | `json` | typed: `json.loads` straight into your dataclasses, lists and dicts; `json.Value` for dynamic JSON |
 | `os`, `os.path` | files, directories, environment |
 | `sys` | `argv`, `exit`, `stdin`/`stdout`/`stderr`, `platform`, `maxsize` |
