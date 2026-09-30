@@ -652,6 +652,27 @@ std::string dumps(const T& x, std::optional<std::int64_t> indent = std::nullopt,
     return out;
 }
 
+// `case 3:` / `case "a":` / `case True:` against a Value, with Python's rules: numbers compare
+// by value (3 == 3.0, 1 == True), while True/False patterns only match booleans.
+inline bool equals_literal(const Value& v, bool x) { return v.kind == Value::Kind::Bool && v.b == x; }
+inline bool equals_literal(const Value& v, std::int64_t x) {
+    switch (v.kind) {
+        case Value::Kind::Int: return v.i == x;
+        case Value::Kind::Float: return v.f == static_cast<double>(x);
+        case Value::Kind::Bool: return static_cast<std::int64_t>(v.b) == x;
+        default: return false;
+    }
+}
+inline bool equals_literal(const Value& v, double x) {
+    switch (v.kind) {
+        case Value::Kind::Int: return static_cast<double>(v.i) == x;
+        case Value::Kind::Float: return v.f == x;
+        case Value::Kind::Bool: return static_cast<double>(v.b) == x;
+        default: return false;
+    }
+}
+inline bool equals_literal(const Value& v, const std::string& x) { return v.kind == Value::Kind::Str && v.s == x; }
+
 template <class T>
 void dump(const T& x, const std::shared_ptr<TextFile>& file, std::optional<std::int64_t> indent = std::nullopt,
           bool sort_keys = false, bool ensure_ascii = true,

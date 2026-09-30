@@ -411,6 +411,82 @@ class ExceptHandler(Node):
     body: list[Stmt]
 
 
+# ---- match statements -------------------------------------------------------
+
+
+@dataclass
+class Pattern(Node):
+    ty: object = field(default=None, compare=False, repr=False, kw_only=True)  # the subject type it's matched against
+
+
+@dataclass
+class MatchValue(Pattern):
+    """`1`, `-2.5`, `"a"`, `b"x"`, `True`, `None`, `mod.CONSTANT`: equal to this value."""
+
+    value: Expr
+
+
+@dataclass
+class MatchAs(Pattern):
+    """`name` (capture), `_` (wildcard: both None), or `pattern as name`."""
+
+    pattern: Pattern | None
+    name: Name | None
+
+
+@dataclass
+class MatchOr(Pattern):
+    """`p1 | p2 | ...`"""
+
+    patterns: list[Pattern]
+
+
+@dataclass
+class MatchSequence(Pattern):
+    """`[a, b, *rest]` or `(a, b)`: at most one MatchStar."""
+
+    patterns: list[Pattern]
+
+
+@dataclass
+class MatchStar(Pattern):
+    """`*rest` or `*_` inside a sequence pattern."""
+
+    name: Name | None
+
+
+@dataclass
+class MatchMapping(Pattern):
+    """`{"key": pattern, **rest}`"""
+
+    keys: list[Expr]
+    patterns: list[Pattern]
+    rest: Name | None = None
+
+
+@dataclass
+class MatchClass(Pattern):
+    """`Point(0, y=py)`, `int(n)`, `Dog()`."""
+
+    cls: Expr
+    patterns: list[Pattern]
+    kwd_names: list[str] = field(default_factory=list)
+    kwd_patterns: list[Pattern] = field(default_factory=list)
+
+
+@dataclass
+class MatchCase(Node):
+    pattern: Pattern
+    guard: Expr | None
+    body: list[Stmt]
+
+
+@dataclass
+class Match(Stmt):
+    subject: Expr
+    cases: list[MatchCase]
+
+
 @dataclass
 class Try(Stmt):
     body: list[Stmt]

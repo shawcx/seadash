@@ -1446,6 +1446,14 @@ bool contains(const dict<K, V>& d, const std::type_identity_t<K>& k) {
     return d.contains(k);
 }
 inline bool contains(const std::string& s, const std::string& sub) { return s.find(sub) != std::string::npos; }
+// `case {"a": x, **rest}`: rest is the other entries.
+template <class K, class V>
+dict<K, V> dict_without(const dict<K, V>& d, const std::vector<K>& keys) {
+    dict<K, V> out;
+    for (const auto& [k, v] : d)
+        if (std::find(keys.begin(), keys.end(), k) == keys.end()) out[k] = v;
+    return out;
+}
 inline bool contains(const bytes& b, const bytes& sub) { return b.data.find(sub.data) != std::string::npos; }
 inline bool contains(const bytes& b, std::int64_t byte) {
     if (byte < 0 || byte > 255) raise("ValueError", "byte must be in range(0, 256)");

@@ -429,7 +429,35 @@ def test_locations_are_recorded():
     ("x: (int, str) = 1\n", "expected '->' after a parameter list in a function type", Loc(1, 15)),
     ("x: 5 = 1\n", "expected a type, found number 5", Loc(1, 4)),
     ("f(x for x in xs, 1)\n", "generator expression must be parenthesized", Loc(1, 3)),
+    ("case 1:\n    pass\n", "'case' outside a 'match' statement", Loc(1, 1)),
+    ("match x:\n    pass\n", "expected 'case' inside 'match', found 'pass'", Loc(2, 5)),
+    ("match x:\n    case *a:\n        pass\n", "a starred pattern needs to be inside a sequence pattern", Loc(2, 10)),
+    ("match x:\n    case {**_}:\n        pass\n", "'**_' isn't allowed; leave it out to ignore the other keys", Loc(2, 13)),
+    ("match x:\n    case f\"a\":\n        pass\n",
+     "an f-string can't be a pattern; match a plain string, or use a guard (`case s if ...`)", Loc(2, 10)),
+    ("match x:\n    case P(x=1, 2):\n        pass\n", "positional patterns follow keyword patterns", Loc(2, 17)),
 ])
 def test_errors(src, msg, loc):
     err = parse_error(src)
     assert (err.message, err.loc) == (msg, loc)
+
+
+def test_match_is_a_soft_keyword():
+    tree = parse("match = 1\nmatch.x = 2\nmatch(3)\nmatch -x:\n    case -1:\n        pass\n")
+    assert [type(s).__name__ for s in tree.body] == ["Assign", "Assign", "ExprStmt", "Match"]
+    case = tree.body[3].cases[0]
+    assert case.pattern == A.MatchValue(A.UnaryOp("-", A.IntLit(1)))
+
+
+def test_match_patterns():
+    tree = parse("match p:\n    case Point(0, y=[a, *rest]) | {'k': _, **others} as q if q:\n        pass\n")
+    [case] = tree.body[0].cases
+    assert case.pattern == A.MatchAs(
+        A.MatchOr([
+            A.MatchClass(A.Name("Point"), [A.MatchValue(A.IntLit(0))], ["y"],
+                         [A.MatchSequence([A.MatchAs(None, A.Name("a")), A.MatchStar(A.Name("rest"))])]),
+            A.MatchMapping([A.StrLit("k")], [A.MatchAs(None, None)], A.Name("others")),
+        ]),
+        A.Name("q"),
+    )
+    assert case.guard == A.Name("q")

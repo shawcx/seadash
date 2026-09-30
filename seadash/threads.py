@@ -171,6 +171,8 @@ def changes(nodes) -> tuple[dict[int, int], dict[int, Loc]]:
                 targets = [t]
             case A.WithItem(_, t) if t is not None:
                 targets = [t]
+            case A.MatchAs(_, t) | A.MatchStar(t) | A.MatchMapping(_, _, t) if t is not None:
+                targets = [t]  # a pattern's capture assigns the name
             case A.Call(func, args):
                 ct = n.sym
                 kind = getattr(ct, "kind", None)

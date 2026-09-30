@@ -148,6 +148,27 @@ if (i := find(names, "bob")) is not None:
     print(names[i])        # i is an int here
 ```
 
+**`match` statements**, with every kind of pattern Python has: literals, captures, `|`,
+`as`, sequences with `*rest`, mappings with `**rest`, class patterns and guards. Captured
+names get precise types, matching narrows the subject (`case Dog():`), and patterns that
+can never match are compile errors. Class patterns work on `json.Value` too.
+
+```python
+match command.split():
+    case ["go", direction]:
+        go(direction)                # direction is a str
+    case ["drop", *items] if items:
+        drop(items)                  # items is a list[str]
+    case ["quit" | "exit"]:
+        quit()
+
+match shape:                         # a json.Value
+    case {"type": "circle", "r": float(r)}:
+        print(3.14159 * r * r)
+    case {"type": "rect", "size": [int(w), int(h)]}:
+        print(w * h)
+```
+
 **Also supported:**
 - **Functions:** generics (`def first[T](xs: list[T]) -> T | None`, `class Stack[T]:`), closures that share variables like Python's, lambdas, and functions as values.
 - **Generators:** `yield` and `yield from` (in functions and methods, including `__iter__`), `next()`, and `iter()`; they're C++20 coroutines, so values are made on demand, even from infinite generators. Generator expressions, `map`, `filter`, `zip` and `enumerate` are lazy too.
@@ -210,6 +231,7 @@ seadash borrows Python's syntax, not all of its semantics:
 - **Strings are UTF-8 bytes.** Indexes and lengths count bytes.
 - **`csv.DictReader` rows are `dict[str, str]`.** A short row's missing fields get `restval` (`""` by default) rather than `None`, and extra fields are dropped.
 - **`urlopen` reads the whole body up front**, so it isn't for streaming large downloads; the connection is closed once the response arrives. `URLError.reason` is always a `str`.
+- **`match` checks exhaustiveness only simply.** A match counts as covering every value when a case is a plain capture or `_`, or `case None:` plus a pattern covering the rest of an optional, or a class pattern covering the subject's type. Otherwise the checker assumes no case might match (so a function may need a final `return`). An `int(n) | float(n)` capture is a `float` whichever matches.
 - **No tracebacks.** An uncaught exception (or `logging.exception()`) shows the exception's type and message, but not the stack of calls that led to it.
 - **Not supported yet:** a few dynamic features, such as `type(x)`, `**kwargs`, unions other than `T | None`, and multiple inheritance.
 

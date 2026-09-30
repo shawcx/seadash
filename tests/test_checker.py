@@ -1670,3 +1670,88 @@ def test_urllib_types_and_errors():
     assert err("from urllib.parse import urlencode\nq = urlencode('a=1')\n").message == (
         "urlencode() needs a dict or a list of (key, value) pairs, not str"
     )
+
+
+MATCH_HEADER = """
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+class Animal:
+    name: str
+    def __init__(self, name: str):
+        self.name = name
+
+class Dog(Animal):
+    def __init__(self, name: str):
+        super().__init__(name)
+"""
+
+
+def test_match_bindings_and_narrowing():
+    info = ok(MATCH_HEADER + """
+def f(p: Point, xs: list[str], n: int?, t: tuple[int, str], a: Animal) -> None:
+    match p:
+        case Point(x, y=0) as q:
+            pass
+    match xs:
+        case [first, *rest]:
+            pass
+    match n:
+        case None:
+            pass
+        case m:
+            pass
+    match t:
+        case (i, s):
+            pass
+    match a:
+        case Dog() as d:
+            pass
+""")
+    assert {"x: int", "q: Point", "first: str", "rest: list[str]", "m: int", "i: int", "s: str", "d: Dog"} <= set(
+        variables(info, "f"))
+
+
+@pytest.mark.parametrize("body, message", [
+    ("match n:\n    case x:\n        pass\n    case 1:\n        pass\n",
+     "name capture 'x' makes remaining patterns unreachable"),
+    ("match n:\n    case _:\n        pass\n    case 1:\n        pass\n", "wildcard makes remaining patterns unreachable"),
+    ("match n:\n    case 'one':\n        pass\n", "this pattern can never match: an int is never equal to a str"),
+    ("match n:\n    case None:\n        pass\n", "this pattern can never match: an int is never None"),
+    ("match n:\n    case True:\n        pass\n",
+     "this pattern can never match: `case True:` only matches a bool (it compares with `is`), not an int"),
+    ("match s:\n    case [c, *_]:\n        pass\n",
+     "this pattern can never match: sequence patterns don't match a str (as in Python); compare it, or use a guard"),
+    ("match t:\n    case (a, b, c):\n        pass\n",
+     "this pattern can never match: a tuple[int, str] has 2 items, not 3"),
+    ("match t:\n    case (a, *rest, b, c):\n        pass\n",
+     "this pattern can never match: a tuple[int, str] has 2 items, fewer than 3"),
+    ("match t:\n    case (a, *rest, b):\n        pass\n", "*rest is always empty here; leave it out"),
+    ("match xs:\n    case [x, x]:\n        pass\n", "multiple assignments to name 'x' in pattern"),
+    ("match xs:\n    case [x] | [y]:\n        pass\n", "alternative patterns bind different names"),
+    ("match xs:\n    case {'a': 1}:\n        pass\n", "this pattern can never match: a list[int] isn't a dict"),
+    ("match p:\n    case Dog():\n        pass\n", "this pattern can never match: a Point is never a Dog"),
+    ("match a:\n    case Animal('rex'):\n        pass\n",
+     "Animal() accepts no positional sub-patterns (it isn't a @dataclass); name the fields instead, like Animal(name=...)"),
+    ("match p:\n    case Point(1, 2, 3):\n        pass\n", "Point() accepts 2 positional sub-patterns (3 given)"),
+    ("match p:\n    case Point(1, x=2):\n        pass\n", "Point() got multiple sub-patterns for attribute 'x'"),
+    ("match p:\n    case Point(z=2):\n        pass\n", "Point has no field 'z'"),
+    ("match n:\n    case float():\n        pass\n", "this pattern can never match: an int is never a float"),
+    ("match o:\n    case None:\n        pass\n    case int():\n        pass\n    case 3:\n        pass\n",
+     "this case can never run: the cases before it already match everything"),
+])
+def test_match_errors(body, message):
+    source = MATCH_HEADER + "def f(n: int, s: str, t: tuple[int, str], xs: list[int], p: Point, a: Animal, o: int?) -> None:\n"
+    source += textwrap.indent(body, "    ")
+    assert err(source).message == message
+
+
+def test_match_exhaustive_assigns():
+    ok("def f(n: int?) -> str:\n    match n:\n        case None:\n            return 'none'\n        case int():\n"
+       "            return 'int'\n")
+    assert err("def f(n: int) -> str:\n    match n:\n        case 1:\n            return 'one'\n").message == (
+        "function 'f' can reach its end without returning a value (it's declared to return str)")

@@ -148,6 +148,12 @@ def stmt(s: A.Stmt, depth: int) -> list[str]:
             if finalbody:
                 out += [pad + "finally:"] + stmt_lines(finalbody, depth + 1)
             return out
+        case A.Match(subject, cases):
+            out = [pad + f"match {expr(subject)}:"]
+            for c in cases:
+                guard = f" if {expr(c.guard)}" if c.guard else ""
+                out += [pad + f"  case {pattern(c.pattern)}{guard}:"] + stmt_lines(c.body, depth + 2)
+            return out
         case A.With(items, body):
             parts = [expr(i.context) + (f" as {expr(i.target)}" if i.target else "") for i in items]
             return header(f"with {', '.join(parts)}:", body)
@@ -166,6 +172,31 @@ def stmt(s: A.Stmt, depth: int) -> list[str]:
             decos = [pad + f"@{expr(d)}" for d in decorators]
             return decos + header(f"{kind} {name}{tparams(type_params)}{base_text}:", body)
     raise TypeError(f"can't dump {s!r}")
+
+
+def pattern(p: A.Pattern) -> str:
+    match p:
+        case A.MatchValue(value):
+            return expr(value)
+        case A.MatchAs(None, None):
+            return "_"
+        case A.MatchAs(None, name):
+            return name.id
+        case A.MatchAs(inner, name):
+            return f"({pattern(inner)} as {name.id})"
+        case A.MatchOr(options):
+            return "(" + " | ".join(map(pattern, options)) + ")"
+        case A.MatchSequence(items):
+            return "[" + ", ".join(map(pattern, items)) + "]"
+        case A.MatchStar(name):
+            return "*" + (name.id if name else "_")
+        case A.MatchMapping(keys, values, rest):
+            parts = [f"{expr(k)}: {pattern(v)}" for k, v in zip(keys, values)] + ([f"**{rest.id}"] if rest else [])
+            return "{" + ", ".join(parts) + "}"
+        case A.MatchClass(cls, args, names, kw):
+            parts = [pattern(a) for a in args] + [f"{n}={pattern(v)}" for n, v in zip(names, kw)]
+            return f"{expr(cls)}({', '.join(parts)})"
+    raise TypeError(f"can't dump {p!r}")
 
 
 def tparams(names: list[str]) -> str:

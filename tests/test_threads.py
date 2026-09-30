@@ -177,6 +177,17 @@ UNSAFE = [
             pass
         threading.Thread(target=work, args=("x",))
      """, "target takes (int), but args gives (str)"),
+    ("""
+        def main():
+            items: list[int] = []
+            def run():
+                print(len(items))
+            threading.Thread(target=run).start()
+            match [1, 2]:
+                case [*items]:
+                    pass
+        main()
+     """, "the thread's function uses 'items' from the enclosing function, but the enclosing function changes 'items'"),
 ]
 
 

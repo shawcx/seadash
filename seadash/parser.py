@@ -122,6 +122,10 @@ class Parser:
                     raise self.error(f"'{kw}' is not supported yet")
         if self.at("@"):
             return [self.parse_decorated()]
+        if tok.kind == K.NAME and tok.value == "match" and (stmt := self.try_parse_match()) is not None:
+            return [stmt]
+        if tok.kind == K.NAME and tok.value == "case" and self.peek(1).kind not in (K.OP, K.NEWLINE):
+            raise self.error("'case' outside a 'match' statement")
         return self.parse_simple_statements()
 
     def parse_simple_statements(self) -> list[A.Stmt]:
@@ -348,6 +352,183 @@ class Parser:
             target = self.parse_binary()
             self.check_target(target)
         return A.WithItem(context, target, loc=context.loc)
+
+    # ---- match statements ----------------------------------------------------
+
+    def try_parse_match(self) -> A.Match | None:
+        """`match` is a soft keyword: `match x:` starts a match statement, while
+        `match = re.match(...)` is an ordinary assignment. Try the statement first."""
+        start = self.i
+        loc = self.next().loc
+        try:
+            if not starts_expression(self.peek()):
+                raise self.error("not a match statement")
+            subject = self.parse_expr_list()
+            if not self.at(":") or self.peek(1).kind != K.NEWLINE:
+                raise self.error("not a match statement")
+        except ParseError:
+            self.i = start
+            return None
+        self.expect(":")
+        self.expect_kind(K.NEWLINE, "a new line")
+        if not self.at_kind(K.INDENT):
+            raise self.error("expected an indented block of 'case' clauses after 'match'")
+        self.next()
+        cases: list[A.MatchCase] = []
+        while not self.at_kind(K.DEDENT):
+            tok = self.peek()
+            if not (tok.kind == K.NAME and tok.value == "case"):
+                raise self.error(f"expected 'case' inside 'match', found {describe(tok)}")
+            case_loc = self.next().loc
+            pattern = self.parse_patterns()
+            guard = self.parse_named_expr() if self.accept("if") else None
+            body = self.parse_block("'case'")
+            cases.append(A.MatchCase(pattern, guard, body, loc=case_loc))
+        self.next()
+        if not cases:
+            raise self.error("a 'match' needs at least one 'case'", loc)
+        return A.Match(subject, cases, loc=loc)
+
+    def parse_patterns(self) -> A.Pattern:
+        """`case a, *rest:` is a sequence pattern without brackets."""
+        loc = self.peek().loc
+        first = self.parse_maybe_star_pattern()
+        if not self.at(","):
+            if isinstance(first, A.MatchStar):
+                raise self.error("a starred pattern needs to be inside a sequence pattern", first.loc)
+            return first
+        items = [first]
+        while self.accept(","):
+            if self.at(":") or self.at("if"):
+                break
+            items.append(self.parse_maybe_star_pattern())
+        return A.MatchSequence(items, loc=loc)
+
+    def parse_maybe_star_pattern(self) -> A.Pattern:
+        if self.at("*"):
+            loc = self.next().loc
+            name = self.expect_name("a name after '*'")
+            return A.MatchStar(None if name.value == "_" else A.Name(name.value, loc=name.loc), loc=loc)
+        return self.parse_pattern()
+
+    def parse_pattern(self) -> A.Pattern:
+        loc = self.peek().loc
+        options = [self.parse_closed_pattern()]
+        while self.accept("|"):
+            options.append(self.parse_closed_pattern())
+        pattern = options[0] if len(options) == 1 else A.MatchOr(options, loc=loc)
+        if self.accept("as"):
+            name = self.expect_name("a name after 'as'")
+            if name.value == "_":
+                raise self.error("can't use '_' as a target with 'as'", name.loc)
+            pattern = A.MatchAs(pattern, A.Name(name.value, loc=name.loc), loc=loc)
+        return pattern
+
+    def parse_closed_pattern(self) -> A.Pattern:
+        tok = self.peek()
+        loc = tok.loc
+        if tok.kind in (K.INT, K.FLOAT, K.STRING, K.BYTES) or self.at("-") or (
+            tok.kind == K.KEYWORD and tok.value in ("None", "True", "False")
+        ):
+            return A.MatchValue(self.parse_literal_pattern(), loc=loc)
+        if tok.kind == K.FSTRING:
+            raise self.error("an f-string can't be a pattern; match a plain string, or use a guard (`case s if ...`)")
+        if tok.kind == K.NAME:
+            self.next()
+            target: A.Expr = A.Name(tok.value, loc=loc)
+            while self.at(".") and self.peek(1).kind == K.NAME:
+                self.next()
+                attr = self.next()
+                target = A.Attribute(target, attr.value, loc=attr.loc)
+            if self.at("("):
+                return self.parse_class_pattern(target)
+            if isinstance(target, A.Attribute):
+                return A.MatchValue(target, loc=loc)
+            if tok.value == "_":
+                return A.MatchAs(None, None, loc=loc)
+            return A.MatchAs(None, target, loc=loc)
+        if self.at("(") or self.at("["):
+            closer = ")" if self.next().value == "(" else "]"
+            items: list[A.Pattern] = []
+            trailing_comma = False
+            while not self.at(closer):
+                items.append(self.parse_maybe_star_pattern())
+                trailing_comma = bool(self.accept(","))
+                if not trailing_comma:
+                    break
+            self.expect(closer, " to close the pattern")
+            if closer == ")" and len(items) == 1 and not trailing_comma:
+                if isinstance(items[0], A.MatchStar):
+                    raise self.error("a starred pattern needs to be inside a sequence pattern", items[0].loc)
+                return items[0]  # just parentheses
+            return A.MatchSequence(items, loc=loc)
+        if self.at("{"):
+            return self.parse_mapping_pattern()
+        raise self.error(f"expected a pattern, found {describe(tok)}")
+
+    def parse_literal_pattern(self) -> A.Expr:
+        loc = self.peek().loc
+        if self.accept("-"):
+            if self.peek().kind not in (K.INT, K.FLOAT):
+                raise self.error("expected a number after '-' in a pattern")
+            return A.UnaryOp("-", self.parse_atom(), loc=loc)
+        value = self.parse_atom()
+        if self.at("+") or self.at("-"):
+            raise self.error("complex numbers aren't supported in patterns")
+        return value
+
+    def parse_class_pattern(self, cls: A.Expr) -> A.MatchClass:
+        self.expect("(")
+        patterns: list[A.Pattern] = []
+        names: list[str] = []
+        keyword_patterns: list[A.Pattern] = []
+        while not self.at(")"):
+            if self.peek().kind == K.NAME and self.at("=", 1):
+                name = self.next()
+                self.next()
+                if name.value in names:
+                    raise self.error(f"attribute name repeated in class pattern: {name.value}", name.loc)
+                names.append(name.value)
+                keyword_patterns.append(self.parse_pattern())
+            else:
+                if names:
+                    raise self.error("positional patterns follow keyword patterns")
+                patterns.append(self.parse_pattern())
+            if not self.accept(","):
+                break
+        self.expect(")", " to close the class pattern")
+        return A.MatchClass(cls, patterns, names, keyword_patterns, loc=cls.loc)
+
+    def parse_mapping_pattern(self) -> A.MatchMapping:
+        loc = self.expect("{").loc
+        keys: list[A.Expr] = []
+        patterns: list[A.Pattern] = []
+        rest: A.Name | None = None
+        while not self.at("}"):
+            if self.accept("**"):
+                name = self.expect_name("a name after '**'")
+                if name.value == "_":
+                    raise self.error("'**_' isn't allowed; leave it out to ignore the other keys", name.loc)
+                rest = A.Name(name.value, loc=name.loc)
+                self.accept(",")
+                break
+            key_tok = self.peek()
+            if key_tok.kind == K.NAME:
+                key: A.Expr = A.Name(self.next().value, loc=key_tok.loc)
+                while self.accept("."):
+                    attr = self.expect_name("a name after '.'")
+                    key = A.Attribute(key, attr.value, loc=attr.loc)
+                if isinstance(key, A.Name):
+                    raise self.error("a mapping pattern's keys must be literals or dotted names (like mod.KEY)", key_tok.loc)
+            else:
+                key = self.parse_literal_pattern()
+            self.expect(":", " after the key in a mapping pattern")
+            keys.append(key)
+            patterns.append(self.parse_pattern())
+            if not self.accept(","):
+                break
+        self.expect("}", " to close the mapping pattern")
+        return A.MatchMapping(keys, patterns, rest, loc=loc)
 
     def parse_def(self) -> A.FunctionDef:
         loc = self.next().loc

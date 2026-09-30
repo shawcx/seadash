@@ -1058,6 +1058,8 @@ class Checker:
                 self.check_with(stmt)
             case A.If():
                 self.check_if(stmt)
+            case A.Match():
+                self.check_match(stmt)
             case A.While():
                 self.check_while(stmt)
             case A.For():
@@ -1490,6 +1492,314 @@ class Checker:
         self.state = on_false
         self.check_block(stmt.orelse)
         self.state = merge([after_body, self.state])
+
+    # ---- match statements ----------------------------------------------------
+
+    def check_match(self, stmt: A.Match) -> None:
+        """Each case is a branch. `remaining` is what the subject may still be when a case is
+        tried: after `case None:` an optional subject is known not to be None, and once a
+        case matches everything, later cases can't run (and the match can't fall through)."""
+        subject_t = self.check_expr(stmt.subject)
+        remaining: Type | None = subject_t  # None once every value has been matched
+        fallthrough = self.state.copy()
+        exits: list[State] = []
+        for i, case in enumerate(stmt.cases):
+            if remaining is None:
+                raise self.error("this case can never run: the cases before it already match everything", case)
+            self.state = fallthrough.copy()
+            bindings = self.check_pattern(case.pattern, remaining)
+            seen: set[str] = set()
+            for name, t in bindings:
+                if name.id in seen:
+                    raise self.error(f"multiple assignments to name '{name.id}' in pattern", name)
+                seen.add(name.id)
+            for name, t in bindings:
+                self.bind(name, t, case.pattern)
+            self.narrow_subject(stmt.subject, self.pattern_narrows(case.pattern, remaining))
+            if case.guard is not None:
+                on_true, on_false = self.check_condition(case.guard)
+                fallthrough = merge([fallthrough, on_false])
+                self.state = on_true
+            self.check_block(case.body)
+            exits.append(self.state)
+            if case.guard is None:
+                if self.irrefutable(case.pattern, remaining):
+                    if i < len(stmt.cases) - 1 and isinstance(case.pattern, A.MatchAs) and case.pattern.pattern is None:
+                        what = f"name capture '{case.pattern.name.id}'" if case.pattern.name else "wildcard"
+                        raise self.error(f"{what} makes remaining patterns unreachable", case.pattern)
+                    remaining = None
+                else:
+                    remaining = self.unmatched(case.pattern, remaining)
+            if remaining is not None and remaining is not subject_t:
+                self.narrow_subject_in(fallthrough, stmt.subject, remaining)
+        if remaining is not None:
+            exits.append(fallthrough)
+        self.state = merge(exits)
+        stmt.never_completes = self.state.dead  # every case returns or raises, and one always runs
+
+    def narrow_subject(self, subject: A.Expr, t: Type | None) -> None:
+        if t is not None:
+            self.narrow_subject_in(self.state, subject, t)
+
+    def narrow_subject_in(self, state: State, subject: A.Expr, t: Type) -> None:
+        """Inside `case Dog():` (or after `case None:`) a subject variable has the narrower type."""
+        if isinstance(subject, A.Name) and isinstance(entry := state.names.get(subject.id), Bound):
+            if t != entry.ty and assignable(t, entry.ty) and (
+                isinstance(entry.ty, OptionalType) or isinstance(t, StructType)
+            ):
+                state.names[subject.id] = Bound(entry.var, t)
+
+    def pattern_narrows(self, p: A.Pattern, t: Type) -> Type | None:
+        """The subject's type when `p` matched, if narrower than `t`."""
+        match p:
+            case A.MatchAs(inner, _):
+                return self.pattern_narrows(inner, t) if inner is not None else None
+            case A.MatchOr(options):
+                narrowed = [self.pattern_narrows(o, t) or t for o in options]
+                out = narrowed[0]
+                for n in narrowed[1:]:
+                    out = join(out, n) or t
+                return out if out != t else None
+            case A.MatchValue(A.NoneLit()):
+                return None
+            case A.MatchClass() if isinstance(p.sym, StructType):
+                return p.sym
+        if isinstance(t, OptionalType) and not isinstance(p, A.MatchAs):
+            return t.inner  # anything but None (or a capture) means there's a value
+        return None
+
+    def irrefutable(self, p: A.Pattern, t: Type) -> bool:
+        """Does `p` match every value of type `t`?"""
+        match p:
+            case A.MatchAs(inner, _):
+                return inner is None or self.irrefutable(inner, t)
+            case A.MatchOr(options):
+                if any(self.irrefutable(o, t) for o in options):
+                    return True
+                rest: Type | None = t
+                for o in options:  # `None | int()` on an int? covers it
+                    rest = self.unmatched(o, rest) if rest is not None else None
+                return rest is None
+            case A.MatchClass(_, args, _, kw) if not isinstance(t, OptionalType):
+                covers = p.sym == t if isinstance(p.sym, StructType) else (p.sym is not None and p.sym[1] == t)
+                if isinstance(p.sym, StructType) and isinstance(t, StructType):
+                    covers = t.is_subclass_of(p.sym)
+                return covers and all(self.irrefutable(a, a.ty) for a in (*args, *kw))
+            case A.MatchSequence(items) if isinstance(t, TupleType):
+                return all(self.irrefutable(item, item.ty) for item in items if not isinstance(item, A.MatchStar))
+        return False
+
+    def unmatched(self, p: A.Pattern, t: Type) -> Type | None:
+        """What's left of `t` once values matching `p` are taken out (None: nothing)."""
+        if self.irrefutable(p, t):
+            return None
+        if isinstance(t, OptionalType):
+            options = p.patterns if isinstance(p, A.MatchOr) else [p]
+            takes_none = any(isinstance(o, A.MatchValue) and isinstance(o.value, A.NoneLit) for o in options)
+            takes_value = any(self.irrefutable(o, t.inner) for o in options if not isinstance(o, A.MatchValue))
+            if takes_none and takes_value:
+                return None
+            if takes_none:
+                return t.inner
+            if takes_value:
+                return NONE
+        if t == NONE and isinstance(p, A.MatchValue) and isinstance(p.value, A.NoneLit):
+            return None
+        return t
+
+    def check_pattern(self, p: A.Pattern, t: Type) -> list[tuple[A.Name, Type]]:
+        """Check pattern `p` against a subject of type `t`; return the names it binds."""
+        p.ty = t
+        match p:
+            case A.MatchAs(None, None):
+                return []
+            case A.MatchAs(None, name):
+                return [(name, t)]
+            case A.MatchAs(inner, name):
+                bindings = self.check_pattern(inner, t)
+                p.bound = self.pattern_narrows(inner, t) or t
+                return bindings + [(name, p.bound)]
+            case A.MatchOr(options):
+                results = [self.check_pattern(o, t) for o in options]
+                names = [sorted(n.id for n, _ in r) for r in results]
+                if any(n != names[0] for n in names[1:]):
+                    raise self.error("alternative patterns bind different names", p)
+                merged: list[tuple[A.Name, Type]] = []
+                for name, bt in results[0]:
+                    joined = bt
+                    for r in results[1:]:
+                        other = next(t2 for n2, t2 in r if n2.id == name.id)
+                        joined = join(joined, other)
+                        if joined is None:
+                            raise self.error(f"'{name.id}' would be {bt} or {other} depending on the alternative", p)
+                    merged.append((name, joined))
+                p.sym = [[n for n, _ in r] for r in results]  # every alternative's own Name nodes, for codegen
+                return merged
+            case A.MatchValue(value):
+                self.check_value_pattern(p, value, t)
+                return []
+            case A.MatchSequence(items):
+                return self.check_sequence_pattern(p, items, t)
+            case A.MatchMapping(keys, patterns, rest):
+                return self.check_mapping_pattern(p, keys, patterns, rest, t)
+            case A.MatchClass():
+                return self.check_class_pattern(p, t)
+            case A.MatchStar():
+                raise self.error("a starred pattern needs to be inside a sequence pattern", p)
+        raise self.error("unsupported pattern", p)
+
+    def never_matches(self, p: A.Node, t: Type, what: str) -> CheckError:
+        return self.error(f"this pattern can never match: {what}", p)
+
+    def check_value_pattern(self, p: A.MatchValue, value: A.Expr, t: Type) -> None:
+        inner = strip_optional(t)
+        if isinstance(value, A.NoneLit):
+            value.ty = NONE
+            if not isinstance(t, OptionalType) and t not in (NONE, JSON_VALUE):
+                raise self.never_matches(p, t, f"{with_article(t)} is never None")
+            return
+        vt = self.check_expr(value)
+        if vt not in (INT, FLOAT, BOOL, STR, BYTES):
+            raise self.error(f"a value pattern must be a number, string, bytes, True/False or None, not {vt}", value)
+        if inner == JSON_VALUE:
+            return
+        if isinstance(value, A.BoolLit) and inner != BOOL:
+            raise self.never_matches(
+                p, t, f"`case {value.value}:` only matches a bool (it compares with `is`), not {with_article(t)}"
+            )
+        ok = vt == inner or (is_numeric(vt) and is_numeric(inner) and vt != BOOL)
+        if not ok:
+            raise self.never_matches(p, t, f"{with_article(t)} is never equal to {with_article(vt)}")
+
+    def check_sequence_pattern(self, p: A.MatchSequence, items: list[A.Pattern], t: Type) -> list[tuple[A.Name, Type]]:
+        inner = strip_optional(t)
+        stars = [i for i, item in enumerate(items) if isinstance(item, A.MatchStar)]
+        if len(stars) > 1:
+            raise self.error("multiple starred names in sequence pattern", items[stars[1]])
+        star = stars[0] if stars else None
+        fixed = len(items) - (1 if stars else 0)
+        bindings: list[tuple[A.Name, Type]] = []
+        match inner:
+            case ListType(elem) | VarTupleType(elem):
+                elem_types = [elem] * len(items)
+                star_type: Type = ListType(elem)
+            case TupleType(elts):
+                if star is None and len(elts) != len(items):
+                    raise self.never_matches(p, t, f"{with_article(inner)} has {len(elts)} items, not {len(items)}")
+                if star is not None and fixed > len(elts):
+                    raise self.never_matches(p, t, f"{with_article(inner)} has {len(elts)} items, fewer than {fixed}")
+                if star is None:
+                    elem_types = list(elts)
+                    star_type = NONE
+                else:
+                    after = len(items) - star - 1
+                    middle = list(elts[star:len(elts) - after])
+                    elem_types = list(elts[:star]) + [NONE] + list(elts[len(elts) - after:])
+                    named = items[star].name is not None
+                    if named and middle and any(m != middle[0] for m in middle):
+                        raise self.error(f"*{items[star].name.id} would hold items of different types "
+                                         f"({', '.join(map(str, middle))})", items[star])
+                    star_type = ListType(middle[0]) if middle and named else None
+                    if star_type is None and named:
+                        raise self.error(f"*{items[star].name.id} is always empty here; leave it out", items[star])
+            case _ if inner == JSON_VALUE:
+                elem_types = [JSON_VALUE] * len(items)
+                star_type = ListType(JSON_VALUE)
+            case _ if inner in (STR, BYTES):
+                raise self.never_matches(p, t, f"sequence patterns don't match {with_article(inner)} (as in Python); "
+                                               f"compare it, or use a guard")
+            case _:
+                raise self.never_matches(p, t, f"{with_article(t)} isn't a list or tuple")
+        for i, item in enumerate(items):
+            if i == star:
+                item.ty = star_type
+                if item.name is not None:
+                    bindings.append((item.name, star_type))
+            else:
+                bindings += self.check_pattern(item, elem_types[i])
+        return bindings
+
+    def check_mapping_pattern(self, p: A.MatchMapping, keys: list[A.Expr], patterns: list[A.Pattern],
+                              rest: A.Name | None, t: Type) -> list[tuple[A.Name, Type]]:
+        inner = strip_optional(t)
+        match inner:
+            case DictType(key, value):
+                pass
+            case _ if inner == JSON_VALUE:
+                key, value = STR, JSON_VALUE
+            case _:
+                raise self.never_matches(p, t, f"{with_article(t)} isn't a dict")
+        seen = set()
+        bindings: list[tuple[A.Name, Type]] = []
+        for k, sub in zip(keys, patterns):
+            kt = self.check_expr(k)
+            if not assignable(kt, key):
+                raise self.never_matches(k, t, f"its keys are {key}, not {kt}")
+            literal = getattr(k, "value", None) if not isinstance(k, A.Attribute) else None
+            if literal is not None and (kt, literal) in seen:
+                raise self.error(f"mapping pattern checks duplicate key ({describe_short(k)})", k)
+            seen.add((kt, literal))
+            bindings += self.check_pattern(sub, value)
+        if rest is not None:
+            bindings.append((rest, DictType(key, value)))
+        return bindings
+
+    BUILTIN_CLASS_PATTERNS = {"int": INT, "float": FLOAT, "str": STR, "bool": BOOL, "bytes": BYTES}
+
+    def check_class_pattern(self, p: A.MatchClass, t: Type) -> list[tuple[A.Name, Type]]:
+        inner = strip_optional(t)
+        cls = p.cls
+        name = cls.id if isinstance(cls, A.Name) else None
+        builtin_name = name if name is not None and name not in self.state.names and self.lookup_struct(name) is None else None
+        if builtin_name in (*self.BUILTIN_CLASS_PATTERNS, "list", "dict", "tuple"):
+            if p.kwd_names:
+                raise self.error(f"{builtin_name}() patterns don't take keyword sub-patterns", p)
+            if len(p.patterns) > 1:
+                raise self.error(f"{builtin_name}() accepts 1 positional sub-pattern ({len(p.patterns)} given)", p)
+            matched = self.builtin_class_match(p, builtin_name, inner, t)
+            p.sym = (builtin_name, matched)
+            return self.check_pattern(p.patterns[0], matched) if p.patterns else []
+        st = self.lookup_struct(name) if name is not None else self.module_struct(cls)
+        if st is None:
+            raise self.error(f"'{describe_short(cls)}' isn't a class that patterns can match", cls)
+        if not isinstance(inner, StructType):
+            raise self.never_matches(p, t, f"{with_article(t)} is never {with_article(st.name)}")
+        if not (inner.is_subclass_of(st) or (st.is_subclass_of(inner) and inner.kind == "class")):
+            raise self.never_matches(p, t, f"{with_article(inner.name)} is never {with_article(st.name)}")
+        p.sym = st
+        fields = list(st.all_fields())
+        if p.patterns and not (st.kind == "struct" or (st.node is not None and st.node.decorators)):
+            raise self.error(f"{st.name}() accepts no positional sub-patterns (it isn't a @dataclass); "
+                             f"name the fields instead, like {st.name}({fields[0] if fields else 'x'}=...)", p)
+        if len(p.patterns) > len(fields):
+            raise self.error(f"{st.name}() accepts {len(fields)} positional sub-pattern"
+                             f"{'' if len(fields) == 1 else 's'} ({len(p.patterns)} given)", p)
+        names = fields[:len(p.patterns)] + p.kwd_names
+        if len(set(names)) != len(names):
+            dup = next(n for n in names if names.count(n) > 1)
+            raise self.error(f"{st.name}() got multiple sub-patterns for attribute '{dup}'", p)
+        p.fields = names
+        bindings: list[tuple[A.Name, Type]] = []
+        for field_name, sub in zip(names, (*p.patterns, *p.kwd_patterns)):
+            f = st.find_field(field_name)
+            if f is None:
+                raise self.error(f"{st.name} has no field '{field_name}'", sub)
+            bindings += self.check_pattern(sub, f.type)
+        return bindings
+
+    def builtin_class_match(self, p: A.MatchClass, name: str, inner: Type, t: Type) -> Type:
+        """The type of the value when `int()`, `list()`... matches a subject of type `t`."""
+        if inner == JSON_VALUE:  # json.Value: int(), str(), list()... check which kind of value it holds
+            if name == "tuple" or name == "bytes":
+                raise self.never_matches(p, t, f"JSON has no {name}s")
+            return {"list": ListType(JSON_VALUE), "dict": DictType(STR, JSON_VALUE)}.get(name) or self.BUILTIN_CLASS_PATTERNS[name]
+        want = self.BUILTIN_CLASS_PATTERNS.get(name)
+        ok = (inner == want or (name == "int" and inner == BOOL) or (name == "list" and isinstance(inner, ListType))
+              or (name == "dict" and isinstance(inner, DictType))
+              or (name == "tuple" and isinstance(inner, (TupleType, VarTupleType))))
+        if not ok:
+            raise self.never_matches(p, t, f"{with_article(t)} is never {with_article(name)}")
+        return inner
 
     def check_while(self, stmt: A.While) -> None:
         def iteration() -> State:
@@ -3081,6 +3391,10 @@ def assigned_targets(stmts: list[A.Stmt]) -> list[str]:
                 names.extend(target_names(target))
             case A.ExceptHandler(_, A.Name(name)):
                 names.append(name)
+            case A.MatchAs(_, A.Name(name)) | A.MatchStar(A.Name(name)):
+                names.append(name)
+            case A.MatchMapping(_, _, A.Name(name)):
+                names.append(name)
         for f in dataclasses.fields(node):
             if f.name not in ("loc", "sym", "ty", "dunder"):
                 visit(getattr(node, f.name))
@@ -3124,7 +3438,7 @@ def count_assignments(stmts: list[A.Stmt]) -> dict[str, int]:
     # Anything assigned inside a nested block (if/for/while) or by a loop can
     # run zero or many times, so it can't be a simple global.
     for stmt in stmts:
-        if isinstance(stmt, (A.If, A.While, A.For, A.Try)):
+        if isinstance(stmt, (A.If, A.While, A.For, A.Try, A.Match)):
             for name in assigned_targets([stmt]):
                 counts[name] = counts.get(name, 0) + 1
     return counts
@@ -3301,6 +3615,12 @@ def type_family(t: Type) -> str:
     return str(t)
 
 
+def with_article(thing) -> str:
+    """'an int', 'a str', 'an Animal'."""
+    text = str(thing)
+    return ("an " if text[:1].lower() in "aeiou" else "a ") + text
+
+
 def describe_short(e: A.Expr) -> str:
     match e:
         case A.Name(name):
@@ -3342,7 +3662,7 @@ def has_yield(body: list[A.Stmt]) -> bool:
         for field in ("body", "orelse", "finalbody"):
             if has_yield(getattr(stmt, field, None) or []):
                 return True
-        for handler in getattr(stmt, "handlers", None) or []:
+        for handler in getattr(stmt, "handlers", None) or getattr(stmt, "cases", None) or []:
             if has_yield(handler.body):
                 return True
     return False

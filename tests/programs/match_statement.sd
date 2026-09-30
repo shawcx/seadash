@@ -1,0 +1,336 @@
+# match statements: every kind of pattern, guards, narrowing, and exhaustiveness.
+from __future__ import annotations  # (so Python doesn't look up json.Value)
+
+import json
+import re
+from dataclasses import dataclass
+from typing import Iterator
+
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+
+@dataclass
+class Line:
+    start: Point
+    end: Point
+
+
+class Animal:
+    name: str
+
+    def __init__(self, name: str):
+        self.name = name
+
+
+class Dog(Animal):
+    good: bool
+
+    def __init__(self, name: str, good: bool):
+        super().__init__(name)
+        self.good = good
+
+    def bark(self) -> str:
+        return self.name + " says woof"
+
+
+class Cat(Animal):
+    lives: int
+
+    def __init__(self, name: str, lives: int):
+        super().__init__(name)
+        self.lives = lives
+
+
+def literal(x: int) -> str:
+    match x:
+        case 0:
+            return "zero"
+        case -1:
+            return "minus one"
+        case 1 | 2 | 3:
+            return "small"
+        case n if n > 100:
+            return f"big {n}"
+        case _:
+            return "other"
+
+
+def text(s: str) -> str:
+    match s:
+        case "":
+            return "empty"
+        case "yes" | "y":
+            return "agreed"
+        case other:
+            return "said " + other
+
+
+def floaty(f: float) -> str:
+    match f:
+        case 0.5:
+            return "half"
+        case 1:
+            return "one"
+        case _:
+            return "?"
+
+
+def flags(b: bool, raw: bytes) -> str:
+    match b, raw:
+        case True, b"\x00":
+            return "on, zero"
+        case True, _:
+            return "on"
+        case _, data:
+            return f"off {data!r}"
+
+
+def optional(n: int | None) -> str:
+    match n:
+        case None:
+            return "nothing"
+        case 7:
+            return "lucky"
+        case value:
+            return str(value + 1)  # value is an int: None was taken
+
+
+def lists(xs: list[int]) -> str:
+    match xs:
+        case []:
+            return "empty"
+        case [x]:
+            return f"one {x}"
+        case [x, y]:
+            return f"two {x} {y}"
+        case [first, *middle, last]:
+            return f"first {first} middle {middle} last {last}"
+    return "unreachable"
+
+
+def star_positions(words: list[str]) -> str:
+    match words:
+        case [*init, "!"]:
+            return "shout " + " ".join(init)
+        case ["hi", *rest]:
+            return f"greeting + {len(rest)}"
+        case [_, _, *_]:
+            return "long"
+        case _:
+            return "short"
+
+
+def tuples(t: tuple[int, str, float]) -> str:
+    match t:
+        case (0, name, _):
+            return "zero " + name
+        case (n, "x" | "y" as axis, w) if w > 1:
+            return f"{axis}{n} heavy"
+        case (n, *_):
+            return f"{n} light"
+
+
+def pair(t: tuple[int, int, int]) -> str:
+    match t:
+        case (a, *rest):
+            return f"{a} {rest}"
+
+
+def var_tuple(t: tuple[int, ...]) -> str:
+    match t:
+        case ():
+            return "empty"
+        case (1, *others):
+            return f"starts with 1, {len(others)} more"
+        case (a, b):
+            return f"pair {a} {b}"
+        case _:
+            return "other"
+
+
+def nested(xs: list[list[int]]) -> str:
+    match xs:
+        case [[a, b], [c]]:
+            return f"{a}{b}{c}"
+        case [[x] | [x, _], *_]:
+            return f"x={x}"
+        case _:
+            return "?"
+
+
+def mapping(d: dict[str, int]) -> str:
+    match d:
+        case {"x": 0, "y": 0}:
+            return "origin"
+        case {"x": x, **others} if others:
+            return f"x={x} others={sorted(others)}"
+        case {"x": x}:
+            return f"just x={x}"
+        case _:
+            return "no x"
+
+
+def int_keys(d: dict[int, str]) -> str:
+    match d:
+        case {1: one, -2: minus_two}:
+            return one + minus_two
+        case {1: str() as one}:
+            return "only " + one
+        case _:
+            return "none"
+
+
+def points(p: Point) -> str:
+    match p:
+        case Point(0, 0):
+            return "origin"
+        case Point(x=0, y=y):
+            return f"y axis {y}"
+        case Point(x, 0):
+            return f"x axis {x}"
+        case Point(x, y) if x == y:
+            return f"diagonal {x}"
+        case Point(x=x, y=y):
+            return f"({x}, {y})"
+
+
+def lines(line: Line) -> str:
+    match line:
+        case Line(Point(0, 0), end):
+            return f"from origin to {end.x},{end.y}"
+        case Line(start=Point(x=x1), end=Point(x=x2)) if x1 == x2:
+            return "vertical"
+        case _:
+            return "line"
+
+
+def animals(a: Animal) -> str:
+    match a:
+        case Dog(good=True):
+            return a.bark() + " (good)"  # a is a Dog here
+        case Dog() as d:
+            return d.bark()
+        case Cat(name=name, lives=lives) if lives < 9:
+            return f"{name} has {lives} lives left"
+        case Cat():
+            return a.name + " the cat"
+        case _:
+            return "some animal " + a.name
+
+
+def pets(a: Animal | None) -> str:
+    match a:
+        case None:
+            return "no pet"
+        case Dog() | Cat():
+            return "a pet"
+        case Animal(name=name):
+            return "an animal called " + name
+
+
+def json_shapes(v: json.Value) -> str:
+    match v:
+        case {"type": "circle", "r": int(r)}:
+            return f"circle area {3 * r * r}"
+        case {"type": "circle", "r": float(r)}:
+            return f"circle area {3 * r * r}"
+        case {"type": "rect", "size": [int(w), int(h)]}:
+            return f"rect {w}x{h}"
+        case {"type": str(kind), **rest}:
+            return f"unknown {kind} with {sorted(rest)}"
+        case [1, *others]:
+            return f"list from 1, then {len(others)}"
+        case list(items):
+            return f"list of {len(items)}"
+        case str(s):
+            return "string " + s
+        case True | False:
+            return "bool"
+        case None:
+            return "null"
+        case 3:
+            return "three"
+        case int(n):
+            return f"int {n}"
+        case dict(d):
+            return f"dict with {len(d)} keys"
+        case _:
+            return "something else"
+
+
+def countdown(n: int) -> Iterator[str]:
+    for i in range(n, -1, -1):
+        match i:
+            case 0:
+                yield "liftoff"
+            case 1 | 2 as close:
+                yield f"almost {close}"
+            case _:
+                yield str(i)
+
+
+def calls() -> int:
+    print("subject evaluated")
+    return 2
+
+
+print(literal(0), literal(-1), literal(2), literal(500), literal(50))
+print(text(""), text("y"), text("maybe"))
+print(floaty(0.5), floaty(1.0), floaty(2.0))
+print(flags(True, b"\x00"), flags(True, b"a"), flags(False, b"zz"))
+print(optional(None), optional(7), optional(1))
+print(lists([]), lists([4]), lists([4, 5]), lists([1, 2, 3, 4]), lists([1, 2]))
+print(star_positions(["go", "now", "!"]), star_positions(["hi", "a", "b"]), star_positions(["a", "b"]),
+      star_positions(["a"]))
+print(tuples((0, "zed", 1.0)), tuples((3, "y", 2.5)), tuples((3, "y", 0.5)), pair((1, 2, 3)))
+print(var_tuple(()), var_tuple((1, 2, 3)), var_tuple((5, 6)), var_tuple((5, 6, 7)))
+print(nested([[1, 2], [3]]), nested([[9], [1, 2]]), nested([[8, 7], [1, 2]]), nested([[1, 2, 3]]))
+print(mapping({"x": 0, "y": 0}), mapping({"x": 1, "b": 2, "a": 3}), mapping({"x": 5}), mapping({"y": 1}))
+print(int_keys({1: "a", -2: "b"}), int_keys({1: "a"}), int_keys({}))
+for p in [Point(0, 0), Point(0, 5), Point(3, 0), Point(2, 2), Point(1, 9)]:
+    print(points(p))
+print(lines(Line(Point(0, 0), Point(3, 4))), lines(Line(Point(2, 1), Point(2, 9))), lines(Line(Point(1, 1), Point(2, 2))))
+for a in [Dog("Rex", True), Dog("Max", False), Cat("Tom", 3), Cat("Kit", 9), Animal("Bob")]:
+    print(animals(a))
+print(pets(None), pets(Cat("Kit", 9)), pets(Animal("Bob")))
+docs = ['{"type": "circle", "r": 2}', '{"type": "circle", "r": 0.5}', '{"type": "rect", "size": [3, 4]}',
+        '{"type": "blob", "b": 1, "a": 2}', '[1, 2, 3]', '[2, 3]', '"hi"', 'true', 'null', '3', '3.0', '7', '{"a": 1}',
+        '2.5']
+for doc in docs:
+    print(json_shapes(json.loads(doc)))
+print(list(countdown(3)))
+
+match calls():
+    case 1:
+        print("one")
+    case 2:
+        print("two")
+    case _:
+        print("many")
+
+# the result of an exhaustive match is assigned on every path
+for n in [None, 3]:
+    match n:
+        case None:
+            label = "none"
+        case _:
+            label = "some"
+    print(label)
+
+# break and continue inside cases act on the enclosing loop
+for word in ["skip", "keep", "stop", "never"]:
+    match word:
+        case "skip":
+            continue
+        case "stop":
+            break
+    print(word)
+
+# `match` is still an ordinary name
+match = re.match(r"(\d+)", "42 apples")
+if match:
+    print(match.group(1))

@@ -41,7 +41,7 @@ from .types import (
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
-    VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
+    VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
 
@@ -844,6 +844,8 @@ class CodeGen:
                 self.with_stmt(items, body)
             case A.If():
                 self.if_stmt(s)
+            case A.Match():
+                self.match_stmt(s)
             case A.While(test, body, orelse):
                 self.loop(f"while ({unwrapped(self.cond(test))})", body, orelse)
             case A.For(target, it, body, orelse):
@@ -1082,6 +1084,187 @@ class CodeGen:
             self.depth += 1
             self.block(orelse)
         self.close()
+
+    # ---- match statements ------------------------------------------------------
+
+    def match_stmt(self, s: A.Match) -> None:
+        """Cases in order, each `if (tests) { bind names; if (guard) { body } }`; a flag
+        stops later cases once one has run. The subject is evaluated once."""
+        subject = self.fresh("m")
+        self.open("")
+        self.line(f"auto&& {subject} = {self.expr(s.subject)};")
+        done = self.fresh("matched") if len(s.cases) > 1 else None
+        if done:
+            self.line(f"bool {done} = false;")
+        for i, case in enumerate(s.cases):
+            path = subject
+            if isinstance(s.subject.ty, OptionalType) and not isinstance(case.pattern.ty, OptionalType) and (
+                case.pattern.ty != NONE
+            ):
+                path = f"(*{subject})"  # an earlier `case None:` took the Nones
+            alternatives: list[str] = []
+            tests, binds = self.pattern_code(case.pattern, path, alternatives)
+            for v in alternatives:
+                self.line(f"int {v} = 0;")
+            if done and i > 0:
+                tests = [f"!{done}", *tests]
+            self.open(f"if ({' && '.join(tests) or 'true'})")
+            for name, code, ty, when in binds:
+                if when:
+                    self.open(f"if ({when})")
+                self.assign(name, code, ty)
+                if when:
+                    self.close()
+            if case.guard is not None:
+                self.open(f"if ({unwrapped(self.cond(case.guard))})")
+            if done and i < len(s.cases) - 1:
+                self.line(f"{done} = true;")
+            self.block(case.body)
+            if case.guard is not None:
+                self.close()
+            self.close()
+        self.close()
+        if s.never_completes:  # (C++ can't tell that a case always runs)
+            self.line('sd::raise("SystemError", "no case matched");')
+
+    def pattern_code(self, p: A.Pattern, path: str, alternatives: list[str]) -> tuple[list[str], list[tuple]]:
+        """C++ tests for pattern `p` against the value at `path`, and its bindings:
+        (Name, C++ value, type, condition or None)."""
+        t = p.ty
+        match p:
+            case A.MatchAs(None, None):
+                return [], []
+            case A.MatchAs(None, name):
+                return [], [(name, path, t, None)]
+            case A.MatchAs(inner, name):
+                tests, binds = self.pattern_code(inner, path, alternatives)
+                return tests, binds + [(name, self.narrowed_path(path, t, p.bound), p.bound, None)]
+            case A.MatchOr(options):
+                results = [self.pattern_code(o, path, alternatives) for o in options]
+                if not any(binds for _, binds in results):
+                    return [f"({' || '.join(paren_all(tests) for tests, _ in results)})"], []
+                which = self.fresh("alt")
+                alternatives.append(which)
+                tests = [f"({' || '.join(f'({paren_all(ts)} && (({which} = {i + 1}), true))' for i, (ts, _) in enumerate(results))})"]
+                first = {n.id: n for n in p.sym[0]}
+                binds = []
+                for i, (_, alt_binds) in enumerate(results):
+                    for name, code, ty, when in alt_binds:
+                        cond = f"{which} == {i + 1}" + (f" && {when}" if when else "")
+                        binds.append((first[name.id], code, ty, cond))
+                return tests, binds
+            case A.MatchValue(value):
+                inner = strip_optional(t)
+                if isinstance(value, A.NoneLit):
+                    if inner == JSON_VALUE and not isinstance(t, OptionalType):
+                        return [f"{path}.is_null()"], []
+                    return (["true"] if t == NONE else [f"!{path}.has_value()"]), []
+                if inner == JSON_VALUE:
+                    tests, path = self.optional_test(path, t)
+                    return tests + [f"sd::json::equals_literal({path}, {self.expr(value)})"], []
+                return [f"({path} == {self.expr(value)})"], []
+        tests, path = self.optional_test(path, t)
+        t = strip_optional(t)
+        match p:
+            case A.MatchSequence(items):
+                return self.sequence_pattern_code(items, path, t, tests, alternatives)
+            case A.MatchMapping(keys, patterns, rest):
+                binds: list[tuple] = []
+                key_type = t.key if isinstance(t, DictType) else STR
+                if t == JSON_VALUE:
+                    tests.append(f"{path}.is_dict()")
+                key_codes = [self.expr_as(k, key_type) for k in keys]
+                for k, sub in zip(key_codes, patterns):
+                    tests.append(f"({path}.find({k}) != nullptr)")
+                    sub_tests, sub_binds = self.pattern_code(sub, f"(*{path}.find({k}))", alternatives)
+                    tests += sub_tests
+                    binds += sub_binds
+                if rest is not None:
+                    source = f"{path}.as_dict()" if t == JSON_VALUE else path
+                    kt = self.cpp_type(key_type)
+                    binds.append((rest, f"sd::dict_without({source}, std::vector<{kt}>{{{', '.join(key_codes)}}})",
+                                  DictType(key_type, t.value if isinstance(t, DictType) else JSON_VALUE), None))
+                return tests, binds
+            case A.MatchClass() if isinstance(p.sym, tuple):  # int(x), list(items)...
+                name, matched = p.sym
+                if t == JSON_VALUE:
+                    kind = {"int": "int", "float": "float", "str": "str", "bool": "bool", "list": "list", "dict": "dict"}[name]
+                    tests.append(f"{path}.is_{kind}()")
+                    path = f"{path}.as_{kind}()"
+                if p.patterns:
+                    sub_tests, binds = self.pattern_code(p.patterns[0], path, alternatives)
+                    return tests + sub_tests, binds
+                return tests, []
+            case A.MatchClass():
+                st: StructType = p.sym
+                obj = path
+                if st.kind == "class" and not (isinstance(t, StructType) and t.is_subclass_of(st)):
+                    tests.append(f"sd::isinstance_of<{class_name(st)}>({path})")
+                    obj = f"std::static_pointer_cast<{class_name(st)}>({path})"
+                arrow = "->" if st.kind == "class" else "."
+                binds = []
+                for field_name, sub in zip(p.fields, (*p.patterns, *p.kwd_patterns)):
+                    sub_tests, sub_binds = self.pattern_code(sub, f"{obj}{arrow}{ident(field_name)}", alternatives)
+                    tests += sub_tests
+                    binds += sub_binds
+                return tests, binds
+        raise NotImplementedError(type(p).__name__)
+
+    def optional_test(self, path: str, t: Type) -> tuple[list[str], str]:
+        """A pattern that needs a value first checks an optional has one."""
+        if isinstance(t, OptionalType):
+            return [f"{path}.has_value()"], f"(*{path})"
+        return [], path
+
+    def narrowed_path(self, path: str, t: Type, bound: Type) -> str:
+        """`case Dog() as d:` binds the subject as a Dog; `case int() as n` on an int? unwraps it."""
+        if isinstance(t, OptionalType) and not isinstance(bound, OptionalType):
+            path, t = f"(*{path})", t.inner
+        if isinstance(bound, StructType) and isinstance(t, StructType) and bound is not t:
+            path = f"std::static_pointer_cast<{class_name(bound)}>({path})"
+        return path
+
+    def sequence_pattern_code(self, items: list[A.Pattern], path: str, t: Type, tests: list[str],
+                              alternatives: list[str]) -> tuple[list[str], list[tuple]]:
+        star = next((i for i, item in enumerate(items) if isinstance(item, A.MatchStar)), None)
+        n = len(items)
+        after = n - star - 1 if star is not None else 0
+        binds: list[tuple] = []
+        if isinstance(t, TupleType):
+            size = len(t.elts)
+            for i, item in enumerate(items):
+                if i == star:
+                    if item.name is not None:
+                        middle = ", ".join(f"std::get<{j}>({path})" for j in range(star, size - after))
+                        binds.append((item.name, f"{self.cpp_type(item.ty)}{{{middle}}}", item.ty, None))
+                    continue
+                index = i if star is None or i < star else size - (n - i)
+                sub_tests, sub_binds = self.pattern_code(item, f"std::get<{index}>({path})", alternatives)
+                tests += sub_tests
+                binds += sub_binds
+            return tests, binds
+        if t == JSON_VALUE:
+            tests.append(f"{path}.is_list()")
+            seq = f"(*{path}.arr_)"
+        elif isinstance(t, VarTupleType):
+            seq = f"{path}.items"
+        else:
+            seq = path
+        if star is None:
+            tests.append(f"({seq}.size() == {n})")
+        elif n > 1:
+            tests.append(f"({seq}.size() >= {n - 1})")
+        for i, item in enumerate(items):
+            if i == star:
+                if item.name is not None:
+                    code = f"{self.cpp_type(item.ty)}({seq}.begin() + {star}, {seq}.end() - {after})"
+                    binds.append((item.name, code, item.ty, None))
+                continue
+            element = f"{seq}[{i}]" if star is None or i < star else f"{seq}[{seq}.size() - {n - i}]"
+            sub_tests, sub_binds = self.pattern_code(item, element, alternatives)
+            tests += sub_tests
+            binds += sub_binds
+        return tests, binds
 
     def loop(self, header: str, body: list[A.Stmt], orelse: list[A.Stmt], prologue=None) -> None:
         """Python's loop `else:` runs unless the loop was left by `break`, so
@@ -2541,6 +2724,10 @@ def attr_chain(e: A.Expr) -> list[str]:
 def has_call(e: A.Expr) -> bool:
     """Could evaluating `e` have side effects (or observe them)?"""
     return any(isinstance(n, (A.Call, A.NamedExpr)) for n in walk_expr(e, into_lambdas=False))
+
+
+def paren_all(tests: list[str]) -> str:
+    return f"({' && '.join(tests)})" if tests else "true"
 
 
 def walk_expr(e: A.Node, into_lambdas: bool = True):
