@@ -340,8 +340,8 @@ Generator<Future<T>> as_completed(It items, std::optional<double> timeout) {
 
 // wait(futures, timeout, return_when): (done, not_done).
 template <class T, class It>
-std::tuple<std::set<Future<T>>, std::set<Future<T>>> wait(It items, std::optional<double> timeout,
-                                                          const std::string& return_when) {
+std::tuple<sd::set<Future<T>>, sd::set<Future<T>>> wait(It items, std::optional<double> timeout,
+                                                        const std::string& return_when) {
     std::set<Future<T>> all;
     for (auto&& f : iter(items)) all.insert(f);
     auto deadline = deadline_after(timeout);
@@ -354,7 +354,8 @@ std::tuple<std::set<Future<T>>, std::set<Future<T>>> wait(It items, std::optiona
         auto [done, pending] = split();
         bool enough = pending.empty() || (return_when == "FIRST_COMPLETED" && !done.empty()) ||
                       (return_when == "FIRST_EXCEPTION" && std::any_of(done.begin(), done.end(), [](auto& f) { return f.failed(); }));
-        if (enough || (deadline && Clock::now() >= *deadline)) return {done, pending};
+        if (enough || (deadline && Clock::now() >= *deadline))
+            return {sd::set<Future<T>>(done.begin(), done.end()), sd::set<Future<T>>(pending.begin(), pending.end())};
         // Sleep until something finishes (or the deadline): wait on the first pending future briefly.
         auto step = Clock::now() + std::chrono::milliseconds(5);
         pending.begin()->wait_until(deadline ? std::min(step, *deadline) : step);

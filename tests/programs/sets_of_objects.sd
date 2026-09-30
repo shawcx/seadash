@@ -1,0 +1,35 @@
+# sets of objects with __eq__ and __hash__: equal objects are the same member
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class P:
+    x: int
+
+
+class Key:
+    name: str
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __eq__(self, other: "Key") -> bool:
+        return self.name.lower() == other.name.lower()
+
+    def __hash__(self) -> int:
+        return hash(self.name.lower())
+
+
+a = P(1)
+print(len({a, P(1), P(2)}), P(1) in {a}, P(3) in {a}, {P(2), P(1)} == {P(1), P(2)})
+s = {P(3), P(1)}
+s.add(P(1))
+s.discard(P(3))
+print(sorted(p.x for p in s), sorted(p.x for p in s | {P(5)}), len(s & {P(1)}), len({P(1), P(2)} - {P(2)}))
+print(len({P(1), P(2)} ^ {P(2), P(3)}), {P(1)}.issubset({P(1), P(2)}), s.issubset({P(1), P(9)}))
+keys = {Key("Ann"), Key("ANN"), Key("bob")}
+print(len(keys), Key("ann") in keys, Key("cy") in keys)
+seen: set[P] = set()
+for n in [3, 1, 3, 2, 1]:
+    seen.add(P(n))
+print(len(seen), sorted(p.x for p in seen))

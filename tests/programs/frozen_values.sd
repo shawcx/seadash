@@ -56,3 +56,16 @@ lines: list[str] = []
 while not results.empty():
     lines.append(results.get())
 print(sorted(lines))
+
+
+# a frozen @value class with __hash__ can be a set member: equal values are one member
+@value
+@dataclass(frozen=True)
+class Cell:
+    row: int
+    col: int
+
+
+cells = {Cell(0, 1), Cell(0, 1), Cell(2, 3)}
+cells.add(Cell(2, 3))
+print(len(cells), Cell(0, 1) in cells, Cell(9, 9) in cells, sorted(c.row for c in cells | {Cell(5, 5)}))

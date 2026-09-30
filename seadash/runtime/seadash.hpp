@@ -479,12 +479,29 @@ struct list_range {
     std::size_t size() const { return xs.size(); }
 };
 
-// A set: a shared reference to a std::set (so it prints sorted), like list.
+struct bytes;
+template <class T>
+class hash_set;  // (below, after dict)
+
+// Can a set of T be kept sorted, with `<` agreeing with `==`? Numbers and strings can;
+// user types (a class with __eq__ and __hash__) are kept by hash, like in Python.
+template <class T>
+struct natural_order : std::bool_constant<std::is_arithmetic_v<T> || std::is_same_v<T, std::string> ||
+                                          std::is_same_v<T, bytes> || std::is_same_v<T, Bool>> {};
+template <class... A>
+struct natural_order<std::tuple<A...>> : std::bool_constant<(natural_order<A>::value && ...)> {};
+template <class T>
+constexpr bool naturally_ordered() {
+    return natural_order<T>::value;
+}
+
+// A set: a shared reference to its items, like list. Numbers and strings are kept in a
+// std::set (so they print sorted); anything else by hash and ==, in insertion order.
 template <class T>
 class set {
 public:
     using value_type = T;
-    using set_type = std::set<T>;
+    using set_type = std::conditional_t<naturally_ordered<T>(), std::set<T>, hash_set<T>>;
     using iterator = typename set_type::const_iterator;
     using const_iterator = iterator;
     using size_type = std::size_t;
@@ -537,8 +554,8 @@ struct set_range {
     set<T> s;
     struct sentinel {};
     struct iterator {
-        const std::set<T>* p;
-        typename std::set<T>::const_iterator it;
+        const typename set<T>::set_type* p;
+        typename set<T>::set_type::const_iterator it;
         std::size_t size;
         const T& operator*() const { return *it; }
         iterator& operator++() {
@@ -891,7 +908,90 @@ public:
 // Used where seadash promises a copy: struct fields, and values crossing into
 // another thread.
 
-struct bytes;
+// The storage of a set whose items aren't naturally ordered: a dict's keys (hash and ==,
+// insertion order), with std::set's interface.
+template <class T>
+class hash_set {
+    dict<T, char> d_;
+
+public:
+    using value_type = T;
+    using key_type = T;
+    struct const_iterator {
+        typename dict<T, char>::const_iterator it;
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = T;
+        using difference_type = std::ptrdiff_t;
+        using pointer = const T*;
+        using reference = const T&;
+        const T& operator*() const { return it->first; }
+        const T* operator->() const { return &it->first; }
+        const_iterator& operator++() {
+            ++it;
+            return *this;
+        }
+        const_iterator operator++(int) {
+            const_iterator old = *this;
+            ++it;
+            return old;
+        }
+        bool operator==(const const_iterator& o) const { return it == o.it; }
+        bool operator!=(const const_iterator& o) const { return it != o.it; }
+    };
+    using iterator = const_iterator;
+
+    hash_set() = default;
+    hash_set(const hash_set& o) : d_(o.d_.copy()) {}
+    hash_set(hash_set&&) = default;
+    hash_set& operator=(const hash_set& o) {
+        d_ = o.d_.copy();
+        return *this;
+    }
+    hash_set& operator=(hash_set&&) = default;
+    hash_set(std::initializer_list<T> init) {
+        for (const auto& x : init) insert(x);
+    }
+    template <class It>
+    hash_set(It first, It last) {
+        insert(first, last);
+    }
+
+    std::size_t size() const { return d_.size(); }
+    bool empty() const { return d_.empty(); }
+    const_iterator begin() const { return {d_.begin()}; }
+    const_iterator end() const { return {d_.end()}; }
+    bool contains(const T& x) const { return d_.contains(x); }
+    std::size_t count(const T& x) const { return d_.contains(x) ? 1 : 0; }
+    const_iterator find(const T& x) const {
+        for (auto it = begin(); it != end(); ++it)
+            if (*it == x) return it;
+        return end();
+    }
+    std::pair<const_iterator, bool> insert(const T& x) {
+        if (d_.contains(x)) return {find(x), false};
+        d_[x] = 1;
+        return {find(x), true};
+    }
+    const_iterator insert(const_iterator, const T& x) { return insert(x).first; }
+    template <class It>
+    void insert(It first, It last) {
+        for (; first != last; ++first) insert(*first);
+    }
+    std::size_t erase(const T& x) { return d_.erase(x) ? 1 : 0; }
+    const_iterator erase(const_iterator it) {
+        const_iterator next = it;
+        ++next;  // (erasing leaves a tombstone: the next position stays valid)
+        d_.erase(*it);
+        return next;
+    }
+    void clear() { d_.clear(); }
+    bool operator==(const hash_set& o) const {
+        if (size() != o.size()) return false;
+        for (const auto& x : *this)
+            if (!o.contains(x)) return false;
+        return true;
+    }
+};
 
 // Does a T hold lists, dicts or sets (so copying it must copy them)?
 template <class T>
@@ -1576,7 +1676,7 @@ void sort_values(std::vector<T>& v, Less less) {
 template <class It>
 auto to_set(It&& it) {
     auto&& src = iter(std::forward<It>(it));
-    std::set<elem_t<decltype(src)>> out;
+    set<elem_t<decltype(src)>> out;
     for (auto&& v : src) out.insert(v);
     return out;
 }
@@ -1902,19 +2002,24 @@ set<T> set_or(const set<T>& a, const set<T>& b) {
 template <class T>
 set<T> set_and(const set<T>& a, const set<T>& b) {
     set<T> out;
-    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::inserter(out, out.end()));
+    for (const auto& x : a)
+        if (b.contains(x)) out.insert(x);
     return out;
 }
 template <class T>
 set<T> set_sub(const set<T>& a, const set<T>& b) {
     set<T> out;
-    std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::inserter(out, out.end()));
+    for (const auto& x : a)
+        if (!b.contains(x)) out.insert(x);
     return out;
 }
 template <class T>
 set<T> set_xor(const set<T>& a, const set<T>& b) {
     set<T> out;
-    std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::inserter(out, out.end()));
+    for (const auto& x : a)
+        if (!b.contains(x)) out.insert(x);
+    for (const auto& x : b)
+        if (!a.contains(x)) out.insert(x);
     return out;
 }
 
@@ -3035,7 +3140,9 @@ void set_remove(const set<T>& s, const std::type_identity_t<T>& x) {
 }
 template <class T>
 bool set_issubset(const set<T>& a, const set<T>& b) {
-    return std::includes(b.begin(), b.end(), a.begin(), a.end());
+    for (const auto& x : a)
+        if (!b.contains(x)) return false;
+    return true;
 }
 
 // ============================================================================
