@@ -1,0 +1,7 @@
+# f-string conversions (!r !s !a) and the self-documenting {x=} form.
+name = "héllo ☃"
+n = 42
+xs = [1, 2]
+print(f"{name!r} {name!s} {name!a} {n!r:>6} {xs!r}")
+print(f"{n=} {name=} {n = } {n=:5} {xs=!s} {n*2=}")
+print(f"{n != 3} {n!=3} {'a' if n else 'b'}", ascii(name), ascii([name]))

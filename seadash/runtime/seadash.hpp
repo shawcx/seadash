@@ -134,6 +134,34 @@ template <class E>
     raise<RuntimeError>(msg);
 }
 
+// ascii(x): repr(x) with every non-ASCII character escaped (\xe9, \u2603, \U0001f600).
+inline std::string ascii(const std::string& text) {
+    std::string out;
+    char buf[16];
+    for (std::size_t i = 0; i < text.size();) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < 0x80) {
+            out += static_cast<char>(c);
+            ++i;
+            continue;
+        }
+        int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+        std::uint32_t cp = extra == 3 ? c & 0x07 : extra == 2 ? c & 0x0F : extra == 1 ? c & 0x1F : c;
+        std::size_t j = i + 1;
+        for (int k = 0; k < extra && j < text.size(); ++k, ++j) cp = (cp << 6) | (static_cast<unsigned char>(text[j]) & 0x3F);
+        if (cp < 0x100) {
+            std::snprintf(buf, sizeof buf, "\\x%02x", cp);
+        } else if (cp < 0x10000) {
+            std::snprintf(buf, sizeof buf, "\\u%04x", cp);
+        } else {
+            std::snprintf(buf, sizeof buf, "\\U%08x", cp);
+        }
+        out += buf;
+        i = j;
+    }
+    return out;
+}
+
 // A hint to the CPU inside a spin-wait loop.
 inline void cpu_relax() {
 #if defined(__x86_64__) || defined(__i386__)

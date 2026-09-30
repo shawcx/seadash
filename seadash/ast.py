@@ -127,6 +127,7 @@ class FormattedValue(Node):
 
     value: Expr
     spec: str | None = None
+    conversion: str | None = None  # 'r', 's' or 'a': {x!r}
 
 
 @dataclass

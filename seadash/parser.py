@@ -830,6 +830,8 @@ class Parser:
                 if isinstance(piece, str):
                     add_text(parts, piece)
                 else:
+                    if piece.debug is not None:  # {x=}: the source text, then the value (repr unless formatted)
+                        add_text(parts, piece.debug)
                     parts.append(self.parse_fstring_expr(piece))
         if all(isinstance(p, str) for p in parts):
             return A.StrLit("".join(parts), loc=loc)
@@ -842,7 +844,10 @@ class Parser:
         sub = Parser(tokenize(f"({piece.source})", start))
         value = sub.parse_atom()
         sub.expect_kind(K.NEWLINE, "'}' after f-string expression")
-        return A.FormattedValue(value, piece.spec, loc=piece.loc)
+        conversion = piece.conversion
+        if piece.debug is not None and conversion is None and piece.spec is None:
+            conversion = "r"
+        return A.FormattedValue(value, piece.spec, conversion, loc=piece.loc)
 
 
 def add_text(parts: list, text: str) -> None:

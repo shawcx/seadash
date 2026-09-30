@@ -1300,11 +1300,18 @@ class CodeGen:
         for p in parts:
             if isinstance(p, str):
                 pieces.append(cpp_string(p)[:-1] + "sv")  # a string_view literal (keeps NULs)
-            elif p.spec is not None:
-                fmt = cpp_string("{:" + p.spec + "}")[:-1]  # a plain "..." literal, as std::format wants
-                pieces.append(f"std::format({fmt}, {self.expr(p.value)})")
             else:
-                pieces.append(self.expr(p.value))
+                value = self.expr(p.value)
+                if p.conversion == "r":
+                    value = f"sd::repr({value})"
+                elif p.conversion == "a":
+                    value = f"sd::ascii(sd::repr({value}))"
+                elif p.conversion == "s":
+                    value = f"sd::str({value})"
+                if p.spec is not None:
+                    fmt = cpp_string("{:" + p.spec + "}")[:-1]  # a plain "..." literal, as std::format wants
+                    value = f"std::format({fmt}, {value})"
+                pieces.append(value)
         return f"sd::fstr({', '.join(pieces)})"
 
     def attribute(self, e: A.Attribute) -> str:
@@ -1806,6 +1813,8 @@ class CodeGen:
                 return f"sd::str({a})" if a else '""s'
             case "repr":
                 return f"sd::repr({a})"
+            case "ascii":
+                return f"sd::ascii(sd::repr({a}))"
             case "int":
                 return f"sd::to_int({a or ''})"
             case "float":

@@ -77,7 +77,8 @@ def expr(e: A.Expr | None) -> str:
 
 def fvalue(fv: A.FormattedValue) -> str:
     spec = f":{fv.spec}" if fv.spec is not None else ""
-    return "{" + expr(fv.value) + spec + "}"
+    conversion = f"!{fv.conversion}" if fv.conversion else ""
+    return "{" + expr(fv.value) + conversion + spec + "}"
 
 
 def comp(c: A.Comprehension) -> str:

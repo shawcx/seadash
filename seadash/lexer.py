@@ -46,6 +46,8 @@ class FStringExpr:
     source: str
     loc: Loc  # where `source` starts, so errors inside it point at the right place
     spec: str | None = None
+    conversion: str | None = None  # 'r', 's' or 'a' from {x!r}
+    debug: str | None = None  # the text before the value in {x=}: "x="
 
 
 @dataclass(frozen=True)
@@ -397,6 +399,7 @@ class Lexer:
         start = self.pos
         depth = 0
         spec: str | None = None
+        conversion: str | None = None
         expr_end = None
 
         while True:
@@ -412,8 +415,17 @@ class Lexer:
             elif c == "}":
                 expr_end = expr_end if expr_end is not None else self.pos
                 break
-            elif c == ":" and depth == 0 and expr_end is None:
+            elif (
+                c == "!" and depth == 0 and expr_end is None and self.peek(1) in ("r", "s", "a")
+                and self.peek(2) in (":", "}")
+            ):  # {value!r}; not {a != b}
                 expr_end = self.pos
+                conversion = self.peek(1)
+                self.advance()
+                self.advance()
+                continue
+            elif c == ":" and depth == 0 and spec is None and (expr_end is None or conversion is not None):
+                expr_end = expr_end if expr_end is not None else self.pos
                 self.advance()
                 spec_start = self.pos
                 while self.peek() not in ("}", "", "\n"):
@@ -427,9 +439,14 @@ class Lexer:
 
         self.advance()  # the closing }
         source = self.src[start:expr_end]
+        debug = None
+        stripped = source.rstrip()
+        if stripped.endswith("=") and not stripped.endswith(("==", "!=", "<=", ">=", ":=")):
+            debug = source  # {x=} shows "x=" and then the value
+            source = stripped[:-1]
         if not source.strip():
             raise LexError("f-string: empty expression not allowed", loc)
-        return FStringExpr(source, loc, spec)
+        return FStringExpr(source, loc, spec, conversion, debug)
 
     def skip_nested_string(self, quote: str, string_start: Loc) -> None:
         """Skip a string literal inside an f-string expression, e.g. f"{d['key']}"."""

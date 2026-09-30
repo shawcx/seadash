@@ -489,6 +489,7 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "len": b_len,
     "str": b_str,
     "repr": b_repr,
+    "ascii": b_repr,
     "int": b_int,
     "float": b_float,
     "bool": b_bool,
