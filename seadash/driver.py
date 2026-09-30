@@ -73,7 +73,7 @@ class Program:
                    **{v.name: v for v in info.globals}, **info.generics}
         user = builtins.UserModule(name, members, namespace=namespace, info=info, path=str(path.resolve()))
         self.loaded[name] = user
-        self.units.append(codegen.ModuleUnit(module, info, name, namespace))
+        self.units.append(codegen.ModuleUnit(module, info, name, namespace, str(path)))
         return user
 
 
@@ -83,7 +83,7 @@ def check_program(source: str, path: Path | None = None) -> list[codegen.ModuleU
     program = Program(path.parent if path is not None else Path.cwd())
     module = parse(source)
     info = check(module, "__main__", program.load)
-    units = [*program.units, codegen.ModuleUnit(module, info)]
+    units = [*program.units, codegen.ModuleUnit(module, info, path=str(path) if path is not None else "<stdin>")]
     try:
         threads.verify([(u.module, u.info, u.name) for u in units])
     except threads.ThreadSafetyError as e:

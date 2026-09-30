@@ -262,6 +262,12 @@ R next_or(const Generator<T>& g, D fallback) {  // next(it, default)
     return R(g.take());
 }
 
+// The current thread's name, for logging ("MainThread", or a threading.Thread's name).
+inline std::string& thread_name() {
+    thread_local std::string name = "MainThread";
+    return name;
+}
+
 // A hint to the CPU inside a spin-wait loop.
 inline void cpu_relax() {
 #if defined(__x86_64__) || defined(__i386__)
@@ -1775,11 +1781,12 @@ inline const std::string& raw(const std::string& s) { return s; }
 struct FileBase {
     std::FILE* fp;
     std::string path, mode;
+    bool owned = true;  // sys.stdout and friends aren't closed
     FileBase(std::FILE* f, std::string p, std::string m) : fp(f), path(std::move(p)), mode(std::move(m)) {}
     FileBase(const FileBase&) = delete;
     FileBase& operator=(const FileBase&) = delete;
     virtual ~FileBase() {
-        if (fp) std::fclose(fp);  // files close when the last reference goes away
+        if (fp && owned) std::fclose(fp);  // files close when the last reference goes away
     }
     std::FILE* handle() const {
         if (!fp) raise("ValueError", "I/O operation on closed file.");
@@ -1814,10 +1821,8 @@ struct FileBase {
         return static_cast<std::int64_t>(s.size());
     }
     void close() {
-        if (fp) {
-            std::fclose(fp);
-            fp = nullptr;
-        }
+        if (fp && owned) std::fclose(fp);
+        fp = nullptr;
     }
     void flush() { std::fflush(handle()); }
 };
@@ -1891,6 +1896,26 @@ inline LineRange<TextFile, std::string> file_lines(const std::shared_ptr<TextFil
 inline LineRange<BinaryFile, bytes> file_lines(const std::shared_ptr<BinaryFile>& f) {
     f->handle();
     return {f};
+}
+
+#if defined(__APPLE__)
+#define SD_PLATFORM "darwin"
+#elif defined(_WIN32)
+#define SD_PLATFORM "win32"
+#elif defined(__FreeBSD__)
+#define SD_PLATFORM "freebsd"
+#else
+#define SD_PLATFORM "linux"
+#endif
+
+// sys.stdin / sys.stdout / sys.stderr (0, 1, 2): shared, and never closed.
+inline std::shared_ptr<TextFile> std_stream(int which) {
+    static const std::shared_ptr<TextFile> streams[3] = {
+        [] { auto f = std::make_shared<TextFile>(stdin, "<stdin>", "r"); f->owned = false; return f; }(),
+        [] { auto f = std::make_shared<TextFile>(stdout, "<stdout>", "w"); f->owned = false; return f; }(),
+        [] { auto f = std::make_shared<TextFile>(stderr, "<stderr>", "w"); f->owned = false; return f; }(),
+    };
+    return streams[which];
 }
 
 inline std::FILE* open_file(const std::string& path, const std::string& mode) {

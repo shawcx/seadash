@@ -1,0 +1,11 @@
+DEBUG    app:<module>:13 debugging 3 items
+INFO     app:<module>:14 ann scored 97.2% ('ann')
+WARNING  app:process:18 processing 00042 / 2a / +42 / ok    |
+INFO     app.db:<module>:24 child loggers use their parents' handlers: app.db
+ERROR    app.db:<module>:27 errors still pass (effective level 40, ERROR)
+True False app app
+app True 10 50 Level 25
+CRITICAL app:<module>:34 100% done, OK [1, 2]
+INFO     app:<module>:35 100% literal, no args
+ERROR    app:<module>:36 log() with an explicit level: True
+ERROR    app:<module>:39 still on: above the disabled level

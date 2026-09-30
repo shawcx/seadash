@@ -1,0 +1,4 @@
+ERROR:root:failed to parse
+ValueError: invalid literal for int() with base 10: 'x'
+ERROR:root:with exc_info=True outside an except
+NoneType: None

@@ -242,6 +242,7 @@ inline void join_all_threads() {
 }
 
 inline void run_thread(const std::shared_ptr<ThreadState>& s) {
+    thread_name() = s->name;  // (for logging's %(threadName)s)
     try {
         s->fn();
     } catch (const Thrown& t) {

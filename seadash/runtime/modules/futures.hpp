@@ -181,7 +181,8 @@ class ThreadPoolExecutor {
     };
     std::shared_ptr<State> s_;
 
-    static void work(std::shared_ptr<State> s) {  // (holds the pool alive while it runs)
+    static void work(std::shared_ptr<State> s, std::string name) {  // (holds the pool alive while it runs)
+        thread_name() = std::move(name);
         while (true) {
             std::function<void()> task;
             {
@@ -247,7 +248,8 @@ public:
         if (max_workers && *max_workers <= 0) raise("ValueError", "max_workers must be greater than 0");
         std::size_t cpus = std::max(1u, std::thread::hardware_concurrency());
         s_->max_workers = max_workers ? static_cast<std::size_t>(*max_workers) : std::min<std::size_t>(32, cpus + 4);
-        s_->prefix = std::move(thread_name_prefix);
+        static std::atomic<int> pools{0};  // Python's names: ThreadPoolExecutor-0_0, ...
+        s_->prefix = thread_name_prefix.empty() ? "ThreadPoolExecutor-" + std::to_string(pools++) : std::move(thread_name_prefix);
         static const bool hooked = [] {
             exit_hooks().push_back(join_all);
             return true;
@@ -271,7 +273,7 @@ public:
             s_->cancel_pending.push_back([fut]() mutable { fut.cancel(); });
             // A new thread only when no worker is free, up to max_workers (like Python).
             if (s_->idle < s_->tasks.size() && s_->workers.size() < s_->max_workers)
-                s_->workers.emplace_back(work, s_);
+                s_->workers.emplace_back(work, s_, s_->prefix + "_" + std::to_string(s_->workers.size()));
         }
         s_->cv.notify_one();
         return fut;

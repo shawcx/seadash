@@ -1,0 +1,9 @@
+# logging.exception() logs the current exception. seadash has no stack frames, so
+# (unlike Python) there's no traceback: just the exception's type and message.
+import logging
+
+try:
+    int("x")
+except ValueError:
+    logging.exception("failed to parse")
+logging.error("with exc_info=True outside an except", exc_info=True)

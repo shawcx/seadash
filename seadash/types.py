@@ -38,6 +38,9 @@ TEXT_WRAPPER = Prim("TextWrapper")  # textwrap.TextWrapper
 STR_TEMPLATE = Prim("Template")  # string.Template
 HASH = Prim("hash")  # a hashlib hash object
 EXECUTOR = Prim("ThreadPoolExecutor")  # concurrent.futures.ThreadPoolExecutor
+LOGGER = Prim("Logger")  # logging.Logger
+LOG_HANDLER = Prim("Handler")  # logging.StreamHandler / FileHandler / NullHandler
+LOG_FORMATTER = Prim("Formatter")  # logging.Formatter
 HMAC_T = Prim("HMAC")  # hmac.HMAC
 TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
 

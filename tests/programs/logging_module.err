@@ -1,0 +1,11 @@
+WARNING:root:no configuration yet: WARNING:root:...
+DEBUG:app:debugging 3 items
+INFO:app:ann scored 97.2% ('ann')
+WARNING:app:processing 00042 / 2a / +42 / ok    |
+INFO:app.db:child loggers use their parents' handlers: app.db
+ERROR:app.db:errors still pass (effective level 40, ERROR)
+WARNING:quiet:dropped by the NullHandler
+CRITICAL:app:100% done, OK [1, 2]
+INFO:app:100% literal, no args
+ERROR:app:log() with an explicit level: True
+ERROR:app:still on: above the disabled level

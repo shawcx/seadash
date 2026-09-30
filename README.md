@@ -177,7 +177,8 @@ def work():
 | `base64`, `zlib` | encode, decode, compress |
 | `json` | typed: `json.loads` straight into your dataclasses, lists and dicts; `json.Value` for dynamic JSON |
 | `os`, `os.path` | files, directories, environment |
-| `sys` | `argv`, `exit` |
+| `sys` | `argv`, `exit`, `stdin`/`stdout`/`stderr`, `platform`, `maxsize` |
+| `logging` | loggers (a dotted hierarchy with levels and propagation), `StreamHandler`/`FileHandler`/`NullHandler`, `Formatter` (`%(levelname)s`, `%(lineno)d`...), `basicConfig`, and lazy `log.info("x=%s", x)` messages; thread-safe |
 | `time`, `math`, `random` | the usual |
 | `socket` | TCP/UDP with Python's API and errors |
 | `threading`, `queue` | threads, locks, events, queues; plus seadash's `Mutex[T]`, `Atomic` and `Synchronized` |
@@ -205,6 +206,7 @@ seadash borrows Python's syntax, not all of its semantics:
 - **Static types.** Containers hold one type (`list[int]`, not a mix), and there's no dynamic typing or `eval`. Mixed numbers widen, so `[1, 2.5]` is a `list[float]`.
 - **Generators** don't support `send()`/`throw()`, and nested functions can't be generators yet. (Generators, generator expressions, `map`, `filter`, `zip` and `enumerate` are all lazy, as in Python.)
 - **Strings are UTF-8 bytes.** Indexes and lengths count bytes.
+- **No tracebacks.** An uncaught exception (or `logging.exception()`) shows the exception's type and message, but not the stack of calls that led to it.
 - **Not supported yet:** a few dynamic features, such as `type(x)`, `**kwargs`, unions other than `T | None`, and multiple inheritance.
 
 ## How it works

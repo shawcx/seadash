@@ -37,7 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType,
+    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
@@ -83,6 +83,7 @@ class ModuleUnit:
     info: ModuleInfo
     name: str = "__main__"
     namespace: str = "prog"
+    path: str = "<string>"  # the .sd file, for logging's %(pathname)s
 
 
 # Which module is being generated, and every module's namespace: references to
@@ -114,7 +115,9 @@ def generate_program(units: list[ModuleUnit]) -> str:
     out.append("")
     for u in units:
         _QUALIFY.current = u.name
-        out.append(CodeGen(u.module, u.info, u.name, u.namespace, uses_json).generate_namespace())
+        gen = CodeGen(u.module, u.info, u.name, u.namespace, uses_json)
+        gen.source_path = u.path
+        out.append(gen.generate_namespace())
     inits = " ".join(f"{u.namespace}::module_main();" for u in units)
     out.append(f"int main(int argc, char** argv) {{ return sd::run_main(argc, argv, [] {{ {inits} }}); }}")
     return "\n".join(out) + "\n"
@@ -198,6 +201,7 @@ class CodeGen:
         self.loop_labels: list[list] = []
         # Inside a lambda that uses `self`, self is a captured copy named sd_self.
         self.lambda_self = 0
+        self.source_path = "<string>"
         # Structs/classes get JSON conversion hooks when the program imports json (anywhere).
         self.uses_json = uses_json if uses_json is not None else any(m.name == "json" for m in info.imports)
         # Nested functions that call themselves: (FuncInfo, name of the self parameter).
@@ -258,6 +262,12 @@ class CodeGen:
                 return "sd::hashlib::Hash"
             case _ if t == EXECUTOR:
                 return "sd::futures::ThreadPoolExecutor"
+            case _ if t == LOGGER:
+                return "sd::logging::Logger"
+            case _ if t == LOG_HANDLER:
+                return "sd::logging::Handler"
+            case _ if t == LOG_FORMATTER:
+                return "sd::logging::Formatter"
             case FutureType(elem):
                 return f"sd::futures::Future<{self.cpp_type(elem)}>"
             case _ if t == HMAC_T:
@@ -1409,6 +1419,11 @@ class CodeGen:
             return f"{self.expr(e.value)}.{e.sym[1]}()"
         if isinstance(e.sym, tuple) and e.sym[0] == "builtin_attr":
             obj, vt = self.expr(e.value), e.value.ty
+            declared = builtins.type_attributes(vt)[e.sym[1]](vt)
+            if isinstance(declared, OptionalType) and e.ty is not None and not isinstance(e.ty, OptionalType):
+                inner = A.Attribute(e.value, e.sym[1], loc=e.loc)  # narrowed (`if db.parent:`): checked unwrap
+                inner.sym, inner.ty = e.sym, declared
+                return f"sd::unwrap({self.attribute(inner)}, {cpp_string('.'.join(attr_chain(e)))[:-1]})"
             if isinstance(vt, ProcessType):
                 return self.process_attribute(obj, vt, e.sym[1], e.ty)
             if vt == STR_TEMPLATE:  # t.template
@@ -1737,6 +1752,20 @@ class CodeGen:
                     return f"{cpp}({ml})"
                 return f"{cpp}({self.expr(extra['items'])}, {ml})"
         raise NotImplementedError(f"codegen for {t}()")
+
+    # ---- logging ----------------------------------------------------------------------
+
+    def log_call(self, e: A.Call, target: str) -> str:
+        """logging.info(msg, *args) -> sd::logging::root_log(site, level, exc_info, msg, args...)."""
+        info = e.log_call
+        name = info["level"]
+        func = self.func.name if self.func is not None else "<module>"
+        site = f"sd::logging::Site{{{cpp_string(self.source_path)[:-1]}, {e.loc.line}, {cpp_string(func)[:-1]}}}"
+        level = self.expr(e.args[0]) if name == "log" else str(builtins.LOG_LEVELS[name])
+        exc = self.keyword(e, "exc_info")
+        exc_code = "true" if name == "exception" and exc is None else (self.expr(exc) if exc is not None else "false")
+        args = [self.expr(a) for a in e.args[info["first"]:]]
+        return f"{target}({', '.join([site, level, exc_code, *args])})"
 
     # ---- hashlib, hmac ----------------------------------------------------------------
 
@@ -2183,6 +2212,12 @@ class CodeGen:
             return f"{r}.substitute(sd::dict<std::string, std::string>{{{keywords}}}, {mapping}, {safe})"
         if recv_type == DATETIME and name in ("date", "time"):
             return f"{r}.to_{name}()"  # (a C++ member can't share its class's name)
+        if recv_type == LOGGER and hasattr(e, "log_call"):
+            return self.log_call(e, f"{r}.log")
+        if recv_type in (LOGGER, LOG_HANDLER) and name == "setLevel":
+            return f"{r}.setLevel(sd::logging::level_of({self.expr(e.args[0])}))"
+        if recv_type == LOGGER and name == "getChild":
+            return f"sd::logging::getLogger({r}.name() + \".\" + {self.expr(e.args[0])})"
         if recv_type == EXECUTOR and name in ("submit", "map"):
             params, result = e.work_types
             fn = self.expr_as(e.args[0], FuncType(params, result))
@@ -2196,7 +2231,7 @@ class CodeGen:
             return f"{r}.add_done_callback({self.expr_as(e.args[0], FuncType((recv_type,), NONE))})"
         if recv_type in (HASH, HMAC_T) and name == "update":
             return f"{r}.update({self.expr(e.args[0])})"
-        if isinstance(recv_type, (SyncType, ParserType, FutureType)) or recv_type in (EXECUTOR,) or recv_type in (
+        if isinstance(recv_type, (SyncType, ParserType, FutureType)) or recv_type in (EXECUTOR, LOGGER, LOG_HANDLER) or recv_type in (
             SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, *DATETIME_TYPES
         ):
             handler = builtins.method_for(recv_type, name)
@@ -2305,6 +2340,24 @@ class CodeGen:
             return self.itertools_call(name, e)
         if mod in ("hashlib", "hmac") and hasattr(e, "hash_args"):
             return self.hash_call(mod, name, e)
+        if mod == "logging" and hasattr(e, "log_call"):
+            return self.log_call(e, "sd::logging::root_log")
+        if mod == "logging" and name == "basicConfig":
+            kw = {k.name: k.value for k in e.keywords}
+            level = kw.get("level")
+            level_t = "std::string" if level is not None and level.ty == STR else "std::int64_t"
+            opt = lambda k, t=STR: self.expr_as(kw[k], OptionalType(t)) if k in kw else "std::nullopt"
+            filename = kw.get("filename")
+            fname = "std::nullopt" if filename is None else (
+                f"std::optional<std::string>({self.expr(filename)}{'.str()' if filename.ty == PATH else ''})")
+            parts = [
+                f"std::optional<{level_t}>({self.expr(level)})" if level is not None else f"std::optional<{level_t}>()",
+                opt("format"), opt("datefmt"), self.expr(kw["style"]) if "style" in kw else '"%"s', fname,
+                self.expr(kw["filemode"]) if "filemode" in kw else '"a"s',
+                self.expr(kw["stream"]) if "stream" in kw else "nullptr",
+                opt("handlers", ListType(LOG_HANDLER)), self.expr(kw["force"]) if "force" in kw else "false", opt("encoding"),
+            ]
+            return f"sd::logging::basicConfig<{level_t}>({', '.join(parts)})"
         if mod == "concurrent.futures" and name in ("as_completed", "wait"):
             elem = self.cpp_type(e.ty.elem.elem if name == "as_completed" else e.ty.elts[0].elem.elem)
             timeout_node = e.args[1] if len(e.args) > 1 else self.keyword(e, "timeout")

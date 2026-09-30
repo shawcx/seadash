@@ -1,0 +1,34 @@
+# logging configuration: basicConfig to a file (with times), force=, threads, and sys streams.
+import logging
+import re
+import sys
+import threading
+import tempfile
+from pathlib import Path
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / "app.log"
+    logging.basicConfig(filename=str(path), level=logging.DEBUG,
+                        format="%(asctime)s|%(levelname)s|%(threadName)s|%(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    logging.debug("to the file")
+    logging.basicConfig(level=logging.ERROR)  # ignored: the root logger already has a handler
+
+    def worker(n: int):
+        logging.info("from a thread %d", n)
+
+    threads = [threading.Thread(target=worker, args=(i,), name=f"worker-{i}") for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    lines = path.read_text().splitlines()
+    pattern = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\|(\w+)\|([\w-]+)\|(.*)")
+    for line in sorted(lines):
+        m = pattern.fullmatch(line)
+        print(m.groups() if m else ("no match", line, ""))
+
+    logging.basicConfig(stream=sys.stdout, format="%(name)s says %(message)s", force=True, level="INFO")
+    logging.info("reconfigured with force=True")
+print(sys.platform in ("linux", "darwin"), sys.maxsize > 2 ** 62)
+print("to stderr", file=sys.stderr)
+sys.stdout.write("written directly\n")

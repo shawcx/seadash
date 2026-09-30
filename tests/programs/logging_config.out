@@ -1,0 +1,7 @@
+('DEBUG', 'MainThread', 'to the file')
+('INFO', 'worker-0', 'from a thread 0')
+('INFO', 'worker-1', 'from a thread 1')
+('INFO', 'worker-2', 'from a thread 2')
+root says reconfigured with force=True
+True True
+written directly

@@ -18,7 +18,7 @@ from .types import (
     BINARY_FILE, TEXT_FILE,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
-    GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType,
+    GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -832,6 +832,10 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             return HASH_METHODS.get(name)
         case _ if t == EXECUTOR:
             return EXECUTOR_METHODS.get(name)
+        case _ if t == LOGGER:
+            return LOGGER_METHODS.get(name)
+        case _ if t == LOG_HANDLER:
+            return HANDLER_METHODS.get(name)
         case FutureType():
             return FUTURE_METHODS.get(name)
         case _ if t == HMAC_T:
@@ -1675,6 +1679,9 @@ MATCH_ATTRIBUTES = {
 
 
 def type_attributes(t: Type) -> dict | None:
+    if t == LOGGER:
+        return {"name": lambda t: STR, "level": lambda t: INT, "propagate": lambda t: BOOL,
+                "handlers": lambda t: ListType(LOG_HANDLER), "parent": lambda t: OptionalType(LOGGER)}
     if t in (HASH, HMAC_T):
         return {"name": lambda t: STR, "digest_size": lambda t: INT, "block_size": lambda t: INT}
     if t == STR_TEMPLATE:
@@ -2634,6 +2641,124 @@ FUTURES.members["ThreadPoolExecutor"].as_type = EXECUTOR
 FUTURE_MARKER = NamedType("Future", FutureType(NONE))  # Future[T] in annotations (see checker.resolve_type_name)
 FUTURES.members["Future"] = FUTURE_MARKER
 MODULES["concurrent"] = Module("concurrent", {"futures": FUTURES})
+
+
+# ---- sys streams ---------------------------------------------------------------------------
+
+MODULES["sys"].members.update({
+    "stdout": Value("stdout", TEXT_FILE, "sd::std_stream(1)"),
+    "stderr": Value("stderr", TEXT_FILE, "sd::std_stream(2)"),
+    "stdin": Value("stdin", TEXT_FILE, "sd::std_stream(0)"),
+    "platform": Value("platform", STR, "std::string(SD_PLATFORM)"),
+    "maxsize": Value("maxsize", INT, "std::int64_t{INT64_MAX}"),
+})
+
+
+# ---- logging -------------------------------------------------------------------------------
+#
+# Messages use Python's lazy %-style arguments: log.info("took %.2fs", t). The arguments are
+# evaluated as usual, but only formatted if the record is emitted.
+
+LOG_LEVELS = {"debug": 10, "info": 20, "warning": 30, "warn": 30, "error": 40, "critical": 50, "fatal": 50,
+              "exception": 40}
+
+
+def log_call(level_name: str) -> Callable[[CallContext], Type]:
+    """logging.info(msg, *args) / logger.info(...) / log(level, msg, *args)."""
+    def handler(ctx: CallContext) -> Type:
+        for kw in ctx.call.keywords:
+            if kw.name not in ("exc_info", "stack_info", "stacklevel"):
+                raise ctx.error(f"{ctx.what} got an unexpected keyword argument '{kw.name}'", kw)
+        ctx.keyword("exc_info", BOOL)
+        ctx.keyword("stack_info", BOOL)
+        ctx.keyword("stacklevel", INT)
+        first = 0
+        if level_name == "log":
+            if not ctx.args:
+                raise ctx.error("log() needs a level and a message")
+            ctx.expect(0, INT)
+            first = 1
+        if len(ctx.args) <= first:
+            raise ctx.error(f"{ctx.what} needs a message")
+        for i in range(first, len(ctx.args)):
+            ctx.need(i, printable, "something printable")
+        ctx.call.log_call = {"level": level_name, "first": first}
+        return NONE
+
+    return handler
+
+
+def level_arg(ctx: CallContext, node: A.Expr, what: str) -> None:
+    t = ctx.checker.check_expr(node)
+    if t not in (INT, STR):
+        raise ctx.error(f"{what} must be a level: logging.INFO (an int) or 'INFO', not {t}", node)
+
+
+def log_set_level(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    level_arg(ctx, ctx.args[0], "setLevel()")
+    return NONE
+
+
+def log_basic_config(ctx: CallContext) -> Type:
+    if ctx.args:
+        raise ctx.error("basicConfig() takes keyword arguments only")
+    types = {"format": STR, "datefmt": STR, "style": STR, "filemode": STR, "stream": TEXT_FILE,
+             "handlers": ListType(LOG_HANDLER), "force": BOOL, "encoding": STR}
+    for kw in ctx.call.keywords:
+        if kw.name == "level":
+            level_arg(ctx, kw.value, "basicConfig() level")
+        elif kw.name == "filename":
+            t = ctx.checker.check_expr(kw.value)
+            if t not in (STR, PATH):
+                raise ctx.error(f"basicConfig() filename must be a str or Path, not {t}", kw.value)
+        elif kw.name in types:
+            ctx.keyword(kw.name, types[kw.name])
+        else:
+            raise ctx.error(f"basicConfig() got an unexpected keyword argument '{kw.name}'", kw)
+    return NONE
+
+
+LOGGER_METHODS = {
+    **{name: log_call(name) for name in (*LOG_LEVELS, "log")},
+    "setLevel": log_set_level,
+    "addHandler": sync_method(NONE, ("hdlr", LOG_HANDLER)),
+    "removeHandler": sync_method(NONE, ("hdlr", LOG_HANDLER)),
+    "hasHandlers": sync_method(BOOL),
+    "getEffectiveLevel": sync_method(INT),
+    "isEnabledFor": sync_method(BOOL, ("level", INT)),
+    "getChild": sync_method(LOGGER, ("suffix", STR)),
+}
+HANDLER_METHODS = {
+    "setLevel": log_set_level,
+    "setFormatter": sync_method(NONE, ("fmt", LOG_FORMATTER)),
+    "flush": sync_method(NONE),
+    "close": sync_method(NONE),
+}
+LOG = "sd::logging::"
+MODULES["logging"] = module_with_params(runtime_module(
+    "logging", "modules/logging.hpp",
+    **{name: (log_call(name), None) for name in (*LOG_LEVELS, "log")},
+    basicConfig=(log_basic_config, None),
+    getLogger=(signature(LOGGER, ("name", OptionalType(STR), "std::nullopt")), LOG + "getLogger"),
+    getLevelName=(signature(STR, ("level", INT)), LOG + "level_name"),
+    disable=(signature(NONE, ("level", INT, LOG + "CRITICAL")), LOG + "disable"),
+    StreamHandler=(signature(LOG_HANDLER, ("stream", OptionalType(TEXT_FILE), "std::nullopt")), LOG + "Handler::stream"),
+    FileHandler=(signature(LOG_HANDLER, ("filename", STR), ("mode", STR, '"a"s'),
+                           ("encoding", OptionalType(STR), "std::nullopt")), LOG + "Handler::file"),
+    NullHandler=(signature(LOG_HANDLER), LOG + "Handler"),
+    Formatter=(signature(LOG_FORMATTER, ("fmt", OptionalType(STR), "std::nullopt"),
+                         ("datefmt", OptionalType(STR), "std::nullopt"), ("style", STR, '"%"s')), LOG + "Formatter"),
+    **{name: (INT, LOG + name) for name in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "NOTSET")},
+    WARN=(INT, LOG + "WARNING"), FATAL=(INT, LOG + "CRITICAL"),
+    BASIC_FORMAT=(STR, LOG + "BASIC_FORMAT"),
+    root=(LOGGER, LOG + "Logger::root()"),
+))
+for _name, _t in (("StreamHandler", LOG_HANDLER), ("FileHandler", LOG_HANDLER),
+                  ("NullHandler", LOG_HANDLER), ("Formatter", LOG_FORMATTER)):
+    MODULES["logging"].members[_name].as_type = _t
+MODULES["logging"].members["Logger"] = NamedType("Logger", LOGGER)
+MODULES["logging"].members["Handler"] = NamedType("Handler", LOG_HANDLER)
 
 
 class AttributeUnavailable(Exception):

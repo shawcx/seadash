@@ -1627,3 +1627,16 @@ def test_futures_types_and_races():
     assert {"f: Future[int]", "r: int", "squares: list[int]", "g: Future[int]"} <= set(variables(info))
     assert err(FUTURES + "def sq(n: int) -> int:\n    return n\nwith ThreadPoolExecutor() as pool:\n    f = pool.submit(sq)\n"
                ).message == "the function takes (int), but it's given (none)"
+
+
+def test_logging_types_and_errors():
+    info = ok("import logging\nlog = logging.getLogger('x')\nlevel = log.getEffectiveLevel()\nname = log.name\n"
+              "h = logging.StreamHandler()\nlog.info('%d items', 3)\n")
+    assert {"log: Logger", "level: int", "name: str", "h: Handler"} <= set(variables(info))
+    assert err("import logging\nlogging.basicConfig(levle=10)\n").message == (
+        "basicConfig() got an unexpected keyword argument 'levle'"
+    )
+    assert err("import logging\nlogging.getLogger().setLevel(1.5)\n").message == (
+        "setLevel() must be a level: logging.INFO (an int) or 'INFO', not float"
+    )
+    assert err("import logging\nlogging.info()\n").message == "logging.info() needs a message"

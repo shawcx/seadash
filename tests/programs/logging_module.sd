@@ -1,0 +1,39 @@
+# logging: loggers, levels, handlers, formatters and lazy %-style messages.
+import logging
+import sys
+
+logging.warning("no configuration yet: %s", "WARNING:root:...")  # sets up the root logger (to stderr)
+logging.info("not shown: the root level is WARNING")
+
+log = logging.getLogger("app")
+log.setLevel(logging.DEBUG)
+out = logging.StreamHandler(sys.stdout)
+out.setFormatter(logging.Formatter("%(levelname)-8s %(name)s:%(funcName)s:%(lineno)d %(message)s"))
+log.addHandler(out)
+log.debug("debugging %d items", 3)
+log.info("%s scored %.1f%% (%r)", "ann", 97.25, "ann")
+
+
+def process(n: int) -> int:
+    log.warning("processing %05d / %x / %+d / %-6s|", n, n, n, "ok")
+    return n * 2
+
+
+process(42)
+db = logging.getLogger("app.db")
+db.info("child loggers use their parents' handlers: %s", db.name)
+db.setLevel(logging.ERROR)
+db.warning("filtered out by the child's own level")
+db.error("errors still pass (effective level %d, %s)", db.getEffectiveLevel(), logging.getLevelName(db.getEffectiveLevel()))
+print(log.isEnabledFor(logging.DEBUG), db.isEnabledFor(logging.INFO), log.name, db.parent.name if db.parent else "")
+print(logging.getLogger("app").name, log.hasHandlers(), logging.DEBUG, logging.CRITICAL, logging.getLevelName(25))
+
+quiet = logging.getLogger("quiet")
+quiet.addHandler(logging.NullHandler())
+quiet.warning("dropped by the NullHandler")
+log.critical("%d%% done, %c%c %s", 100, 79, 75, [1, 2])
+log.info("100% literal, no args")
+log.log(logging.ERROR, "log() with an explicit level: %s", True)
+logging.disable(logging.WARNING)
+log.warning("disabled")
+log.error("still on: above the disabled level")

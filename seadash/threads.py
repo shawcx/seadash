@@ -28,7 +28,7 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, DATETIME_TYPES,
-    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, EXECUTOR, MatchType, PatternType, ProcessType, VarTupleType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
+    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, EXECUTOR, LOGGER, LOG_HANDLER, LOG_FORMATTER, MatchType, PatternType, ProcessType, VarTupleType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
 MUTATING_METHODS = frozenset(
@@ -54,7 +54,7 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
             return None
         case SyncType():
             return None
-        case _ if t == SOCKET or t == EXECUTOR:
+        case _ if t in (SOCKET, EXECUTOR, LOGGER, LOG_HANDLER, LOG_FORMATTER):  # (internally locked)
             return None
         case FutureType(x):  # its result is copied out
             return unsendable(x, seen)
@@ -89,7 +89,7 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
 
 def shareable(t: Type) -> bool:
     """Safe to access from several threads at once without copying."""
-    return isinstance(t, (SyncType, FutureType)) or t in (JSON_VALUE, SOCKET, EXECUTOR) or (
+    return isinstance(t, (SyncType, FutureType)) or t in (JSON_VALUE, SOCKET, EXECUTOR, LOGGER, LOG_HANDLER, LOG_FORMATTER) or (
         isinstance(t, StructType) and is_synchronized(t)
     )
 
