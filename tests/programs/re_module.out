@@ -1,0 +1,28 @@
+2024-05-17 2024 05 ('2024', '17') ('2024', '05', '17')
+12 22 (17, 19) released
+2025
+None <re.Match object; span=(0, 3), match='abc'>
+True True
+name 'seadash' ; {'key': 'name', 'value': 'seadash'}
+kids '2' None {'key': 'kids', 'value': '2'}
+None b (None, 'b') 2
+['1', '22', '333'] [('a', '1'), ('b', '2')]
+[('a', ''), ('a', 'b')] ['', '', '', '']
+Alice (0, 5)
+Bob (10, 13)
+Paris (17, 22)
+mail example at bob now
+6 apples and 20 pears
+('f00 b0o', 3) -a-b--d-
+A:1 B:2
+['a', 'b', 'c', 'd'] ['a', '-', None, 'b', None, '+', 'c']
+['one', 'two  three'] ['', 'a', ' ', 'b', '']
+['o', 't', 'T'] <re.Match object; span=(4, 9), match='hello'>
+['a\nc', 'abc']
+[('5', 'kg'), ('200', 'g')] 2 2
+1\+1=2\?\ \(yes\)\ a\.b re.compile("it's", re.IGNORECASE) re.compile('\\d')
+<re.Match object; span=(4, 7), match='end'> héllo
+<re.Match object; span=(3, 4), match='2'> <re.Match object; span=(2, 3), match='1'> None
+error: bad escape \q at position 0
+IndexError: no such group
+bb b 1

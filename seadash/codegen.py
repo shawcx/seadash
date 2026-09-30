@@ -37,7 +37,7 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, SyncType,
-    CounterType, DefaultDictType, DequeType, DictType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
+    CounterType, DefaultDictType, DequeType, DictType, MatchType, PatternType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
 
@@ -250,6 +250,10 @@ class CodeGen:
                 return f"std::set<{self.cpp_type(elem)}>"
             case DequeType(elem):
                 return f"sd::deque<{self.cpp_type(elem)}>"
+            case PatternType():
+                return "sd::re::Pattern"
+            case MatchType():
+                return "sd::re::Match"
             case CounterType(key):
                 return f"sd::Counter<{self.cpp_type(key)}>"
             case DefaultDictType(key, value):
@@ -1333,6 +1337,8 @@ class CodeGen:
             return f"sd::tuple_index({v}, {self.expr(idx)})"
         if isinstance(vt, DictType):
             return f"sd::index({v}, {self.expr_as(idx, vt.key)})"
+        if isinstance(vt, MatchType):  # m[1] is m.group(1)
+            return self.match_group(v, idx, e.ty)
         return f"sd::index({v}, {self.expr(idx)})"
 
     def dunder_call(self, d, recv: str, recv_type: Type, args: list[str]) -> str:
@@ -1558,6 +1564,82 @@ class CodeGen:
                 return f"{cpp}({self.expr(extra['items'])}, {ml})"
         raise NotImplementedError(f"codegen for {t}()")
 
+    # ---- re -------------------------------------------------------------------------
+
+    def re_call(self, name: str, e: A.Call) -> str:
+        if name == "escape":
+            return f"sd::re::escape({self.expr(e.args[0])})"
+        if name == "purge":
+            return "(void)0"
+        args = e.regex_args
+        pattern = args["pattern"]
+        flags = getattr(e, "regex_static", None)
+        if flags is not None and isinstance(pattern, A.StrLit):
+            # A literal pattern is compiled once, the first time this line runs (thread-safe).
+            code = (f"[]() -> const sd::re::Pattern& {{ static const sd::re::Pattern sd_p("
+                    f"{cpp_string(pattern.value)}, {flags}); return sd_p; }}()")
+        else:
+            fl = self.expr(args["flags"]) if "flags" in args else "0"
+            code = f"sd::re::compile_cached({self.expr(pattern)}, {fl})"
+        if name == "compile":
+            return f"sd::re::Pattern({code})"
+        return self.regex_op(code, name, args, e)
+
+    def regex_op(self, pat: str, op: str, args: dict, e: A.Call) -> str:
+        """pattern.<op>(...) for re.search(...) and compiled.search(...) alike."""
+        s = self.expr(args["string"])
+        match op:
+            case "search" | "match" | "fullmatch":
+                pos = self.expr(args["pos"]) if "pos" in args else "0"
+                end = self.expr_as(args["endpos"], OptionalType(INT)) if "endpos" in args else "std::nullopt"
+                return f"{pat}.{op}({s}, {pos}, {end})"
+            case "findall" if isinstance(e.ty.elem, TupleType):
+                return f"{pat}.findall_tuples<{len(e.ty.elem.elts)}>({s})"
+            case "findall" | "finditer":
+                return f"{pat}.{op}({s})"
+            case "sub" | "subn":
+                count = self.expr(args["count"]) if "count" in args else "0"
+                if getattr(e, "regex_repl_fn", False):
+                    repl = self.expr_as(args["repl"], FuncType((MatchType(None),), STR))
+                    return f"{pat}.{op}_fn({repl}, {s}, {count})"
+                return f"{pat}.{op}({self.expr(args['repl'])}, {s}, {count})"
+            case "split":
+                maxsplit = self.expr(args["maxsplit"]) if "maxsplit" in args else "0"
+                fn = "split_opt" if isinstance(e.ty.elem, OptionalType) else "split"
+                return f"{pat}.{fn}({s}, {maxsplit})"
+        raise NotImplementedError(f"codegen for re {op}")
+
+    def match_group(self, m: str, node: A.Expr, t: Type) -> str:
+        """m.group(g) / m[g]: a str when the group always matches, else str?."""
+        g = getattr(node, "regex_group", None)
+        arg = f"std::int64_t{{{g}}}" if g is not None else self.expr(node)
+        return f"{m}.{'group_opt' if isinstance(t, OptionalType) else 'group_str'}({arg})"
+
+    def match_method(self, r: str, name: str, e: A.Call) -> str:
+        match name:
+            case "group" if not e.args:
+                return f"{r}.group_str(0)"
+            case "group" if len(e.args) == 1:
+                return self.match_group(r, e.args[0], e.ty)
+            case "group":
+                return f"std::make_tuple({', '.join(self.match_group(r, a, t) for a, t in zip(e.args, e.ty.elts))})"
+            case "groups" if isinstance(e.ty, TupleType):
+                parts = [f"{r}.{'group_opt' if isinstance(t, OptionalType) else 'group_str'}({i})"
+                         for i, t in enumerate(e.ty.elts, 1)]
+                return f"std::make_tuple({', '.join(parts)})"
+            case "groups":
+                return f"{r}.groups_list()"
+            case "groupdict":
+                return f"{r}.{'groupdict' if isinstance(e.ty.value, OptionalType) else 'groupdict_str'}()"
+            case "start" | "end" | "span":
+                if not e.args:
+                    return f"{r}.{name}()"
+                g = getattr(e.args[0], "regex_group", None)
+                return f"{r}.{name}({f'std::int64_t{{{g}}}' if g is not None else self.expr(e.args[0])})"
+            case "expand":
+                return f"{r}.expand({self.expr(e.args[0])})"
+        raise NotImplementedError(f"codegen for re.Match.{name}")
+
     def sync_new(self, e: A.Call, t: SyncType, extra: dict) -> str:
         cpp = self.cpp_type(t)
         if t.kind in ("Atomic", "Mutex", "Queue"):
@@ -1703,6 +1785,10 @@ class CodeGen:
                     codes.append(self.expr_as(node, want) if isinstance(want, Type) else self.expr(node))
             return f"{r}.{name}({', '.join(codes)})"
         match recv_type:
+            case PatternType():
+                return self.regex_op(r, name, e.regex_args, e)
+            case MatchType():
+                return self.match_method(r, name, e)
             case DequeType(elem):
                 if name == "copy":
                     return f"{self.cpp_type(recv_type)}({r})"
@@ -1770,6 +1856,8 @@ class CodeGen:
 
     def module_call(self, module: builtins.Module, name: str, e: A.Call) -> str:
         mod = module.name
+        if mod == "re":
+            return self.re_call(name, e)
         member = module.members[name]
         if member.cpp is not None and "{T}" in member.cpp:  # the result type picks the template: json.loads
             member = builtins.Function(member.name, member.check, member.cpp.replace("{T}", self.cpp_type(e.ty)), member.params)

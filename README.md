@@ -173,10 +173,11 @@ def work():
 | `socket` | TCP/UDP with Python's API and errors |
 | `threading`, `queue` | threads, locks, events, queues; plus seadash's `Mutex[T]`, `Atomic` and `Synchronized` |
 | `collections` | `defaultdict`, `Counter`, `deque` |
+| `re` | Python's regular expressions on PCRE2; literal patterns are checked at compile time, and `m.group(1)` is a `str` when the group always matches |
 | `dataclasses`, `functools` | `@dataclass`, `field()`, `@cache`, `@lru_cache` |
 | `typing` | `Callable`, `Optional`, `Iterator`... (so the same code also runs under Python) |
 
-In progress: `re`, `subprocess`, `pathlib`, `shutil`, `datetime`, `argparse`.
+In progress: `subprocess`, `pathlib`, `shutil`, `datetime`, `argparse`.
 
 ## Differences from Python
 

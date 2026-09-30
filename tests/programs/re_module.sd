@@ -1,0 +1,69 @@
+# re: Python's regular expressions (on PCRE2).
+import re
+from re import findall, IGNORECASE
+
+# search / match / fullmatch, and groups whose types are known from the pattern
+m = re.search(r"(\d{4})-(\d{2})-(\d{2})", "released on 2024-05-17, patched later")
+if m:
+    print(m.group(), m.group(1), m[2], m.group(1, 3), m.groups())
+    print(m.start(), m.end(), m.span(2), m.string[:8])
+    year = int(m.group(1)) + 1  # group 1 always matches: it's a str, not str?
+    print(year)
+print(re.match(r"\d+", "abc 123"), re.match(r"\w+", "abc 123"))
+print(re.fullmatch(r"[a-z]+", "hello") is not None, re.fullmatch(r"[a-z]+", "hello!") is None)
+
+# named and optional groups
+kv = re.compile(r"(?P<key>\w+)\s*=\s*(?P<value>[^;]*)(;)?")
+for line in ["name = seadash;", "kids=2"]:
+    if found := kv.match(line):
+        print(found.group("key"), repr(found["value"]), found.group(3), found.groupdict())
+optional = re.match(r"(a)?(b)", "b")
+if optional is not None:
+    print(optional.group(1), optional.group(2), optional.groups(), optional.lastindex)
+
+# findall / finditer
+print(re.findall(r"\d+", "a1 b22 c333"), findall(r"(\w)=(\d)", "a=1, b=2"))
+print(re.findall(r"(a)(b)?", "ac ab"), re.findall(r"\b", "a b"))
+for word in re.finditer(r"[A-Z]\w+", "Alice met Bob in Paris"):
+    print(word.group(), word.span())
+
+# sub / subn with templates and functions
+print(re.sub(r"(\w+)@(\w+)\.com", r"\2 at \g<1>", "mail bob@example.com now"))
+print(re.sub(r"\d+", lambda d: str(int(d.group()) * 2), "3 apples and 10 pears"))
+print(re.subn(r"o", "0", "foo boo", count=3), re.sub("x*", "-", "abxd"))
+print(kv.sub(lambda f: f["key"].upper() + ":" + f["value"], "a=1; b=2"))
+
+# split
+print(re.split(r"[,;]\s*", "a, b;c,  d"), re.split(r"(-)|(\+)", "a-b+c"))
+print(re.split(r"\s+", "one two  three", maxsplit=1), re.split(r"\b", "a b"))
+
+# flags, escape, compiled patterns
+print(re.findall(r"^\w", "one\ntwo\nThree", re.MULTILINE), re.search("HELLO", "say hello", IGNORECASE))
+print(re.findall(r"a.c", "a\nc abc", flags=re.DOTALL | re.I))
+verbose = re.compile(r"""
+    (\d+)   # digits
+    \s*
+    (kg|g)  # unit
+""", re.VERBOSE)
+print(verbose.findall("5 kg, 200g"), verbose.groups, verbose.pattern.count("#"))
+print(re.escape("1+1=2? (yes) a.b"), re.compile("it's", re.I), re.compile(r"\d"))
+found_word = re.search(r"\w+", "héllo wörld")  # \w understands Unicode, as in Python 3
+print(re.search(r"end\Z", "the end"), found_word.group() if found_word else "")
+digits = re.compile(r"\d")
+print(digits.search("ab12", 3), digits.match("ab12", 2), digits.search("ab12", 0, 2))
+
+# errors
+try:
+    re.sub("a", r"\q", "a")
+except re.error as e:
+    print("error:", e)
+try:
+    m2 = re.search(r"(x)", "x")
+    if m2:
+        print(m2.group(int("5")))
+except IndexError as e:
+    print("IndexError:", e)
+dynamic = "(" + "b" + ")+"
+d = re.search(dynamic, "abbc")
+if d:
+    print(d.group(0), d.group(1), len(d.groups()))

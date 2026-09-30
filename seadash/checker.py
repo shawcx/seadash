@@ -38,7 +38,7 @@ from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PRIMITIVES, SOCKET, STR, TEXT_FILE,
-    SYNC_ARITY, ClassRefType, CounterType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
+    SYNC_ARITY, ClassRefType, CounterType, MatchType, PatternType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
@@ -1511,7 +1511,7 @@ class Checker:
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
         ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE) or isinstance(
-            t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType)
+            t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType, MatchType)
         ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__"))
         if not ok:
             raise self.error(f"{t} can't be used as a condition", e)
@@ -2048,6 +2048,11 @@ class Checker:
         if isinstance(vt, SyncType) and vt.kind == "Thread" and attr in builtins.THREAD_ATTRIBUTES:
             e.sym = ("thread_attr", attr)
             return builtins.THREAD_ATTRIBUTES[attr]
+        if (attrs := builtins.type_attributes(vt)) is not None:  # m.string, pattern.groups
+            if attr not in attrs:
+                raise self.error(f"{vt} has no attribute '{attr}'", e)
+            e.sym = ("thread_attr", attr)  # read through an accessor: obj.attr()
+            return attrs[attr](vt)
         if isinstance(vt, OptionalType):
             raise self.error(
                 f"{vt} might be None; check it first, e.g. `if {describe_short(value)} is not None:`", value
@@ -2109,6 +2114,9 @@ class Checker:
             case DequeType(elem):
                 self.expect_type(index, INT, "deque index")
                 return elem
+            case MatchType():  # m[1] is m.group(1)
+                ctx = builtins.CallContext(self, A.Call(value, [index], loc=e.loc), "re.Match[...]", None, vt)
+                return builtins.match_group_arg(ctx, index)
             case DictType(key, val):
                 self.expect_type(index, key, "dict key")
                 return val

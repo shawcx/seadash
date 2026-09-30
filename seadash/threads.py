@@ -28,7 +28,7 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
-    DefaultDictType, DequeType, DictType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
+    DefaultDictType, DequeType, DictType, MatchType, PatternType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
 MUTATING_METHODS = frozenset(
@@ -55,6 +55,8 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
         case SyncType():
             return None
         case _ if t == SOCKET:
+            return None
+        case PatternType() | MatchType():  # immutable (a Match holds its own copy of the string)
             return None
         case ListType(x) | SetType(x) | OptionalType(x) | DequeType(x):
             return unsendable(x, seen)

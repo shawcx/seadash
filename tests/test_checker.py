@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, queue, random, socket, sys, threading, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, queue, random, re, socket, sys, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -1356,3 +1356,40 @@ def test_collections_errors():
         "unsupported operand types for +: Counter[str] and dict[str, int]"
     )
     assert err("x = dict([1, 2])\n").message == "dict() needs a dict or (key, value) pairs, not list[int]"
+
+
+def test_regex_types():
+    info = ok(
+        "import re\n"
+        "m = re.match(r'(\\d+)-(\\d+)?', 'x')\n"
+        "if m:\n    a = m.group(1)\n    b = m.group(2)\n    c = m.groups()\n    d = m['n' if False else 'n'] if False else ''\n"
+        "p = re.compile(r'(?P<k>\\w+)=(?P<v>\\w+)')\n"
+        "pairs = p.findall('a=1')\n"
+        "words = re.findall(r'\\w+', 'a b')\n"
+        "parts = re.split(r'(-)|(\\+)', 'a-b')\n"
+        "unknown = re.compile('(' + 'x' + ')')\n"
+    )
+    names = set(variables(info))
+    assert {"a: str", "b: str?", "c: tuple[str, str?]", "pairs: list[tuple[str, str]]", "words: list[str]",
+            "parts: list[str?]", "m: re.Match?", "p: re.Pattern", "unknown: re.Pattern"} <= names
+
+
+def test_regex_errors():
+    assert err("import re\nre.search('(a', 'x')\n").message == (
+        "invalid regular expression: missing ), unterminated subpattern at position 0"
+    )
+    assert err("import re\nm = re.match('(a)', 'a')\nif m:\n    x = m.group(2)\n").message == (
+        "the pattern has no group 2 (it has 1 group)"
+    )
+    assert err("import re\nm = re.match('(?P<a>a)', 'a')\nif m:\n    x = m.group('b')\n").message == (
+        "the pattern has no group named 'b'"
+    )
+    assert err("import re\nm = re.match('(a)?', 'a')\nif m:\n    x = m.group(1).upper()\n").message.startswith(
+        "str? might be None"
+    )
+    assert err("import re\nx = re.sub('a', 1, 'abc')\n").message == (
+        "re.sub() replacement must be a str or a function, not int"
+    )
+    assert err("import re\nx = re.search('a', 'b', flag=1)\n").message == (
+        "re.search() got an unexpected keyword argument 'flag'"
+    )

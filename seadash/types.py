@@ -89,6 +89,39 @@ class DequeType(Type):
 
 
 @dataclass(frozen=True)
+class RegexInfo:
+    """What the compiler knows about a pattern written as a literal (see regex.py)."""
+
+    groups: int
+    names: tuple[tuple[str, int], ...]  # (name, group number)
+    optional: frozenset[int]  # groups that may not take part in a match
+
+    def group_number(self, name: str) -> int | None:
+        return next((i for n, i in self.names if n == name), None)
+
+
+@dataclass(frozen=True)
+class PatternType(Type):
+    """re.Pattern. `info` is known when the pattern was a literal; it only refines types
+    (all patterns are the same C++ type)."""
+
+    info: RegexInfo | None = None
+
+    def __str__(self) -> str:
+        return "re.Pattern"
+
+
+@dataclass(frozen=True)
+class MatchType(Type):
+    """re.Match, from a pattern with (possibly) known groups."""
+
+    info: RegexInfo | None = None
+
+    def __str__(self) -> str:
+        return "re.Match"
+
+
+@dataclass(frozen=True)
 class TupleType(Type):
     elts: tuple[Type, ...]
 
@@ -332,6 +365,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return True
     if isinstance(src, StructType) and isinstance(dst, StructType):
         return src.is_subclass_of(dst)
+    if type(src) is type(dst) and isinstance(src, (PatternType, MatchType)):
+        return dst.info is None  # any pattern fits where no particular one is expected
     if isinstance(src, DictType) and type(dst) is DictType:  # defaultdict/Counter -> dict (a copy)
         return src.key == dst.key and src.value == dst.value
     if isinstance(src, FuncType) and isinstance(dst, FuncType):
@@ -352,6 +387,8 @@ def join(a: Type, b: Type) -> Type | None:
     """The type that can hold both `a` and `b` (for list literals, if-expressions...), or None."""
     if a == b:
         return a
+    if type(a) is type(b) and isinstance(a, (PatternType, MatchType)):
+        return type(a)(None)  # different patterns: forget what's known about their groups
     if {a, b} == {INT, FLOAT}:
         return FLOAT
     if isinstance(a, StructType) and isinstance(b, StructType):
