@@ -1,0 +1,27 @@
+import errno
+import os
+
+# (only the numbers that are the same on Linux and macOS are printed)
+print(errno.EPERM, errno.ENOENT, errno.EINTR, errno.EIO, errno.EBADF, errno.EACCES, errno.EEXIST, errno.ENOTDIR, errno.EISDIR, errno.EINVAL, errno.EPIPE)
+print(errno.errorcode[errno.ENOENT], errno.errorcode[2], errno.errorcode[errno.EEXIST], errno.ENOENT in errno.errorcode, 99999 in errno.errorcode)
+print(errno.ECONNREFUSED != errno.ENOENT, errno.EAGAIN == errno.EWOULDBLOCK, len(errno.errorcode) > 80)
+
+open("here.txt", "w").close()
+for path in ["/nonexistent/file", "/", "here.txt"]:
+    try:
+        with open(path) as f:
+            f.read(1)
+        print("read", path)
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            print("missing:", e.filename, e.strerror, errno.errorcode[e.errno])
+        elif e.errno == errno.EISDIR:
+            print("a directory:", e.filename, e.errno == errno.EISDIR)
+        else:
+            print("other:", e.errno)
+try:
+    os.makedirs("/tmp")
+except OSError as e:
+    print(e.errno == errno.EEXIST, e.strerror, e.filename)
+plain = OSError("no details")
+print(plain.errno, plain.strerror, plain.filename)

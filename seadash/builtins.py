@@ -1137,6 +1137,11 @@ def make_exceptions() -> dict[str, StructType]:
     empty = A.StrLit("")
     empty.ty = STR
     out["BaseException"].fields["message"] = Field("message", STR, empty, Loc(0, 0))
+    # OSError("...").errno is None; an error from the OS has errno, strerror and filename.
+    for name, t in (("errno", INT), ("strerror", STR), ("filename", STR)):
+        none = A.NoneLit()
+        none.ty = NONE
+        out["OSError"].fields[name] = Field(name, OptionalType(t), none, Loc(0, 0))
     return out
 
 
@@ -2652,6 +2657,28 @@ MODULES["uuid"] = module_with_params(runtime_module(
     RESERVED_FUTURE=(STR, '"reserved for future definition"s'),
 ))
 MODULES["uuid"].members["UUID"].as_type = UUID_T
+
+
+# ---- errno ---------------------------------------------------------------------------
+
+ERRNO_NAMES = (
+    "EPERM", "ENOENT", "ESRCH", "EINTR", "EIO", "ENXIO", "E2BIG", "ENOEXEC", "EBADF",
+    "ECHILD", "EAGAIN", "ENOMEM", "EACCES", "EFAULT", "ENOTBLK", "EBUSY", "EEXIST", "EXDEV",
+    "ENODEV", "ENOTDIR", "EISDIR", "EINVAL", "ENFILE", "EMFILE", "ENOTTY", "ETXTBSY", "EFBIG",
+    "ENOSPC", "ESPIPE", "EROFS", "EMLINK", "EPIPE", "EDOM", "ERANGE", "EDEADLK", "ENAMETOOLONG",
+    "ENOLCK", "ENOSYS", "ENOTEMPTY", "ELOOP", "EWOULDBLOCK", "ENOMSG", "EIDRM", "ENOSTR", "ENODATA",
+    "ETIME", "ENOSR", "EREMOTE", "ENOLINK", "EPROTO", "EMULTIHOP", "EBADMSG", "EOVERFLOW", "EILSEQ",
+    "EUSERS", "ENOTSOCK", "EDESTADDRREQ", "EMSGSIZE", "EPROTOTYPE", "ENOPROTOOPT", "EPROTONOSUPPORT", "ESOCKTNOSUPPORT", "EOPNOTSUPP",
+    "ENOTSUP", "EPFNOSUPPORT", "EAFNOSUPPORT", "EADDRINUSE", "EADDRNOTAVAIL", "ENETDOWN", "ENETUNREACH", "ENETRESET", "ECONNABORTED",
+    "ECONNRESET", "ENOBUFS", "EISCONN", "ENOTCONN", "ESHUTDOWN", "ETOOMANYREFS", "ETIMEDOUT", "ECONNREFUSED", "EHOSTDOWN",
+    "EHOSTUNREACH", "EALREADY", "EINPROGRESS", "ESTALE", "EDQUOT", "ECANCELED", "EOWNERDEAD", "ENOTRECOVERABLE",
+)
+
+MODULES["errno"] = runtime_module(
+    "errno", "modules/errno.hpp",
+    **{name: (INT, f"static_cast<std::int64_t>({name})") for name in ERRNO_NAMES},
+    errorcode=(DictType(INT, STR), "sd::errnomod::errorcode()"),
+)
 
 
 # ---- shlex ----------------------------------------------------------------------------

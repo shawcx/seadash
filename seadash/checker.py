@@ -1996,6 +1996,12 @@ class Checker:
                 self.check_expr(e)
                 narrowed = self.narrowed(subject)
                 return (narrowed, self.state.copy()) if op in ("is not", "!=") else (self.state.copy(), narrowed)
+            case A.Compare(subject, ["==" | "!=" as op], [other]):
+                self.check_expr(e)  # if e.errno == errno.ENOENT: e.errno isn't None there
+                if isinstance(subject.ty, OptionalType) and other.ty not in (None, NONE) and not isinstance(other.ty, OptionalType):
+                    narrowed = self.narrowed(subject)
+                    return (narrowed, self.state.copy()) if op == "==" else (self.state.copy(), narrowed)
+                return self.state.copy(), self.state.copy()
         t = self.check_expr(e)
         self.check_truthy(t, e)
         if isinstance(t, OptionalType):

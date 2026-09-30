@@ -1,0 +1,8 @@
+1 2 4 5 9 13 17 20 21 22 32
+ENOENT ENOENT EEXIST True False
+True True True
+missing: /nonexistent/file No such file or directory ENOENT
+a directory: / True
+read here.txt
+True File exists /tmp
+None None None

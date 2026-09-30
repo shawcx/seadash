@@ -67,7 +67,16 @@ struct BaseException : std::enable_shared_from_this<BaseException> {
     };
 
 SD_EXCEPTION(Exception, BaseException)
-SD_EXCEPTION(OSError, Exception)
+// OSError carries errno, strerror and filename, like Python's (None unless the OS set them).
+struct OSError : Exception {
+    std::optional<std::int64_t> errno_;
+    std::optional<std::string> strerror, filename;
+    OSError() = default;
+    explicit OSError(std::string msg, std::optional<std::int64_t> err = std::nullopt, std::optional<std::string> what = std::nullopt,
+                     std::optional<std::string> path = std::nullopt)
+        : Exception(std::move(msg)), errno_(err), strerror(std::move(what)), filename(std::move(path)) {}
+    std::string sd_type() const override { return "OSError"; }
+};
 SD_EXCEPTION(ArithmeticError, Exception)
 SD_EXCEPTION(ZeroDivisionError, ArithmeticError)
 SD_EXCEPTION(OverflowError, ArithmeticError)
@@ -2902,21 +2911,23 @@ inline const std::string& raw(const std::string& s) { return s; }
 // OSError subclasses with Python's message: [Errno 2] No such file or directory: 'x.txt'
 // (no path for sockets: [Errno 111] Connection refused)
 [[noreturn]] inline void raise_os(int err, const std::optional<std::string>& path) {
-    std::string msg = "[Errno " + std::to_string(err) + "] " + std::strerror(err) + (path ? ": " + repr_str(*path) : "");
+    std::string what = std::strerror(err);
+    std::string msg = "[Errno " + std::to_string(err) + "] " + what + (path ? ": " + repr_str(*path) : "");
+    auto with = [&]<class E>() -> void { throw Thrown{std::make_shared<E>(msg, err, what, path)}; };
     switch (err) {
-        case ECONNREFUSED: raise<ConnectionRefusedError>(msg);
-        case ECONNRESET: raise<ConnectionResetError>(msg);
-        case ECONNABORTED: raise<ConnectionAbortedError>(msg);
-        case EPIPE: raise<BrokenPipeError>(msg);
-        case ETIMEDOUT: raise<TimeoutError>(msg);
-        case ENOENT: raise<FileNotFoundError>(msg);
-        case EEXIST: raise<FileExistsError>(msg);
+        case ECONNREFUSED: with.template operator()<ConnectionRefusedError>();
+        case ECONNRESET: with.template operator()<ConnectionResetError>();
+        case ECONNABORTED: with.template operator()<ConnectionAbortedError>();
+        case EPIPE: with.template operator()<BrokenPipeError>();
+        case ETIMEDOUT: with.template operator()<TimeoutError>();
+        case ENOENT: with.template operator()<FileNotFoundError>();
+        case EEXIST: with.template operator()<FileExistsError>();
         case EACCES:
-        case EPERM: raise<PermissionError>(msg);
-        case EISDIR: raise<IsADirectoryError>(msg);
-        case ENOTDIR: raise<NotADirectoryError>(msg);
-        default: raise<OSError>(msg);
+        case EPERM: with.template operator()<PermissionError>();
+        case EISDIR: with.template operator()<IsADirectoryError>();
+        case ENOTDIR: with.template operator()<NotADirectoryError>();
     }
+    throw Thrown{std::make_shared<OSError>(msg, err, what, path)};
 }
 
 struct FileBase {
