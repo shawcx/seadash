@@ -1,0 +1,60 @@
+# shutil and tempfile: copying, moving and removing files and trees, in a
+# temporary directory that removes itself.
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+with tempfile.TemporaryDirectory(prefix="sd_") as tmp:
+    root = Path(tmp)
+    print(root.is_dir(), root.name.startswith("sd_"), len(root.name))
+    (root / "src" / "sub").mkdir(parents=True)
+    (root / "src" / "a.txt").write_text("alpha")
+    (root / "src" / "sub" / "b.txt").write_text("beta")
+
+    copied = shutil.copy(root / "src" / "a.txt", root / "src" / "sub")
+    print(Path(copied).relative_to(root), Path(copied).read_text())
+    shutil.copyfile(str(root / "src" / "a.txt"), str(root / "c.txt"))
+    shutil.copy2(root / "c.txt", root / "d.txt")
+    print((root / "d.txt").read_text(), os.path.getsize(str(root / "d.txt")))
+
+    tree = shutil.copytree(root / "src", root / "copy")
+    print(Path(tree).name, sorted(str(p.relative_to(root / "copy")) for p in (root / "copy").rglob("*")))
+    shutil.copytree(root / "src", root / "copy", dirs_exist_ok=True)
+    try:
+        shutil.copytree(root / "src", root / "copy")
+    except FileExistsError as e:
+        print("FileExistsError:", str(e).startswith("[Errno 17] File exists"))
+    try:
+        shutil.copyfile(root / "c.txt", root / "c.txt")
+    except shutil.SameFileError:
+        print("SameFileError")
+
+    moved = shutil.move(str(root / "d.txt"), str(root / "copy"))
+    print(Path(moved).relative_to(root), (root / "d.txt").exists())
+    shutil.move(root / "copy", root / "renamed")
+    print(sorted(p.name for p in root.iterdir()))
+
+    shutil.rmtree(root / "renamed")
+    print((root / "renamed").exists())
+    shutil.rmtree(root / "renamed", ignore_errors=True)
+    try:
+        shutil.rmtree(root / "renamed")
+    except FileNotFoundError:
+        print("FileNotFoundError")
+    kept = tmp
+print(Path(kept).exists())
+
+print(shutil.which("sh") is not None, shutil.which("no-such-program-xyz"))
+usage = shutil.disk_usage("/")
+print(usage.total >= usage.used > 0, usage.free > 0)
+
+made = tempfile.mkdtemp(suffix=".work", prefix="job_")
+print(Path(made).name.startswith("job_"), made.endswith(".work"), Path(made).is_dir())
+os.rmdir(made)
+print(len(tempfile.gettempdir()) > 0)
+td = tempfile.TemporaryDirectory()
+name = td.name
+print(Path(name).is_dir())
+td.cleanup()
+print(Path(name).exists())

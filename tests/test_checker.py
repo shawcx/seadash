@@ -604,7 +604,7 @@ def test_math_module():
 
 
 def test_unknown_module():
-    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, pathlib, queue, random, re, socket, subprocess, sys, threading, time, typing, zlib)"
+    assert err("import requests").message == "no module named 'requests' (built-in modules are: base64, collections, dataclasses, functools, json, math, os, pathlib, queue, random, re, shutil, socket, subprocess, sys, tempfile, threading, time, typing, zlib)"
 
 
 def test_unknown_module_member():
@@ -1438,4 +1438,17 @@ def test_pathlib_types():
     )
     assert err("from pathlib import Path\nx = Path('a').rename(3)\n").message == (
         "Path.rename() argument 'target' must be a str or Path, not int"
+    )
+
+
+def test_shutil_tempfile_types():
+    info = ok(
+        "import shutil\nimport tempfile\nfrom pathlib import Path\n"
+        "w = shutil.which('sh')\nc = shutil.copy('a', Path('b'))\nu = shutil.disk_usage('/').free\n"
+        "t = tempfile.TemporaryDirectory()\nn = t.name\n"
+        "with tempfile.TemporaryDirectory() as d:\n    inside = d\n"
+    )
+    assert {"w: str?", "c: str", "u: int", "t: TemporaryDirectory", "n: str", "inside: str"} <= set(variables(info))
+    assert err("import shutil\nshutil.rmtree(3)\n").message == (
+        "shutil.rmtree() argument 'path' must be a str or Path, not int"
     )

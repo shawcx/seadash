@@ -34,6 +34,7 @@ JSON_VALUE = Prim("json.Value")  # a dynamically typed JSON value (the json modu
 UNKNOWN = Prim("?")  # only while inferring literals: the element type of an empty []
 SOCKET = Prim("socket")  # socket.socket: a thread-safe handle
 PATH = Prim("Path")  # pathlib.Path: an immutable path value
+TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
 
 PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "None": NONE}
 

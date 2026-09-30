@@ -37,7 +37,7 @@ from . import builtins, threads
 from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
-    BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEXT_FILE,
+    BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     SYNC_ARITY, ClassRefType, CounterType, MatchType, PatternType, ProcessType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
@@ -1344,6 +1344,8 @@ class Checker:
             return WithInfo("lock", BOOL, None, False)
         if t == SOCKET:
             return WithInfo("socket", t, None, False)
+        if t == TEMPDIR:  # `with TemporaryDirectory() as tmp:` gives its name, removed at the end
+            return WithInfo("tempdir", STR, None, False)
         if isinstance(t, ProcessType) and t.kind == "Popen":  # waits for the child at the end
             return WithInfo("process", t, None, False)
         if isinstance(t, SyncType) and t.kind == "Mutex":

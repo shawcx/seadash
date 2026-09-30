@@ -36,7 +36,7 @@ from . import ast as A
 from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .types import (
-    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType,
+    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType,
     CounterType, DefaultDictType, DequeType, DictType, MatchType, PatternType, ProcessType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
 )
@@ -245,6 +245,8 @@ class CodeGen:
                 return "sd::socket::Socket"
             case _ if t == PATH:
                 return "sd::pathlib::Path"
+            case _ if t == TEMPDIR:
+                return "sd::tempfile::TemporaryDirectory"
             case _ if t == NONE:
                 return "void"
             case ListType(elem):
@@ -876,6 +878,8 @@ class CodeGen:
             enter, exit_call = ctx, f"{ctx}.close()"
         elif info.kind == "process":
             enter, exit_call = ctx, f"{ctx}.sd_exit()"
+        elif info.kind == "tempdir":
+            enter, exit_call = f"{ctx}.name()", f"{ctx}.cleanup()"
         else:
             st: StructType = item.context.ty
             arrow = "->" if st.kind == "class" else "."
@@ -888,7 +892,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind not in ("file", "socket", "process"):  # still call __enter__ for its effects
+        elif info.kind not in ("file", "socket", "process", "tempdir"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -1860,7 +1864,7 @@ class CodeGen:
             return f"{r}.joinpath({', '.join(args)})"
         if recv_type == PATH and name == "open":
             return self.open_call(f"{r}.str()", e.args[0] if e.args else self.keyword(e, "mode"), e)
-        if isinstance(recv_type, SyncType) or recv_type in (SOCKET, PATH):
+        if isinstance(recv_type, SyncType) or recv_type in (SOCKET, PATH, TEMPDIR):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):
@@ -1957,7 +1961,10 @@ class CodeGen:
             codes = []
             for i, (pname, ptype, *default) in enumerate(member.params):
                 node = e.args[i] if i < len(e.args) else self.keyword(e, pname)
-                codes.append(self.expr_as(node, ptype) if node is not None else default[0])
+                if node is None:
+                    codes.append(default[0])
+                else:  # (a parameter taking "str or Path" converts in C++)
+                    codes.append(self.expr_as(node, ptype) if isinstance(ptype, Type) else self.expr(node))
             return f"{member.cpp}({', '.join(codes)})"
         args = [self.expr(a) for a in e.args]
         if member.cpp is not None:

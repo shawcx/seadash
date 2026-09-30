@@ -16,7 +16,7 @@ from .errors import Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE,
-    CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH,
+    CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     assignable, element_type, is_hashable, is_numeric, join,
 )
@@ -763,6 +763,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = DEQUE_METHODS
         case _ if t == PATH:
             return PATH_METHODS.get(name)
+        case _ if t == TEMPDIR:
+            return {"cleanup": sync_method(NONE)}.get(name)
         case ProcessType(kind):
             table = PROCESS_METHODS[kind]
         case PatternType():
@@ -971,6 +973,11 @@ def signature(result: Type, *params: tuple) -> Callable[[CallContext], Type]:
             if node is None:
                 if len(p) < 3:
                     raise ctx.error(f"{ctx.what} is missing argument '{p[0]}'")
+                continue
+            if p[1] is PATH_LIKE:
+                actual = ctx.checker.check_expr(node)
+                if actual not in (STR, PATH):
+                    raise ctx.error(f"{ctx.what} argument '{p[0]}' must be a str or Path, not {actual}", node)
                 continue
             actual = ctx.checker.check_expr(node, p[1])
             if not assignable(actual, p[1]):
@@ -1587,6 +1594,8 @@ MATCH_ATTRIBUTES = {
 def type_attributes(t: Type) -> dict | None:
     if t == PATH:
         return PATH_ATTRIBUTES
+    if t == TEMPDIR:
+        return {"name": lambda t: STR}
     if isinstance(t, PatternType):
         return PATTERN_ATTRIBUTES
     if isinstance(t, MatchType):
@@ -1659,6 +1668,47 @@ MODULES["pathlib"] = Module("pathlib", {
     "Path.cwd": Function("Path.cwd", returns(PATH), "sd::pathlib::Path::cwd"),
     "Path.home": Function("Path.home", returns(PATH), "sd::pathlib::Path::home"),
 }, "modules/pathlib.hpp")
+
+
+# ---- shutil, tempfile -------------------------------------------------------------------
+
+def builtin_struct(name: str, cpp: str, fields: dict[str, Type]) -> StructType:
+    st = StructType(name, "struct", None, builtin=True, cpp_name=cpp)
+    for fname, ft in fields.items():
+        st.fields[fname] = Field(fname, ft, None, Loc(0, 0))
+    return st
+
+
+DISK_USAGE = builtin_struct("usage", "sd::shutil::DiskUsage", {"total": INT, "used": INT, "free": INT})
+SHUTIL_ERROR = StructType("Error", "class", None, base=EXCEPTIONS["OSError"], builtin=True, cpp_name="sd::shutil::Error")
+SRC_DST = (("src", PATH_LIKE), ("dst", PATH_LIKE))
+
+MODULES["shutil"] = module_with_params(runtime_module(
+    "shutil", "modules/shutil.hpp",
+    copyfile=(signature(STR, *SRC_DST), "sd::shutil::copyfile"),
+    copy=(signature(STR, *SRC_DST), "sd::shutil::copy"),
+    copy2=(signature(STR, *SRC_DST), "sd::shutil::copy2"),
+    copymode=(signature(NONE, *SRC_DST), "sd::shutil::copymode"),
+    copystat=(signature(NONE, *SRC_DST), "sd::shutil::copystat"),
+    copytree=(signature(STR, *SRC_DST, ("dirs_exist_ok", BOOL, "false")), "sd::shutil::copytree"),
+    rmtree=(signature(NONE, ("path", PATH_LIKE), ("ignore_errors", BOOL, "false")), "sd::shutil::rmtree"),
+    move=(signature(STR, *SRC_DST), "sd::shutil::move"),
+    which=(signature(OptionalType(STR), ("cmd", STR), ("path", OptionalType(STR), "std::nullopt")), "sd::shutil::which"),
+    disk_usage=(signature(DISK_USAGE, ("path", PATH_LIKE)), "sd::shutil::disk_usage"),
+    Error=SHUTIL_ERROR,
+    SameFileError=StructType("SameFileError", "class", None, base=SHUTIL_ERROR, builtin=True,
+                             cpp_name="sd::shutil::SameFileError"),
+))
+
+TEMP_PARAMS = (("suffix", STR, '""s'), ("prefix", OptionalType(STR), "std::nullopt"),
+               ("dir", OptionalType(STR), "std::nullopt"))
+MODULES["tempfile"] = module_with_params(runtime_module(
+    "tempfile", "modules/tempfile.hpp",
+    gettempdir=(signature(STR), "sd::tempfile::gettempdir"),
+    mkdtemp=(signature(STR, *TEMP_PARAMS), "sd::tempfile::mkdtemp"),
+    TemporaryDirectory=(signature(TEMPDIR, *TEMP_PARAMS), "sd::tempfile::TemporaryDirectory"),
+))
+MODULES["tempfile"].members["TemporaryDirectory"].as_type = TEMPDIR
 
 
 class AttributeUnavailable(Exception):

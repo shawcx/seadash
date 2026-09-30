@@ -1,0 +1,17 @@
+True True 11
+src/sub/a.txt alpha
+alpha 5
+copy ['a.txt', 'sub', 'sub/a.txt', 'sub/b.txt']
+FileExistsError: True
+SameFileError
+copy/d.txt False
+['c.txt', 'renamed', 'src']
+False
+FileNotFoundError
+False
+True None
+True True
+True True True
+True
+True
+False
