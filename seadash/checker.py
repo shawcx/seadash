@@ -237,7 +237,7 @@ class Checker:
     def imported_modules(self) -> list[builtins.Module]:
         """The modules whose headers and libraries the program needs. seadash's thread types
         are in threading's header, so using them (or `import seadash`) brings it in."""
-        mods = list(self.modules.values()) + [m for m, _ in self.imported.values()]
+        mods = list(self.modules.values()) + [m for m, _ in self.imported.values()] + self.needed_modules
         seadash = builtins.MODULES["seadash"]
         if seadash in self.modules.values() or any(
                 m is seadash and member in builtins.SEADASH_THREAD_TYPES for m, member in self.imported.values()):
@@ -252,6 +252,7 @@ class Checker:
         self.functions: dict[str, FuncInfo] = {}
         self.modules: dict[str, builtins.Module] = {}  # `import math` / `import math as m`
         self.imported: dict[str, tuple[builtins.Module, str]] = {}  # `from math import sqrt`
+        self.needed_modules: list[builtins.Module] = []  # used without an import: Path.glob needs fnmatch
         self.globals: dict[str, Var] = {}
         self.module_assign_counts: dict[str, int] = {}
         self.scope: FunctionScope | None = None

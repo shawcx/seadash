@@ -195,3 +195,9 @@ list<std::string> filterfalse(It names, const std::string& pat) {
 }
 
 }  // namespace sd::fnmatch
+
+namespace sd::pathlib {
+inline bool name_matches(const std::string& name, const std::string& pattern) {  // (declared in pathlib.hpp)
+    return fnmatch::fnmatchcase(name, pattern);
+}
+}  // namespace sd::pathlib

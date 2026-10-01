@@ -1866,6 +1866,18 @@ class SyncTypeDef:
     kind: str  # a key of types.SYNC_CPP
 
 
+def needing(module: str, handler):
+    """A method whose code is in another module's header (and libraries): checking a call
+    to it brings that module into the program, imported or not."""
+
+    def check(ctx: CallContext) -> Type:
+        ctx.checker.needed_modules.append(MODULES[module])
+        return handler(ctx)
+
+    check.__dict__.update(handler.__dict__)  # (its params, for codegen)
+    return check
+
+
 def sync_method(result, *params):
     """A method on a threading/queue type. Types (and the result) may depend on the receiver,
     e.g. Queue[T].put takes a T. Keyword arguments work; codegen fills parameters in order."""
@@ -2311,14 +2323,14 @@ PATH.methods.update({
     "rename": sync_method(PATH, ("target", PATH_LIKE)),
     "replace": sync_method(PATH, ("target", PATH_LIKE)),
     "iterdir": sync_method(ListType(PATH)),
-    "glob": sync_method(ListType(PATH), ("pattern", STR)),
-    "rglob": sync_method(ListType(PATH), ("pattern", STR)),
+    "glob": needing("fnmatch", sync_method(ListType(PATH), ("pattern", STR))),  # (matched as Python does)
+    "rglob": needing("fnmatch", sync_method(ListType(PATH), ("pattern", STR))),
     "with_name": sync_method(PATH, ("name", STR)),
     "with_suffix": sync_method(PATH, ("suffix", STR)),
     "with_stem": sync_method(PATH, ("stem", STR)),
     "relative_to": sync_method(PATH, ("other", PATH_LIKE)),
     "is_relative_to": sync_method(BOOL, ("other", PATH_LIKE)),
-    "match": sync_method(BOOL, ("pattern", STR)),
+    "match": needing("fnmatch", sync_method(BOOL, ("pattern", STR))),
     "joinpath": path_parts,
     "open": path_open,
 })

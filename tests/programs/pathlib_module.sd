@@ -1,5 +1,6 @@
 # pathlib: Path values, joining with /, and file system operations.
 import pathlib
+import tempfile
 from pathlib import Path
 
 p = Path("docs") / "guide" / "intro.tar.gz"
@@ -69,3 +70,16 @@ for old in sorted(root.rglob("*"), reverse=True):
         old.unlink()
 root.rmdir()
 print(root.exists())
+
+# glob and match follow Python's patterns: [[] is a literal [, a backslash is just a character,
+# [^a] means ^ or a, and * matches hidden files too
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    for name in ["a.txt", "b.py", "[x].txt", "c\\d.txt", "^e.txt", ".hidden.txt", "sub/f.txt", "sub/deep/g.txt"]:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text("x")
+    for pat in ["*.txt", "[[]x].txt", "c\\d.txt", "[^a]*.txt", "[!a]*.txt", "**/*.txt", "sub/*/*.txt", "?.py"]:
+        print(pat, sorted(str(p.relative_to(root)) for p in root.glob(pat)))
+    print(sorted(str(p.relative_to(root)) for p in root.rglob("*.txt")))
+for path, pat in [("a/[x].txt", "[[]x].txt"), ("c\\d.txt", "c\\d.txt"), ("^e.txt", "[^a]*"), ("x.TXT", "*.txt")]:
+    print(path, pat, Path(path).match(pat))

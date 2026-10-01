@@ -4,7 +4,6 @@
 
 #include <dirent.h>
 #include <fcntl.h>
-#include <fnmatch.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -18,6 +17,10 @@
 #endif
 
 namespace sd::pathlib {
+
+// Whether a name matches a glob pattern, by Python's rules: defined in fnmatch.hpp (on
+// PCRE2), which programs calling glob(), rglob() or match() include and link.
+inline bool name_matches(const std::string& name, const std::string& pattern);
 
 class Path;
 
@@ -178,7 +181,7 @@ public:
         if (pat.size() > mine.size() || (Path(pattern).is_absolute() && pat.size() != mine.size())) return false;
         for (std::size_t i = 0; i < pat.size(); ++i) {
             const std::string& part = mine[mine.size() - pat.size() + i];
-            if (::fnmatch(pat[i].c_str(), part.c_str(), 0) != 0) return false;
+            if (!name_matches(part, pat[i])) return false;
         }
         return true;
     }
@@ -323,7 +326,7 @@ private:
             return;
         }
         for (const Path& child : safe_iterdir(dir)) {
-            if (::fnmatch(part.c_str(), child.name().c_str(), 0) != 0) continue;
+            if (!name_matches(child.name(), part)) continue;
             if (i + 1 == parts.size() || child.is_dir()) glob_parts(child, parts, i + 1, out);
         }
     }

@@ -24,3 +24,16 @@ FileNotFoundError
 True True True
 True
 False
+*.txt ['.hidden.txt', '[x].txt', '^e.txt', 'a.txt', 'c\\d.txt']
+[[]x].txt ['[x].txt']
+c\d.txt ['c\\d.txt']
+[^a]*.txt ['^e.txt', 'a.txt']
+[!a]*.txt ['.hidden.txt', '[x].txt', '^e.txt', 'c\\d.txt']
+**/*.txt ['.hidden.txt', '[x].txt', '^e.txt', 'a.txt', 'c\\d.txt', 'sub/deep/g.txt', 'sub/f.txt']
+sub/*/*.txt ['sub/deep/g.txt']
+?.py ['b.py']
+['.hidden.txt', '[x].txt', '^e.txt', 'a.txt', 'c\\d.txt', 'sub/deep/g.txt', 'sub/f.txt']
+a/[x].txt [[]x].txt True
+c\d.txt c\d.txt True
+^e.txt [^a]* True
+x.TXT *.txt False
