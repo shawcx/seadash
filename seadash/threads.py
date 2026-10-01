@@ -556,6 +556,84 @@ def verify(units: list) -> None:
     for module, info, name in units:
         for call, scope, _ in info.spawns:
             Spawn(program, call, scope, name).check()
+    check_module_tables(units)
+
+
+# ---- a library module's shared tables (mimetypes.types_map, sys.argv...) ---------------------
+
+
+def module_table(e: A.Expr):
+    """The library module's list, dict or set that `e` is, or is part of (types_map[".x"]), or None."""
+    from . import builtins
+
+    while isinstance(e, (A.Index, A.Attribute)) and not isinstance(e.sym, builtins.Value):
+        e = e.value
+    if isinstance(e, (A.Name, A.Attribute)) and isinstance(e.sym, builtins.Value) and holds_references(e.sym.type):
+        return e.sym
+    return None
+
+
+def table_changes(nodes) -> list[tuple[object, A.Node]]:
+    """Where these statements change a library module's table: in place (types_map[k] = v,
+    .update(...), .clear()...), through a name bound to it, or by handing it to code of the
+    program's own (which could change it)."""
+    found: list[tuple[object, A.Node]] = []
+    aliases: dict[int, tuple[object, A.Node]] = {}  # (by Var id) names bound to a table
+    for n in walk_all(nodes):
+        bound = n.value if isinstance(n, (A.Assign, A.AnnAssign)) else None
+        if isinstance(bound, (A.Name, A.Attribute)) and (table := module_table(bound)) is not None:
+            for t in (n.targets if isinstance(n, A.Assign) else [n.target]):
+                for v in target_vars(t):
+                    aliases[id(v)] = (table, n)
+        targets = n.targets if isinstance(n, A.Assign) else [n.target] if isinstance(n, (A.AugAssign, A.AnnAssign)) else []
+        for t in targets:
+            if isinstance(t, (A.Index, A.Attribute)) and (table := module_table(t.value)) is not None:
+                found.append((table, t))
+        if isinstance(n, A.Call):
+            kind = getattr(n.sym, "kind", None)
+            func = n.func
+            if (kind == "builtin_method" and isinstance(func, A.Attribute) and func.attr in MUTATING_METHODS
+                    and (table := module_table(func.value)) is not None):
+                found.append((table, n))
+            elif kind in ("func", "method", "self_call", "static_method", "super_method", "value", "ctor"):
+                for arg in [*n.args, *(k.value for k in n.keywords)]:
+                    if isinstance(arg, (A.Name, A.Attribute)) and (table := module_table(arg)) is not None:
+                        found.append((table, arg))  # (the program's own code could change it)
+    if aliases:
+        _, modified, _ = uses(nodes)
+        found += [aliases[key] for key in aliases if key in modified]
+    return found
+
+
+def check_module_tables(units: list) -> None:
+    """A library module's table is shared by the whole program, threads included (and the
+    module's own functions, which may run on them: mimetypes.guess_type reads types_map). Once
+    a thread may be running, nothing may change one: module code before the first thread
+    starts may, as it may build its own globals."""
+    from . import builtins
+
+    if not any(info.spawns for _, info, _ in units):
+        return
+    for module, info, name in units:
+        spawn_calls = {id(call) for call, _, _ in info.spawns}
+        later, started = [], False
+        for stmt in module.body:
+            if isinstance(stmt, (A.FunctionDef, A.ClassDef)):
+                later.append(stmt)  # (a function may run once threads have started)
+                continue
+            started = started or any(id(n) in spawn_calls for n in walk(stmt))
+            if started:
+                later.append(stmt)
+        for table, node in table_changes(later):
+            owner = next(m.name for m in builtins.MODULES.values() for v in m.members.values() if v is table)
+            users = " (mimetypes.guess_type() and the rest read it too)" if owner == "mimetypes" else ""
+            hint = "; mimetypes.add_type() is safe anywhere" if owner == "mimetypes" else ""
+            kind = "dict" if isinstance(table.type, DictType) else "list" if isinstance(table.type, ListType) else "set"
+            raise ThreadSafetyError(
+                f"{owner}.{table.name} is shared by the whole program, and this program starts threads, which may be "
+                f"reading it{users}: change it only in module code before the first thread starts, or work on a "
+                f"copy, e.g. `{kind}({owner}.{table.name})`{hint}", node.loc, name,
+            )
 
 
 class Spawn:

@@ -86,6 +86,9 @@ A value crosses into another thread when it is:
   This is an optimization only; the meaning is still "the receiver has its own".
 - **Module globals** keep today's rule: thread code may only read them, unless they're
   thread-safe. They can't be copied implicitly because every thread names the same one.
+  A library module's lists and dicts (`mimetypes.types_map`, `sys.argv`) are globals too, read by
+  the module's own functions as well: once a program may have started a thread, nothing may
+  change one (`threads.check_module_tables`); module code before the first thread starts may.
 - **Shared with pool tasks:** inside `with ThreadPoolExecutor() as pool:`, an argument of
   `pool.submit(task, xs)` is shared rather than copied when nothing can change it until the
   task is done: the task only reads it (doesn't change it, keep it, or pass it on), and the

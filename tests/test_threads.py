@@ -620,3 +620,35 @@ def test_a_server_on_the_main_thread_may_change_globals():
 ])
 def test_handler_errors(src, msg):
     assert compile_error(SERVER + src).message == msg
+
+
+TABLE_ERROR = ("mimetypes.types_map is shared by the whole program, and this program starts threads, which may be reading it "
+               "(mimetypes.guess_type() and the rest read it too): change it only in module code before the first thread "
+               "starts, or work on a copy, e.g. `dict(mimetypes.types_map)`; mimetypes.add_type() is safe anywhere")
+
+
+@pytest.mark.parametrize("src", [
+    "def work():\n    mimetypes.types_map['.x'] = 'text/x'\nthreading.Thread(target=work).start()\n",
+    "threading.Thread(target=print).start()\nmimetypes.types_map.update({'.x': 'y'})\n",
+    "def f():\n    m = mimetypes.types_map\n    m['.x'] = 'y'\nthreading.Thread(target=f).start()\n",
+    "def g(d: dict[str, str]):\n    d['a'] = 'b'\ndef f():\n    g(mimetypes.types_map)\nthreading.Thread(target=f).start()\n",
+])
+def test_library_tables_cant_change_once_threads_may_run(src):
+    assert compile_error("import mimetypes\n" + src).message == TABLE_ERROR
+
+
+@pytest.mark.parametrize("src", [
+    "mimetypes.types_map['.x'] = 'text/x'\nthreading.Thread(target=print).start()\n",  # before any thread starts
+    "def f():\n    m = mimetypes.types_map\n    print(m['.html'])\nthreading.Thread(target=f).start()\n",
+    "def f():\n    m = dict(mimetypes.types_map)\n    m['.x'] = 'y'\nthreading.Thread(target=f).start()\n",
+    "def f():\n    mimetypes.add_type('text/x', '.x')\nthreading.Thread(target=f).start()\n",
+    "def f():\n    mimetypes.types_map['.x'] = 'y'\nf()\n",  # no threads at all
+])
+def test_library_tables_that_stay_safe(src):
+    compile_ok("import mimetypes\n" + src)
+
+
+def test_sys_argv_is_a_library_table():
+    e = compile_error("import sys\ndef f():\n    sys.argv.append('x')\nthreading.Thread(target=f).start()\n")
+    assert e.message.startswith("sys.argv is shared by the whole program") and "`list(sys.argv)`" in e.message
+
