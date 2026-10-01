@@ -1,0 +1,73 @@
+# functools.partial: arguments bound now, the rest given later; also as a thread's or a pool's work.
+from functools import partial
+from typing import Callable
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+
+def f(a: int, b: int, c: int = 3) -> tuple[int, int, int]:
+    return (a, b, c)
+
+
+class P:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int = 0):
+        self.x = x
+        self.y = y
+
+    def __repr__(self) -> str:
+        return f"P({self.x}, {self.y})"
+
+    def shifted(self, dx: int, dy: int) -> "P":
+        return P(self.x + dx, self.y + dy)
+
+
+def apply(fn: Callable[[int, int], tuple[int, int, int]]) -> tuple[int, int, int]:
+    return fn(2, 4)
+
+
+p = partial(f, 1)
+print(p(2), apply(partial(f, 1)))
+q = partial(f, b=2)
+print(q(1))
+r = partial(f, 1, 2, 3)
+print(r())
+print(partial(P, y=5)(1), partial(P, 1)())
+n = 1
+h = partial(f, n)
+n = 5
+print(h(0))
+origin = P(0, 0)
+move = partial(origin.shifted, 1)
+print(move(2), sorted([3, 1, 2], key=partial(lambda k, x: (x * k) % 5, 3)))
+counts: list[int] = []
+def record(store: list[int], value: int) -> None:
+    store.append(value)
+remember = partial(record, counts)
+remember(1)
+remember(2)
+print(counts, list(map(partial(f, 9), [1, 2])))
+
+
+def work(results: queue.Queue[int], data: list[int], scale: int) -> None:
+    data.sort()
+    results.put(sum(data) * scale + data[0])
+
+
+def total(base: int, xs: list[int]) -> int:
+    return base + sum(xs)
+
+
+results: queue.Queue[int] = queue.Queue()
+data = [3, 1, 2]
+t = threading.Thread(target=partial(work, results, data, 10))
+t.start()
+t.join()
+print(results.get())
+with ThreadPoolExecutor(max_workers=4) as pool:
+    print(list(pool.map(partial(total, 100), [[1], [2, 3], []])))
+    fut = pool.submit(partial(total, 1, [5, 5]))
+    print(fut.result())

@@ -1698,6 +1698,34 @@ class CodeGen:
         arrow = "->" if m.owner.kind == "class" else "."
         return f"{self.expr(obj)}{arrow}{fn_name(m)}"
 
+    def partial_code(self, e: A.Call) -> str:
+        """functools.partial: a lambda holding the function and the bound arguments (evaluated
+        now; copied over if it's for another thread), filling in the rest, and defaults."""
+        info: builtins.PartialInfo = e.partial
+        captures, args = [], []
+        params = [f"{self.cpp_type(info.params[i].type)} sd_p{i}" for i in info.taken]
+        for i, (p, arg) in enumerate(zip(info.params, info.bound)):
+            if arg is not None:
+                code = self.expr_as(arg, p.type)
+                captures.append(f"sd_b{i} = {'sd::send(' + code + ')' if info.sent else code}")
+                args.append(f"sd_b{i}")
+            elif i in info.taken:
+                args.append(f"sd_p{i}")
+            else:
+                args.append(self.expr_as(p.default, p.type))
+        if isinstance(info.target, StructType):
+            st = info.target
+            if st.init is not None or (st.kind == "class" and not st.is_exception):
+                args = ["sd::init", *args]
+            call = (f"std::make_shared<{class_name(st)}>({', '.join(args)})" if st.kind == "class"
+                    else f"{class_name(st)}({', '.join(args)})")
+        else:
+            captures.insert(0, f"sd_f = {self.expr(e.args[0])}")
+            call = f"sd_f({', '.join(args)})"
+        ret = self.cpp_type(e.ty.ret)
+        body = f"{call};" if e.ty.ret == NONE else f"return {call};"
+        return f"[{', '.join(captures)}]({', '.join(params)}) mutable -> {ret} {{ {body} }}"
+
     def getter(self, obj: A.Expr, getter: FuncInfo) -> str:
         """`obj.area` -> obj.sd_get_area, ready to be called (a cached_property's keeps its value)."""
         if not getter.lazy:
@@ -2964,6 +2992,8 @@ class CodeGen:
             when = e.args[2] if len(e.args) > 2 else self.keyword(e, "return_when")
             return (f"sd::futures::wait<{elem}>({self.expr(e.args[0])}, {timeout}, "
                     f"{self.expr(when) if when is not None else chr(34) + 'ALL_COMPLETED' + chr(34) + 's'})")
+        if mod == "functools" and name == "partial":
+            return self.partial_code(e)
         if mod == "functools" and name == "reduce":
             items = self.expr(e.args[1])
             init = [self.expr_as(e.args[2], e.ty)] if len(e.args) == 3 else []

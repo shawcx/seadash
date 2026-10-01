@@ -2183,3 +2183,29 @@ FUNCTOOLS = "from functools import reduce, cmp_to_key, total_ordering, cached_pr
 ])
 def test_functools_errors(src, msg):
     assert err(FUNCTOOLS + src).message == msg
+
+
+PARTIAL = "from functools import partial\ndef f(a: int, b: int, c: int = 3) -> int:\n    return a + b + c\n"
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("p = partial(print, 'x')\n", "partial() of a built-in or library function isn't supported yet; use a lambda, "
+                                   "e.g. `lambda x: print(x, end='')`"),
+    ("p = partial(3)\n", "partial() needs a function or a class, not int"),
+    ("p = partial(f, 1, 2, 3, 4)\n", "partial(f) gives 4 arguments, but the function takes 3"),
+    ("p = partial(f, d=1)\n", "partial(f): the function has no parameter 'd'"),
+    ("p = partial(f, 1, a=2)\n", "partial(f) got multiple values for argument 'a'"),
+    ("p = partial(f, 'x')\n", "partial(f): argument 'a' must be int, not str"),
+    ("p = partial(f, a=1)\n", "partial(f): after binding 'a' by keyword, 'b' could only be passed by keyword, which "
+                               "seadash's function values can't take yet; bind it too, or use a lambda"),
+    ("g: Callable[[int], int] = lambda x: x\np = partial(g, x=1)\n",
+     "partial() of a function value can't bind keywords (its parameters have no names here)"),
+])
+def test_partial_errors(src, msg):
+    assert err("from typing import Callable\n" + PARTIAL + src).message == msg
+
+
+def test_partial_types():
+    info = ok("from typing import Callable\n" + PARTIAL + "p = partial(f, 1)\nq = partial(f, b=2, c=4)\nr = partial(f, 1, 2, 3)\n"
+              "s: Callable[[int, int], int] = partial(f, 1)\n")
+    assert {"p: (int) -> int", "q: (int) -> int", "r: () -> int", "s: (int, int) -> int"} <= set(variables(info))

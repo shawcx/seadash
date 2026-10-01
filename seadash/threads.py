@@ -781,6 +781,8 @@ class Spawn:
         """The code the thread starts in, and the closure bodies whose captures must be checked."""
         if (handler := self.extra.get("handler")) is not None:  # ThreadingHTTPServer(addr, Handler)
             return handler_code(handler), []
+        if isinstance(target, A.Call) and (info := getattr(target, "partial", None)) is not None:
+            return self.partial_roots(target, info)
         if isinstance(target, A.Attribute) and isinstance(target.value.ty, HTTPServerType):  # target=server.serve_forever
             if target.value.ty.handler is None:
                 raise self.fail(
@@ -811,6 +813,40 @@ class Spawn:
             "pass the thread's function directly (a def, a nested def, or a lambda), "
             "so seadash can check what it shares", target,
         )
+
+    def partial_roots(self, call: A.Call, info) -> tuple[list[A.Node], list[A.Node]]:
+        """target=partial(work, data): what it holds goes to the thread like args= (copied, so a
+        change the thread makes and never uses is lost), and the thread runs work's code."""
+        fn = info.target.init if isinstance(info.target, StructType) else info.target
+        if info.target is not None and not isinstance(info.target, (FuncInfo, StructType)) or (
+                info.target is None):
+            raise self.fail("pass partial() a function defined with def (or a class), so seadash can check what the "
+                            "thread runs", call.args[0])
+        for p, arg in zip(info.params, info.bound):
+            if arg is not None and (reason := unsendable(p.type)):
+                raise self.fail(f"can't pass this to a thread: {reason}. Threads receive copies of values, "
+                                f"or thread-safe objects (Lock, Queue, Mutex, Atomic, Synchronized classes)", arg)
+        info.sent = True
+        if fn is None:  # (a class without __init__: it only stores what it's given)
+            return [], []
+        if isinstance(info.target, FuncInfo) and info.target.owner is not None:
+            obj_type = call.args[0].value.ty if isinstance(call.args[0], A.Attribute) else None
+            if isinstance(obj_type, StructType) and obj_type.kind == "class" and not is_synchronized(obj_type) \
+                    and not deeply_immutable(obj_type):
+                raise self.fail(f"a thread can't run a method of a {obj_type.name}: the object would be shared by both "
+                                f"threads. Make {obj_type.name} a seadash.Synchronized class", call.args[0])
+        node = fn.node
+        params = node.params[1:] if fn.owner is not None and fn.kind != "static" else node.params
+        for param, arg in zip(params, info.bound):
+            var = param.sym
+            if arg is not None and (holds_references(var.type) or (isinstance(var.type, StructType) and var.type.kind == "struct")):
+                if (loc := lost_change(node.body, var)) is not None:
+                    raise self.fail(
+                        f"{fn.name}() changes its copy of '{var.name}' but never uses it: a thread gets its own copy of "
+                        f"what partial() holds, so the change never reaches the caller. Share the data with seadash.Mutex, "
+                        f"send results back through a queue.Queue, or return them (ThreadPoolExecutor)", _At(loc),
+                    )
+        return list(node.body), []
 
     def nested_def(self, var: Var) -> A.FunctionDef | None:
         body = self.scope.info.node.body if self.scope.info is not None else self.module_body()

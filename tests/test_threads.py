@@ -652,3 +652,17 @@ def test_sys_argv_is_a_library_table():
     e = compile_error("import sys\ndef f():\n    sys.argv.append('x')\nthreading.Thread(target=f).start()\n")
     assert e.message.startswith("sys.argv is shared by the whole program") and "`list(sys.argv)`" in e.message
 
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("def work(xs: list[int]) -> None:\n    xs.append(1)\ndata = [1]\nthreading.Thread(target=partial(work, data)).start()\n",
+     "work() changes its copy of 'xs' but never uses it: a thread gets its own copy of what partial() holds"),
+    ("class C:\n    n: int\n    def run(self, k: int) -> None:\n        print(k)\nc = C(1)\n"
+     "threading.Thread(target=partial(c.run, 2)).start()\n", "a thread can't run a method of a C"),
+    ("def work(k: int) -> None:\n    print(k)\ng: Callable[[int], None] = work\nthreading.Thread(target=partial(g, 1)).start()\n",
+     "pass partial() a function defined with def (or a class)"),
+    ("seen: list[int] = []\ndef work(k: int) -> None:\n    seen.append(k)\nthreading.Thread(target=partial(work, 1)).start()\n",
+     "thread code uses the module-level 'seen' (list[int]), but it's modified"),
+])
+def test_partial_as_thread_work(src, msg):
+    assert msg in compile_error("from functools import partial\nfrom typing import Callable\n" + src).message
