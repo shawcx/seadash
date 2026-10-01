@@ -1439,7 +1439,7 @@ class CodeGen:
                 self.line(f"int {v} = 0;")
             if done and i > 0:
                 tests = [f"!{done}", *tests]
-            self.open(f"if ({' && '.join(tests) or 'true'})")
+            self.open(f"if ({unwrapped(tests[0]) if len(tests) == 1 else ' && '.join(tests) or 'true'})")
             for name, code, ty, when in binds:
                 if when:
                     self.open(f"if ({when})")
@@ -2829,7 +2829,7 @@ class CodeGen:
             case "exit" | "quit":
                 return f"throw sd::Exit{{static_cast<int>({a or '0'})}}"
             case "__same_class__":  # (in generated dataclass methods: Python compares only the same class)
-                return f"(typeid(*{args[0]}) == typeid(*{args[1]}))"
+                return f"sd::same_class({args[0]}, {args[1]})"
             case "__class_name__":
                 return f"{a}->sd_class_name()"
             case "format" if len(e.args) == 1 or (isinstance(e.args[1], A.StrLit) and not e.args[1].value):
