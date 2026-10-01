@@ -1,0 +1,198 @@
+import enum
+import threading
+from dataclasses import dataclass
+from enum import Enum, IntEnum, StrEnum, auto, unique
+from queue import Queue
+
+from seadash import value
+
+
+class Color(Enum):
+    RED = 1
+    GREEN = 2
+    BLUE = 3
+    CRIMSON = 1  # an alias: another name for RED
+
+    def describe(self) -> str:
+        return f"{self.name} is {self.value}"
+
+    @property
+    def warm(self) -> bool:
+        return self is Color.RED
+
+
+class Level(IntEnum):
+    LOW = 10
+    HIGH = 30
+    MID = 20
+
+
+class Mode(StrEnum):
+    FAST = auto()
+    SAFE = auto()
+    CAREFUL = "very careful"
+
+
+class Step(Enum):
+    FIRST = auto()
+    JUMP = 10
+    NEXT = auto()
+
+
+@unique
+class Planet(Enum):
+    MERCURY = (3.303e23, 2.4397e6)
+    EARTH = (5.976e24, 6.37814e6)
+
+    @property
+    def mass(self) -> float:
+        return self.value[0]
+
+    def gravity(self) -> float:
+        G = 6.673e-11
+        return G * self.value[0] / (self.value[1] * self.value[1])
+
+    @classmethod
+    def heaviest(cls) -> "Planet":
+        return max(list(cls), key=lambda p: p.mass)
+
+    @staticmethod
+    def count() -> int:
+        return len(Planet)
+
+
+class Shape(enum.Enum):
+    CIRCLE = "circle"
+    SQUARE = "square"
+
+    @classmethod
+    def default(cls) -> "Shape":
+        return cls.SQUARE
+
+    def __str__(self) -> str:
+        return f"a {self.value}"
+
+
+@value
+@dataclass
+class Pixel:
+    x: int
+    shape: Shape
+
+
+@dataclass
+class Job:
+    name: str
+    level: Level = Level.LOW
+
+
+def kind(s: Shape | None) -> str:
+    match s:  # every member and None: nothing is left over
+        case None:
+            return "nothing"
+        case Shape.CIRCLE:
+            return "round"
+        case Shape.SQUARE:
+            return "boxy"
+
+
+def warmth(c: Color) -> str:
+    match c:
+        case Color.RED:
+            return "warm"
+        case Color.GREEN | Color.BLUE:
+            return "cool"
+
+
+def paint(c: Color = Color.GREEN, times: int = 1) -> str:
+    return f"{c.name.lower()} x{times}"
+
+
+def first[T](xs: list[T]) -> T:
+    return xs[0]
+
+
+def double(n: int) -> int:
+    return n * 2
+
+
+# Members, names and values; repr, str and format
+print(Color.RED, repr(Color.RED), Color.RED.name, Color.RED.value, str(Color.GREEN))
+print(f"{Color.RED}|{Color.RED!r}|{Color.RED:>12}|{Color.GREEN!s:<14}|", format(Color.BLUE))
+print("{} and {!r}".format(Color.RED, Color.BLUE))
+print(list(Color), len(Color), Color.CRIMSON, Color.CRIMSON is Color.RED, Color["CRIMSON"])
+for c in Color:
+    print(c.describe(), c.warm, warmth(c))
+print(list(Step), list(reversed(Color)), [i for i, _ in enumerate(Color)])
+
+# Lookups
+print(Color(2), Color["BLUE"], Color(Color.RED), Color.RED in Color)
+try:
+    Color(7)
+except ValueError as e:
+    print("ValueError:", e)
+try:
+    Color["PINK"]
+except KeyError as e:
+    print("KeyError:", repr(e), e)
+try:
+    Mode("slow")
+except ValueError as e:
+    print("ValueError:", e)
+
+# Equality and hashing
+print(Color.RED == Color.CRIMSON, Color.RED != Color.BLUE, Color.RED is not Color.BLUE)
+d = {Color.RED: "r", Color.BLUE: "b"}
+print(d[Color.RED], d, dict.fromkeys(Color, 0))
+seen = {Color.RED, Color.CRIMSON, Color.BLUE}
+print(len(seen), Color.BLUE in seen, Color.GREEN in seen, hash(Color.RED) == hash(Color.CRIMSON))
+counts: dict[Level, int] = {}
+for lv in [Level.LOW, Level.HIGH, Level.LOW]:
+    counts[lv] = counts.get(lv, 0) + 1
+print(counts)
+
+# IntEnum members are ints, StrEnum members strs
+print(Level.LOW, repr(Level.LOW), f"{Level.HIGH:>5}|{Level.MID:03d}", format(Level.HIGH, "x"))
+print(Level.LOW + 1, Level.LOW < Level.HIGH, Level.MID == 20, Level.HIGH * 2, Level.LOW / 4, -Level.MID, double(Level.HIGH))
+print(Level.HIGH // 7, Level.HIGH % 7, Level.LOW ** 2, abs(Level.LOW), int(Level.MID), float(Level.LOW), hex(Level.HIGH))
+print(sorted([Level.HIGH, Level.LOW, Level.MID]), max(Level), min(Level).name, Level.LOW <= 10, 25 > Level.MID)
+print([lv.name for lv in Level if lv > 15], sum(lv.value for lv in Level), Level.LOW + Level.MID, Level(30), Level["MID"])
+print([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15][Level.LOW], Level.LOW in [10, 20], divmod(Level.HIGH, 7))
+print(Mode.FAST, repr(Mode.CAREFUL), f"[{Mode.SAFE:>6}]", Mode.FAST == "fast", Mode("safe"), Mode.CAREFUL.upper())
+print(Mode.FAST + "!", len(Mode.CAREFUL), Mode.SAFE.startswith("s"), Mode.FAST in "fast lane", "as" in Mode.FAST, list(Mode))
+
+# Methods, properties, classmethods, staticmethods; tuple values
+print(Planet.EARTH.mass, f"{Planet.EARTH.gravity():.2f}", Planet.heaviest(), Planet.count(), repr(Planet.MERCURY))
+print(Shape.default(), repr(Shape.default()), Shape("circle"), f"<{Shape.SQUARE}>")
+print(kind(None), kind(Shape.CIRCLE), kind(Shape("square")))
+print(paint(), paint(Color.BLUE, 2), first(list(Color)), sorted(Color, key=lambda c: -c.value))
+
+# Optionals narrow like any other value
+maybe: Shape | None = None
+for s in Shape:
+    if s is Shape.SQUARE:
+        maybe = s
+if maybe is not None:
+    print("found", maybe.value)
+if maybe == Shape.SQUARE:
+    print("square", maybe.name)
+
+# In dataclasses and @value classes
+px = Pixel(1, Shape.CIRCLE)
+print(px, px == Pixel(1, Shape.CIRCLE), px == Pixel(1, Shape.SQUARE))
+print(Job("build"), Job("ship", Level.HIGH))
+
+# Members are immutable values, so threads can share them
+results: Queue[tuple[str, int]] = Queue()
+
+
+def work(s: Shape, n: int) -> None:
+    results.put((s.name, n * len(s.value)))
+
+
+threads = [threading.Thread(target=work, args=(s, 2)) for s in Shape]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+print(sorted([results.get() for _ in Shape]))

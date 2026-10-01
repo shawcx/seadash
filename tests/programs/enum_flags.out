@@ -1,0 +1,25 @@
+Perm.RW <Perm.RW: 3> RW True True [<Perm.R: 1>, <Perm.W: 2>] 2 True
+<Perm.R|X: 5> Perm.R|X R|X
+<Perm: 0> Perm(0) None False 0 []
+<Perm.W|X: 6> <Perm: 0> True False True
+[<Perm.R: 1>, <Perm.W: 2>, <Perm.X: 4>] 3 3 Perm.RW Perm.W
+<Perm.R|W|X: 7> <Perm: 0> <Perm.RW: 3> <Perm.R|W|X: 7>
+<Perm.R|X: 5> <Perm.X: 4> <Perm.X: 4> R+X -
+R 1
+W 2
+X 4
+<flag 'Perm'> invalid value 8
+    given 0b0 1000
+  allowed 0b0 0111
+<flag 'Perm'> invalid value 9
+    given 0b0 1001
+  allowed 0b0 0111
+read-write read Perm.RW|   Perm.RW|<Perm.W: 2>
+[<Options.VERBOSE: 1>, <Options.QUIET: 4>] <Options.NONE: 0> NONE False <Options.VERBOSE|QUIET: 5>
+<flag 'Options'> invalid value 2
+    given 0b0 010
+  allowed 0b0 101
+6 <IP.READ|WRITE: 6> True 7 True    6|110 6 [<IP.READ: 4>, <IP.WRITE: 2>]
+<IP.READ|8: 12> 12 READ|8 <IP.WRITE|8: 10> <IP: 8> None
+<IP.WRITE|1: 3> <IP.READ|WRITE|1: 7> <IP: 0> <IP: 0> 0 4 [<IP.READ: 4>, <IP.WRITE: 2>]
+True True [<IP.WRITE: 2>, <IP.READ: 4>]

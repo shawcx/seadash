@@ -1,0 +1,61 @@
+from enum import Flag, IntFlag, auto
+
+
+class Perm(Flag):
+    R = auto()
+    W = auto()
+    X = auto()
+    RW = R | W  # several bits: a name for them, not iterated
+
+
+class Options(Flag):
+    NONE = 0
+    VERBOSE = 1
+    QUIET = 4
+
+
+class IP(IntFlag):
+    READ = 4
+    WRITE = 2
+
+
+def describe(p: Perm) -> str:
+    parts: list[str] = []
+    for m in p:
+        if m.name is not None:  # (a flag value's name is str | None: None when it has no members)
+            parts.append(m.name)
+    return "+".join(parts) if parts else "-"
+
+
+p = Perm.R | Perm.W
+print(p, repr(p), p.name, p is Perm.RW, p == Perm.RW, list(p), len(p), bool(p))
+print(repr(Perm.R | Perm.X), str(Perm.R | Perm.X), (Perm.R | Perm.X).name)
+z = Perm.R & Perm.W
+print(repr(z), str(z), z.name, bool(z), len(z), list(z))
+print(repr(~Perm.R), repr(~(Perm.R | Perm.W | Perm.X)), Perm.R in p, Perm.X in p, Perm.X not in p)
+print(list(Perm), len(Perm), Perm.RW.value, Perm["RW"], Perm["W"])
+print(repr(Perm(7)), repr(Perm(0)), repr(Perm(3)), repr(Perm(-1)))
+q = Perm.R
+q |= Perm.X
+print(repr(q), repr(q ^ Perm.R), repr(q & Perm.X), describe(q), describe(Perm(0)))
+for m in Perm.R | Perm.W | Perm.X:
+    print(m.name, m.value)
+for bad in [8, 9]:
+    try:
+        Perm(bad)
+    except ValueError as e:
+        print(e)
+seen = {Perm.R: "read", Perm.R | Perm.W: "read-write"}
+print(seen[Perm.RW], seen[Perm(1)], f"{p}|{p:>10}|{Perm.W!r}")
+
+print(list(Options), repr(Options(0)), Options.NONE.name, bool(Options.NONE), repr(Options.VERBOSE | Options.QUIET))
+try:
+    Options(2)
+except ValueError as e:
+    print(e)
+
+i = IP.READ | IP.WRITE
+print(i, repr(i), i == 6, i + 1, i > 5, f"{i:>4}|{i:b}", int(i), list(i))
+print(repr(IP.READ | 8), str(IP.READ | 8), (IP.READ | 8).name, repr(8 | IP.WRITE), repr(IP(8)), (IP(8)).name)
+print(repr(~IP.READ), repr(IP(-1)), repr(IP(-8)), repr(IP(0)), str(IP(0)), IP.READ & 4, list(IP(14)))
+print(IP.READ in i, IP(6) is i, sorted([IP.READ, IP.WRITE]))

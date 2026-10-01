@@ -45,7 +45,7 @@ from .types import (
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
-    TupleType, Type, Var, element_type, is_numeric, user_dunder,
+    TupleType, Type, Var, element_type, is_numeric, user_dunder, ClassRefType, enum_decays, enum_flag_op, enum_mixin,
 )
 
 CPP_KEYWORDS = frozenset(
@@ -346,9 +346,15 @@ class CodeGen:
             self.line()
         for st in structs:
             self.struct_definition(st)
-        hashed = [st for st in structs if st.find_method("__hash__")]
+        hashed = [st for st in structs if st.find_method("__hash__") or st.enum is not None]
         if hashed:  # std::hash specializations must be declared in namespace std
             self.line(f"}}  // namespace {self.namespace}")
+            for st in [st for st in hashed if st.enum is not None]:  # an enum member hashes as its index or bits
+                full = f"{self.namespace}::{local_name(st)}"
+                field = "sd_bits" if st.enum.flag else "sd_index"
+                self.line(f"template <> struct std::hash<{full}> {{ std::size_t operator()(const {full}& x) const "
+                          f"{{ return std::hash<std::int64_t>{{}}(x.{field}); }} }};")
+            hashed = [st for st in hashed if st.enum is None]
             for st in hashed:
                 full = f"{self.namespace}::{local_name(st)}"
                 key = f"std::shared_ptr<{full}>" if st.kind == "class" else full
@@ -415,6 +421,9 @@ class CodeGen:
         return done
 
     def struct_definition(self, st: StructType) -> None:
+        if st.enum is not None:
+            self.enum_definition(st)
+            return
         if st.is_exception:
             self.exception_definition(st)
             return
@@ -471,6 +480,116 @@ class CodeGen:
             self.line(f"static {self.cpp_type(st)} sd_from_json(const sd::json::Value& v, const std::string& path);")
         self.close(";")
         self.line()
+
+    def enum_definition(self, st: StructType) -> None:
+        """An enum: a member is an index into the class's table of members (sd_index), or for a
+        flag the bits themselves (sd_bits). The table (modules/enum.hpp) has the names and values."""
+        info, name = st.enum, local_name(st)
+        vt = self.cpp_type(info.value_type)
+        table = f"sd::enums::Table<{vt}>"
+        field = "sd_bits" if info.flag else "sd_index"
+        distinct = info.distinct
+        index = {m.name: i for i, m in enumerate(distinct)}
+        names = ", ".join(cpp_string(m.name) for m in distinct)
+        values = ", ".join(self.enum_literal(m.value, info.value_type) for m in distinct)
+        by_name = ", ".join(f"{{{cpp_string(m.name)}, {index[m.alias_of or m.name]}}}" for m in info.members.values())
+        canonical = ", ".join(str(index[m.name]) for m in info.canonical) if info.flag else ""
+        mask = 0  # a flag's bits: every member's
+        for m in distinct if info.flag else []:
+            mask |= m.value
+        keep = "true" if info.base == "IntFlag" else "false"
+        self.open(f"struct {name}")
+        self.line(f"std::int64_t {field} = 0;")
+        self.line()
+        self.line(f"static const {table}& sd_table() {{")
+        self.line(f"    static const {table} t{{{cpp_string(st.name)}, {{{names}}}, {{{values}}}, {{{by_name}}}, "
+                  f"{{{canonical}}}, {mask}, {keep}}};")
+        self.line("    return t;")
+        self.line("}")
+        at = "sd_table().values[i]" if info.flag else "i"
+        self.line(f"static {name} sd_at(std::int64_t i) {{ {name} x; x.{field} = {at}; return x; }}")
+        self.line(f"static {name} sd_by_name(const std::string& n) {{ return sd_at(sd::enums::lookup_name(sd_table(), n)); }}")
+        if info.flag:
+            self.line(f"static {name} sd_from_bits(std::int64_t b) {{ {name} x; x.sd_bits = b; return x; }}")
+            self.line("std::optional<std::string> sd_name() const { return sd::enums::flag_name(sd_table(), sd_bits); }")
+            self.line("const std::int64_t& sd_value() const { return sd_bits; }")
+            self.line(f"static {name} sd_lookup(std::int64_t v) {{ return sd_from_bits(sd::enums::flag_value(sd_table(), v)); }}")
+            self.line(f"static sd::list<{name}> sd_members() {{ sd::list<{name}> out; for (std::int64_t i : sd_table().canonical) "
+                      f"out.push_back(sd_at(i)); return out; }}")
+            self.line(f"sd::list<{name}> sd_iter() const {{ sd::list<{name}> out; for (std::int64_t i : "
+                      f"sd::enums::flag_members(sd_table(), sd_bits)) out.push_back(sd_at(i)); return out; }}")
+            self.line("std::size_t size() const { return sd::enums::flag_members(sd_table(), sd_bits).size(); }")
+            for op in ("|", "&", "^"):
+                self.line(f"friend {name} operator{op}({name} a, {name} b) {{ return sd_from_bits(a.sd_bits {op} b.sd_bits); }}")
+                if info.base == "IntFlag":
+                    self.line(f"friend {name} operator{op}({name} a, std::int64_t b) {{ return sd_from_bits(a.sd_bits {op} b); }}")
+                    self.line(f"friend {name} operator{op}(std::int64_t a, {name} b) {{ return sd_from_bits(a {op} b.sd_bits); }}")
+            self.line(f"{name} operator~() const {{ return sd_from_bits(sd::enums::flag_invert(sd_table(), sd_bits)); }}")
+        else:
+            self.line("const std::string& sd_name() const { return sd_table().names[sd_index]; }")
+            self.line(f"const {vt}& sd_value() const {{ return sd_table().values[sd_index]; }}")
+            self.line(f"static {name} sd_lookup(const {vt}& v) {{ return sd_at(sd::enums::lookup(sd_table(), v)); }}")
+            self.line(f"static sd::list<{name}> sd_members() {{ sd::list<{name}> out; for (std::int64_t i = 0; i < "
+                      f"{len(distinct)}; ++i) out.push_back(sd_at(i)); return out; }}")
+        self_ = f"const_cast<{name}*>(this)"
+        if "__repr__" in st.methods:
+            repr_ = f"{self_}->sd_op_repr()"
+        else:
+            repr_ = "sd::enums::flag_repr(sd_table(), sd_bits)" if info.flag else "sd::enums::repr(sd_table(), sd_index)"
+        if "__str__" in st.methods:
+            str_ = f"{self_}->sd_op_str()"
+        elif info.flag:
+            str_ = "sd::enums::flag_str(sd_table(), sd_bits)"
+        elif info.mixin is not None:
+            str_ = "sd::str(sd_value())"  # IntEnum, StrEnum: the value
+        else:
+            str_ = f"{cpp_string(st.name + '.')} + sd_name()"
+        self.line(f"std::string sd_repr() const {{ return {repr_}; }}")
+        self.line(f"std::string sd_str() const {{ return {str_}; }}")
+        if "__bool__" in st.methods:
+            truthy = f"{self_}->sd_op_bool()"
+        elif "__len__" in st.methods:
+            truthy = f"{self_}->sd_op_len() != 0"
+        elif info.flag:
+            truthy = "sd_bits != 0"
+        elif info.mixin is not None:
+            truthy = "sd::truthy(sd_value())"
+        else:
+            truthy = "true"
+        self.line(f"bool sd_truthy() const {{ return {truthy}; }}")
+        # format(member, spec): its str(), or an IntEnum's / StrEnum's value (found by argument-dependent lookup)
+        formatted = "x.sd_value()" if info.mixin is not None and "__str__" not in st.methods else "x.sd_str()"
+        self.line(f"friend std::string format_value(const {name}& x, std::string_view spec) "
+                  f"{{ return sd::format_any({formatted}, spec); }}")
+        self.line(f"bool operator==(const {name}&) const = default;")
+        if info.mixin is not None:  # an IntEnum member is an int wherever one is expected
+            self.line(f"operator const {vt}&() const {{ return sd_value(); }}")
+        if st.find_method("__lt__"):
+            self.line(f"bool operator<(const {name}& o) const {{ return {self_}->sd_op_lt(o); }}")
+        elif info.mixin is not None:
+            self.line(f"bool operator<(const {name}& o) const {{ return sd_value() < o.sd_value(); }}")
+        if "__iter__" in st.methods:
+            self.line(f"auto sd_iter() const {{ return sd::iter({self_}->sd_op_iter()); }}")
+        for m in st.methods.values():
+            static = "static " if is_static(m) else ""
+            self.line(f"{static}{self.cpp_type(m.ret)} {fn_name(m)}({', '.join(self.params(m))});")
+            self.generator_declaration(st, m)
+        self.close(";")
+        self.line()
+
+    def enum_literal(self, v: object, t: Type) -> str:
+        """An enum member's value (worked out by the checker) as a C++ expression of type t."""
+        if isinstance(v, tuple):
+            return f"{self.cpp_type(t)}{{{', '.join(self.enum_literal(x, et) for x, et in zip(v, t.elts))}}}"
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, int):
+            return "(-9223372036854775807_i - 1)" if v == -(2**63) else f"{v}_i"
+        if isinstance(v, float):
+            return float_literal(v)
+        if isinstance(v, bytes):
+            return f"sd::bytes({cpp_bytes(v)})"
+        return cpp_string(v)
 
     def generator_declaration(self, st: StructType, m: FuncInfo) -> None:
         if m.generator and not is_static(m):
@@ -627,6 +746,13 @@ class CodeGen:
                     self.function_body(m, f"{name}::{name}({', '.join(['sd::init_t', *self.params(m)])})")
                 else:
                     self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{ident(m.name)}({', '.join(self.params(m))})")
+            return
+        if st.enum is not None:  # (its repr and str are in its definition)
+            for m in st.methods.values():
+                if m.generator and not is_static(m):
+                    self.generator_method(m, name)
+                else:
+                    self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{fn_name(m)}({', '.join(self.params(m))})")
             return
         fields = list(st.all_fields().values())
         parts = [cpp_string(f"{st.origin or st.name}(")]
@@ -1753,6 +1879,8 @@ class CodeGen:
             if var.type.base is not None:  # shared_from_this() gives the root class's pointer
                 return f"std::static_pointer_cast<{class_name(var.type)}>(this->shared_from_this())"
             return "this->shared_from_this()"
+        if isinstance(var.type, ClassRefType) and var.type.st.enum is not None:
+            return f"{class_name(var.type.st)}::sd_members()"  # `for m in cls` in an enum's classmethod
         return self.view(self.var_ref(var), var.type, seen)
 
     def name(self, e: A.Name) -> str:
@@ -1767,6 +1895,8 @@ class CodeGen:
             return self.expr(sym)  # `key=len` was wrapped as `lambda p: len(p)`
         if isinstance(sym, builtins.Module):  # print(math)
             return f"sd::ModuleRef{{{cpp_string(builtins.module_repr(sym))}}}"
+        if isinstance(sym, StructType) and sym.enum is not None:  # for c in Color: its members
+            return f"{class_name(sym)}::sd_members()"
         if isinstance(sym, builtins.Value):
             if sym.name == "__name__":
                 return cpp_string(self.module_name)
@@ -1914,6 +2044,16 @@ class CodeGen:
             if is_self(e.value):
                 return f"{self.self_prefix(e.value.sym.type)}{getter}"
             return f"{self.expr(e.value)}{'->' if e.value.ty.kind == 'class' else '.'}{getter}"
+        if isinstance(e.sym, tuple) and e.sym[0] == "enum_member":  # Color.RED
+            st, member = e.sym[1], e.sym[2]
+            return f"{class_name(st)}::sd_at({[m.name for m in st.enum.distinct].index(member.alias_of or member.name)})"
+        if isinstance(e.sym, StructType) and e.sym.enum is not None:  # for c in colors.Color: its members
+            return f"{class_name(e.sym)}::sd_members()"
+        if isinstance(e.sym, tuple) and e.sym[0] == "enum_attr":  # c.name, c.value
+            code = f"{self.expr(e.value)}.sd_{e.sym[1]}()"
+            if e.sym[1] == "name" and e.value.ty.enum.flag and not isinstance(e.ty, OptionalType):
+                return f"sd::unwrap({code}, {cpp_string('.'.join(attr_chain(e)))[:-1]})"  # narrowed: checked
+            return code
         if isinstance(e.sym, tuple) and e.sym[0] == "class_attr_of":  # Handler.version
             return f"{class_name(e.sym[1])}::sd_class_{e.sym[2].name}()"
         if isinstance(e.sym, tuple) and e.sym[0] == "builtin_attr":
@@ -1958,6 +2098,8 @@ class CodeGen:
         return code
 
     def index(self, e: A.Index) -> str:
+        if isinstance(e.sym, tuple) and e.sym[0] == "enum_name":  # Color["RED"]
+            return f"{class_name(e.sym[1])}::sd_by_name({self.expr(e.index)})"
         v = self.expr(e.value)
         if e.dunder is not None:  # obj[k] -> obj.__getitem__(k)
             return self.dunder_call(e.dunder, v, e.value.ty, [self.expr_as(e.index, e.dunder.method.params[0].type)])
@@ -1984,6 +2126,12 @@ class CodeGen:
         return f"(!{call})" if d.negate else call
 
     def binop_code(self, op: str, lc: str, lt: Type, rc: str, rt: Type, t: Type, dunder=None) -> str:
+        if enum_flag_op(op, lt, rt) is not None:
+            return f"({lc} {op} {rc})"  # the flag's own operators
+        if enum_mixin(lt) is not None:  # N.ONE + 1: the member's value
+            lc, lt = f"{lc}.sd_value()", enum_mixin(lt)
+        if enum_mixin(rt) is not None:
+            rc, rt = f"{rc}.sd_value()", enum_mixin(rt)
         if lt in DATETIME_TYPES or rt in DATETIME_TYPES:  # C++ operators on the datetime values
             if op in ("//", "%"):
                 return f"sd::datetime::{'floordiv' if op == '//' else 'mod'}({lc}, {rc})"
@@ -2064,6 +2212,17 @@ class CodeGen:
             if dunder.reflected:
                 return self.dunder_call(dunder, rc, right.ty, [self.coerce(lc, left.ty, param)])
             return self.dunder_call(dunder, lc, left.ty, [self.coerce(rc, right.ty, param)])
+        lt, rt = left.ty, right.ty
+        if enum_decays(op, lt, rt):  # N.ONE < 2: compared as its value
+            lc = f"{lc}.sd_value()"
+        if enum_decays(op, rt, lt, right=True):
+            rc = f"{rc}.sd_value()"
+        enum_t = strip_optional(lt) if isinstance(strip_optional(lt), StructType) else strip_optional(rt)
+        if isinstance(enum_t, StructType) and enum_t.enum is not None and op in ("is", "is not") and not (
+                isinstance(right, A.NoneLit) or isinstance(left, A.NoneLit)):
+            return f"({lc} {'==' if op == 'is' else '!='} {rc})"  # members are values: the same member is equal
+        if op in ("in", "not in") and isinstance(rt, StructType) and rt.enum is not None and rt.enum.flag:
+            return f"{'' if op == 'in' else '!'}sd::enums::flag_contains({rc}, {lc})"  # P.R in perms
         if isinstance(right, A.NoneLit) or isinstance(left, A.NoneLit):
             subject = lc if isinstance(right, A.NoneLit) else rc
             is_none = op in ("is", "==")
@@ -2191,6 +2350,8 @@ class CodeGen:
             case "ctor":
                 st: StructType = target.target
                 args = self.slot_codes(target.args, target.params)
+                if st.enum is not None:  # Color(1): the member with that value (Color(member) is itself)
+                    return args[0] if target.args[0].ty == st else f"{class_name(st)}::sd_lookup({args[0]})"
                 if st.init is not None or (st.kind == "class" and not st.is_exception):
                     args = ["sd::init", *args]
                 if st.kind == "class":

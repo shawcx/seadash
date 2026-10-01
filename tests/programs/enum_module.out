@@ -1,0 +1,33 @@
+Color.RED <Color.RED: 1> RED 1 Color.GREEN
+Color.RED|<Color.RED: 1>|   Color.RED|Color.GREEN   | Color.BLUE
+Color.RED and <Color.BLUE: 3>
+[<Color.RED: 1>, <Color.GREEN: 2>, <Color.BLUE: 3>] 3 Color.RED True Color.RED
+RED is 1 True warm
+GREEN is 2 False cool
+BLUE is 3 False cool
+[<Step.FIRST: 1>, <Step.JUMP: 10>, <Step.NEXT: 11>] [<Color.BLUE: 3>, <Color.GREEN: 2>, <Color.RED: 1>] [0, 1, 2]
+Color.GREEN Color.BLUE Color.RED True
+ValueError: 7 is not a valid Color
+KeyError: KeyError('PINK') 'PINK'
+ValueError: 'slow' is not a valid Mode
+True True True
+r {<Color.RED: 1>: 'r', <Color.BLUE: 3>: 'b'} {<Color.RED: 1>: 0, <Color.GREEN: 2>: 0, <Color.BLUE: 3>: 0}
+2 True False True
+{<Level.LOW: 10>: 2, <Level.HIGH: 30>: 1}
+10 <Level.LOW: 10>    30|020 1e
+11 True True 60 2.5 -20 60
+4 2 100 10 20 10.0 0x1e
+[<Level.LOW: 10>, <Level.MID: 20>, <Level.HIGH: 30>] 30 LOW True True
+['HIGH', 'MID'] 60 30 30 20
+15 True (4, 2)
+fast <Mode.CAREFUL: 'very careful'> [  safe] True safe VERY CAREFUL
+fast! 12 True True True [<Mode.FAST: 'fast'>, <Mode.SAFE: 'safe'>, <Mode.CAREFUL: 'very careful'>]
+5.976e+24 9.80 Planet.EARTH 2 <Planet.MERCURY: (3.303e+23, 2439700.0)>
+a square <Shape.SQUARE: 'square'> a circle <a square>
+nothing round boxy
+green x1 blue x2 Color.RED [<Color.BLUE: 3>, <Color.GREEN: 2>, <Color.RED: 1>]
+found square
+square SQUARE
+Pixel(x=1, shape=<Shape.CIRCLE: 'circle'>) True False
+Job(name='build', level=<Level.LOW: 10>) Job(name='ship', level=<Level.HIGH: 30>)
+[('CIRCLE', 12), ('SQUARE', 12)]

@@ -2424,3 +2424,79 @@ def test_contextlib_types():
               "        s.callback(lambda: print('x'))\n        s.pop_all().close()\n        return 1\n")
     assert {"cm: ContextManager[str]", "text: str", "stack: ExitStack", "first: str", "file: TextIO",
             "keep: () -> None", "nothing: ContextManager[None]"} <= set(variables(info))
+
+
+# ---- enum -------------------------------------------------------------------
+
+ENUM = ("from enum import Enum, IntEnum, StrEnum, Flag, IntFlag, auto, unique\n"
+        "class Color(Enum):\n    RED = 1\n    GREEN = 2\n")
+MATCH_ONE = "def f(c: Color) -> str:\n    match c:\n        case Color.RED:\n            return 'r'\n"
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("print(Color.PURPLE)\n", "type object 'Color' has no attribute 'PURPLE'"),
+    ("print(Color.REDD)\n", "type object 'Color' has no attribute 'REDD'; did you mean 'RED'?"),
+    ("print(Color.RED.x)\n", "'Color' object has no attribute 'x' (an enum member has .name, .value and its class's methods)"),
+    ("Color.RED = 5\n", "cannot reassign member 'RED': an enum's members are fixed when it's defined"),
+    ("Color.PINK = 5\n", "cannot add a member 'PINK': an enum's members are fixed when it's defined"),
+    ("c = Color.RED\nc.value = 3\n", "Color is an enum: its members can't be changed (cannot set attribute 'value')"),
+    ("Color.RED.value += 1\n", "Color is an enum: its members can't be changed (cannot set attribute 'value')"),
+    (MATCH_ONE, "function 'f' can reach its end without returning a value (it's declared to return str)"),
+    ("def f(c: Color) -> None:\n    match c:\n        case 1:\n            pass\n",
+     "this pattern can never match: a Color is never equal to an int"),
+    ("print(Color.RED < Color.GREEN)\n", "'<' isn't supported between Color and Color (define __lt__ on Color)"),
+    ("print(Color.RED == 1)\n", "comparing Color with int using '==' is always False"),
+    ("print(Color('x'))\n", "Color() looks a member up by its value, an int, not a str"),
+    ("print(Color[1])\n", "Color[...] (a member's name) must be str, not int"),
+    ("print(Color)\n", "print() argument must be something printable, not type[Color]"),
+    ("print(Color.RED + 1)\n", "unsupported operand types for +: Color and int (define __add__ on Color)"),
+    ("@unique\nclass D(Enum):\n    A = 1\n    B = 1\n    C = 2\n    E = 2\n",
+     "duplicate values found in <enum 'D'>: B -> A, E -> C"),
+    ("class D(Enum):\n    A = 1\n    B = 'x'\n", "an enum's values must all have the same type, but A is int and B is str"),
+    ("class D(Enum):\n    A = 1\n    A = 2\n", "'A' already defined as 1"),
+    ("class D(StrEnum):\n    A = 1\n", "1 is not a string (a StrEnum's values are strs)"),
+    ("class D(IntEnum):\n    A = 'a'\n", "IntEnum members must be ints, not str"),
+    ("class D(Enum):\n    A = 'a'\n    B = auto()\n", "auto() can't follow a value that isn't an int: unable to increment 'a'"),
+    ("class D(Enum):\n    A = [1]\n", "an enum member's value must be a constant (a number, string, bytes, bool, or a "
+                                     "tuple of those) or auto()"),
+    ("class D(Enum):\n    x: int\n", "an enum's body has members (`RED = 1`) and methods, not fields"),
+    ("class D(Enum):\n    A = 1\n    def __init__(self):\n        pass\n",
+     "an enum can't define __init__() (its members are fixed values)"),
+    ("class D(Enum):\n    _A = 1\n", "enum members can't start with '_' ('_A'): those names are reserved"),
+    ("class D(Enum):\n    name = 1\n", "an enum member can't be called 'name': every member has .name and .value"),
+    ("class D(Color):\n    pass\n", "an enum with members can't be inherited from: 'Color' is a fixed set of values"),
+    ("@unique\nclass D:\n    x: int\n", "@unique is for enums (`class Color(Enum):`)"),
+    ("x = auto()\n", "auto() can only be the value of a member in an enum's body (`RED = auto()`)"),
+    ("class P(Flag):\n    A = 1\nprint(P.A | 2)\n", "unsupported operand types for |: P and int (define __or__ on P)"),
+    ("class P(Flag):\n    A = -1\n", "a flag's values can't be negative (A is -1)"),
+    ("import json\nprint(json.dumps(Color.RED))\n",
+     "Color is an enum; convert its members with .value (and back with Color(value))"),
+])
+def test_enum_errors(src, msg):
+    assert err(ENUM + src).message == msg
+
+
+def test_enum_match_covering_every_member_needs_no_return():
+    ok(ENUM + MATCH_ONE + "        case Color.GREEN:\n            return 'g'\n")
+    ok(ENUM + "def f(c: Color | None) -> str:\n    match c:\n        case Color.RED | Color.GREEN:\n            return 'x'\n"
+       "        case None:\n            return '-'\n")
+    assert "can reach its end" in err(ENUM + "def f(c: Color | None) -> str:\n    match c:\n        case Color.RED:\n"
+                                      "            return 'r'\n        case Color.GREEN:\n            return 'g'\n").message
+
+
+def test_enum_types():
+    info = ok(ENUM + "class N(IntEnum):\n    A = auto()\nclass P(Flag):\n    R = auto()\n"
+              "a = Color.RED\nb = Color(2).value\nc = Color['RED'].name\nd = N.A + 1\ne = P.R | P.R\nf = P.R.name\n"
+              "g = list(Color)\nh = len(Color)\n")
+    assert {"a: Color", "b: int", "c: str", "d: int", "e: P", "f: str?", "g: list[Color]", "h: int"} <= set(variables(info))
+
+
+def test_enum_auto_values():
+    info = ok(ENUM + "class A(Enum):\n    X = auto()\n    Y = 10\n    Z = auto()\n"
+              "class F(Flag):\n    A = 3\n    B = auto()\nclass S(StrEnum):\n    Hello = auto()\n")
+    [a] = [st for st in info.structs if st.name == "A"]
+    [f] = [st for st in info.structs if st.name == "F"]
+    [s] = [st for st in info.structs if st.name == "S"]
+    assert [m.value for m in a.enum.members.values()] == [1, 10, 11]
+    assert [m.value for m in f.enum.members.values()] == [3, 4]
+    assert [m.value for m in s.enum.members.values()] == ["hello"]

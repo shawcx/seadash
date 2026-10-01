@@ -26,7 +26,7 @@ from .types import (
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     DictType, Field, FileType, Prim, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     ClassAttr, ClassRefType, CmpKeyType, FuncInfo, HTTPServerType, Param, Var,
-    assignable, element_type, is_hashable, is_numeric, join,
+    assignable, element_type, enum_mixin, is_hashable, is_numeric, join,
 )
 
 # Generic built-in types and how many type arguments they take (None = any number).
@@ -77,9 +77,16 @@ class CallContext:
 
     def need(self, i: int, ok: Callable[[Type], bool], what: str) -> Type:
         t = self.arg(i)
+        if not ok(t) and enum_mixin(t) is not None and ok(enum_mixin(t)):
+            t = self.decay(i)  # len(Mode.FAST): a StrEnum member is a str
         if not ok(t):
             raise self.error(f"{self.what} argument must be {what}, not {t}", self.args[i])
         return t
+
+    def decay(self, i: int) -> Type:
+        """Use an IntEnum/StrEnum member argument as its value (`member.value`); returns its type."""
+        self.args[i] = A.Attribute(self.args[i], "value", loc=self.args[i].loc)
+        return self.arg(i)
 
     def keyword(self, name: str, t: Type) -> None:
         for kw in self.call.keywords:
@@ -196,17 +203,20 @@ def module_repr(mod: Module) -> str:
 
 
 def printable(t: Type) -> bool:
-    return not isinstance(t, IterType)
+    return not isinstance(t, (IterType, ClassRefType))
 
 
 def sized(t: Type) -> bool:
     return t in (STR, BYTES, JSON_VALUE, HTTP_HEADERS) or isinstance(t, (ListType, DictType, SetType, TupleType, DequeType, VarTupleType)) or bool(
         user_dunder(t, "__len__")
-    ) or (isinstance(t, IterType) and t.kind in ("keys", "values", "items", "range"))  # len(d.keys()), len(range(n))
+    ) or (isinstance(t, IterType) and t.kind in ("keys", "values", "items", "range")) or (  # len(d.keys()), len(range(n))
+        isinstance(t, ClassRefType) and t.st.enum is not None) or (  # len(Color)
+        isinstance(t, StructType) and t.enum is not None and t.enum.flag)  # len(perms): its members
 
 
 def ordered(t: Type) -> bool:
-    return t in (INT, FLOAT, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T) or isinstance(t, (TupleType, ListType, VarTupleType, CmpKeyType)) or bool(user_dunder(t, "__lt__"))
+    return t in (INT, FLOAT, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T) or isinstance(t, (TupleType, ListType, VarTupleType, CmpKeyType)) or bool(user_dunder(t, "__lt__")) or (
+        isinstance(t, StructType) and t.enum is not None and t.enum.mixin is not None)  # IntEnum, StrEnum
 
 
 def bytes_like(t: Type) -> bool:
@@ -308,6 +318,8 @@ FORMAT_SAMPLES = {INT: 0, FLOAT: 0.0, BOOL: False, STR: ""}
 def format_spec_error(t: Type, spec: str | None) -> str | None:
     """Why a `t` can't be formatted with `spec` (None: a spec computed at run time), if it can't.
     A constant spec is checked by Python's own rules, so the message is Python's."""
+    if isinstance(t, StructType) and t.enum is not None:
+        t = t.enum.mixin or STR  # an enum member formats its str(), an IntEnum's its value
     if t in (DATE, DATETIME, TIME):
         return None  # a strftime format
     article = ("an " if str(t)[:1].lower() in "aeiou" else "a ") + str(t)
@@ -373,6 +385,8 @@ def b_digits(ctx: CallContext) -> Type:
     """bin(n), oct(n), hex(n)."""
     ctx.arity(1)
     t = ctx.arg(0)
+    if enum_mixin(t) is not None:
+        t = ctx.decay(0)  # hex(N.ONE)
     if t not in (INT, BOOL):
         raise ctx.error(f"'{t}' object cannot be interpreted as an integer", ctx.args[0])
     return STR
@@ -380,7 +394,7 @@ def b_digits(ctx: CallContext) -> Type:
 
 def b_divmod(ctx: CallContext) -> Type:
     ctx.arity(2)
-    types = [ctx.arg(i) for i in range(2)]
+    types = [ctx.decay(i) if enum_mixin(ctx.arg(i)) is not None else ctx.args[i].ty for i in range(2)]
     for i, t in enumerate(types):
         if t not in (INT, FLOAT, BOOL):
             raise ctx.error(f"divmod() arguments must be numbers, not {t}", ctx.args[i])
@@ -417,6 +431,8 @@ def b_range(ctx: CallContext) -> Type:
 def b_abs(ctx: CallContext) -> Type:
     ctx.arity(1)
     t = ctx.arg(0)
+    if enum_mixin(t) is not None:
+        t = ctx.decay(0)  # abs(N.ONE)
     if m := user_dunder(t, "__abs__"):
         return m.ret
     if t == TIMEDELTA:
@@ -510,7 +526,8 @@ def b_filter(ctx: CallContext) -> Type:
 
 def b_reversed(ctx: CallContext) -> Type:
     ctx.arity(1)
-    t = ctx.need(0, lambda t: isinstance(t, (ListType, TupleType)) or t == STR or t == IterType(INT, "range"),
+    t = ctx.need(0, lambda t: isinstance(t, (ListType, TupleType)) or t == STR or t == IterType(INT, "range") or (
+        isinstance(t, ClassRefType) and t.st.enum is not None),  # reversed(Color)
                  "a list, tuple, str or range")
     if isinstance(t, TupleType):
         return IterType(ctx.iterable(0), "reversed")
@@ -1562,6 +1579,8 @@ def json_problem(t: Type, decoding: bool, seen: frozenset = frozenset()) -> str 
             if not keys_ok:
                 return f"JSON object keys are strings, so {t} can't be {'decoded' if decoding else 'encoded'}"
             return json_problem(value, decoding, seen)
+        case StructType() if t.enum is not None:
+            return f"{t} is an enum; convert its members with .value (and back with {t}(value))"
         case StructType() if not t.is_exception:
             if t in seen:
                 return None
@@ -4966,6 +4985,25 @@ MODULES["dataclasses"] = Module("dataclasses", {
     "field": DecoratorName("field"),
     "replace": Function("replace", dataclasses_replace),
 })
+
+
+@dataclass
+class EnumBase:
+    """enum.Enum, IntEnum, StrEnum, Flag, IntFlag: a class inheriting one is an enum."""
+
+    name: str
+
+
+def enum_auto(ctx: CallContext) -> Type:
+    raise ctx.error("auto() can only be the value of a member in an enum's body (`RED = auto()`)", ctx.call)
+
+
+# Enums: the checker builds each one from its class body (Checker.resolve_enum_members).
+MODULES["enum"] = Module("enum", {
+    **{name: EnumBase(name) for name in ("Enum", "IntEnum", "StrEnum", "Flag", "IntFlag")},
+    "auto": Function("auto", enum_auto),
+    "unique": DecoratorName("unique"),
+}, "modules/enum.hpp")
 # seadash's own: `@value class Point:` makes a value type (copied on assignment, like an int).
 MODULES["seadash"] = Module("seadash", {
     "value": DecoratorName("value"),

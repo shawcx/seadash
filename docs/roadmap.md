@@ -38,6 +38,9 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - `sqlite3`: `row_factory`/`sqlite3.Row`, `create_function`, iterating a cursor directly.
 - `uuid`: `u.int` (128 bits), `getnode()`.
 - `fnmatch`, `glob`: bytes patterns and names.
+- `enum`: `__init__`/`__new__` on enums (members built from tuples), `_missing_` and other `_sunder_` hooks,
+  `__members__`, the functional API, inheriting from a member-less enum, `print(Color)`; containers of
+  `IntEnum`/`StrEnum` members used as containers of ints/strs.
 - `math`: `fsum` (an exactly rounded sum; `sum()` adds floats left to right).
 - `copy`: `__deepcopy__` and `deepcopy(x, memo)` (they need a type for the memo); copying exceptions.
 - Built-in functions: `callable`, `id`, `issubclass`, `type`, `getattr`/`hasattr`/`setattr`, `frozenset`,

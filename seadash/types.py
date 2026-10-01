@@ -461,6 +461,47 @@ class FuncInfo:
 
 
 @dataclass(eq=False)
+class EnumMember:
+    """`RED = 1` in an enum's body. Its value is computed when compiling (members are constants)."""
+
+    name: str
+    value: object  # the Python value: an int, str, float, bool, bytes, or a tuple of those
+    loc: Loc
+    alias_of: str | None = None  # `CRIMSON = 1` after `RED = 1` is another name for RED
+
+
+@dataclass(eq=False)
+class EnumInfo:
+    """An enum class (`class Color(Enum):`): a fixed set of named, immutable members."""
+
+    base: str  # 'Enum', 'IntEnum', 'StrEnum', 'Flag' or 'IntFlag'
+    value_type: Type
+    members: dict[str, EnumMember] = field(default_factory=dict)  # every name, aliases too, in order
+    unique: bool = False  # @unique
+
+    @property
+    def flag(self) -> bool:
+        return self.base in ("Flag", "IntFlag")
+
+    @property
+    def mixin(self) -> Type | None:
+        """IntEnum/IntFlag members are ints and StrEnum members strs, wherever one is expected."""
+        return {"IntEnum": INT, "IntFlag": INT, "StrEnum": STR}.get(self.base)
+
+    @property
+    def canonical(self) -> list[EnumMember]:
+        """The members iterating the class gives: not aliases (nor, in a Flag, 0 or several bits)."""
+        if self.flag:
+            return [m for m in self.members.values() if m.alias_of is None and m.value > 0 and m.value & (m.value - 1) == 0]
+        return [m for m in self.members.values() if m.alias_of is None]
+
+    @property
+    def distinct(self) -> list[EnumMember]:
+        """Every member that isn't another name for an earlier one."""
+        return [m for m in self.members.values() if m.alias_of is None]
+
+
+@dataclass(eq=False)
 class StructType(Type):
     """A user `struct` (value semantics) or `class` (shared reference semantics).
 
@@ -486,6 +527,7 @@ class StructType(Type):
     # subclass reaches them as fields, but they aren't part of its constructor or repr.
     runtime_fields: bool = False
     class_attrs: dict[str, ClassAttr] = field(default_factory=dict)  # declared here (a subclass may redefine one)
+    enum: EnumInfo | None = None  # an enum class (kind 'struct', frozen: its members are immutable values)
 
     def __str__(self) -> str:
         return self.name
@@ -578,7 +620,7 @@ def user_dunder(t: Type, name: str) -> FuncInfo | None:
 def is_hashable(t: Type) -> bool:
     if t in (INT, FLOAT, BOOL, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T):
         return True
-    if user_dunder(t, "__hash__"):
+    if user_dunder(t, "__hash__") or (isinstance(t, StructType) and t.enum is not None):
         return True
     if isinstance(t, TupleType):
         return all(is_hashable(e) for e in t.elts)
@@ -597,6 +639,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return True
     if src == INT and dst == FLOAT:
         return True
+    if isinstance(src, StructType) and src.enum is not None and src.enum.mixin is not None and not isinstance(dst, StructType):
+        return assignable(src.enum.mixin, dst)  # an IntEnum member is an int, a StrEnum member a str
     if isinstance(src, StructType) and isinstance(dst, StructType):
         return src.is_subclass_of(dst)
     if isinstance(src, HTTPServerType) and isinstance(dst, HTTPServerType):  # `server: HTTPServer`
@@ -686,6 +730,10 @@ def element_type(t: Type) -> Type | None:
                 if common is None:
                     return None
             return common
+        case ClassRefType(st) if st.enum is not None:
+            return st  # for c in Color
+        case StructType() if t.enum is not None and t.enum.flag:
+            return t  # the members a flag value holds
         case StructType() if (m := user_dunder(t, "__iter__")):
             return element_type(m.ret)  # for x in obj -> obj.__iter__()
     return None
@@ -736,3 +784,30 @@ def contains_unknown(t: Type) -> bool:
         case TupleType(xs):
             return any(contains_unknown(x) for x in xs)
     return False
+
+
+def enum_mixin(t: Type) -> Type | None:
+    """int for an IntEnum or IntFlag member, str for a StrEnum member (it's used as one), else None."""
+    return t.enum.mixin if isinstance(t, StructType) and t.enum is not None else None
+
+
+def enum_decays(op: str, t: Type, other: Type, right: bool = False) -> bool:
+    """In `t op other` (or `other op t`, if `right`), is the IntEnum/StrEnum member t used
+    as its value? It is, except where it meets its own enum: `N.ONE == N.ONE`, `n in N`."""
+    if enum_mixin(t) is None or op in ("is", "is not"):
+        return False
+    if op in ("in", "not in"):
+        return enum_mixin(t) == STR if right else element_type(other) != t  # "a" in Mode.FAST
+    return op in ("<", "<=", ">", ">=") or strip_optional(other) != t
+
+
+def enum_flag_op(op: str, l: Type, r: Type) -> Type | None:
+    """The flag type `l op r` gives, if it's a flag operation: `P.R | P.W`, or an IntFlag
+    with an int (`IP.R | 8`)."""
+    if op not in ("|", "&", "^"):
+        return None
+    for a, b in ((l, r), (r, l)):
+        if isinstance(a, StructType) and a.enum is not None and a.enum.flag:
+            if b == a or (a.enum.base == "IntFlag" and b == INT):
+                return a
+    return None

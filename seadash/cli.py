@@ -67,7 +67,7 @@ def cmd_check(path: str) -> int:
             print(f"    {v.cpp_name}: {v.type}{renamed}")
 
     for st in info.structs:
-        print(f"{st.kind} {st.name}")
+        print(f"{'enum' if st.enum is not None else st.kind} {st.name}")
         for f in st.fields.values():
             print(f"    {f.name}: {f.type}")
     if info.globals:

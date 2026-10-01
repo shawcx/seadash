@@ -42,7 +42,7 @@ from .types import (
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
     SYNC_ARITY, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
-    SetType, StructType, TupleType, Type, Var,
+    SetType, StructType, TupleType, Type, Var, EnumInfo, EnumMember, enum_decays, enum_flag_op, enum_mixin,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
 
@@ -376,6 +376,8 @@ class Checker:
             raise self.error("multiple inheritance is not supported", node.bases[1])
         self.set_class_kind(node)
         st = StructType(node.name, node.kind, node, module=self.module_name)
+        if (base := self.enum_base(node)) is not None:
+            st.enum, st.frozen = EnumInfo(base, UNKNOWN), True
         node.sym = st
         self.structs[node.name] = st
         threads.ALL_CLASSES.append(st)
@@ -469,10 +471,13 @@ class Checker:
 
     def resolve_base(self, st: StructType) -> None:
         """`class Dog(Animal):` Classes inherit from one class; structs (values) can't inherit."""
-        if not st.node.bases:
+        if not st.node.bases or st.enum is not None:
             return
         base_expr = st.node.bases[0]
         base = self.resolve_type(base_expr)
+        if isinstance(base, StructType) and base.enum is not None:
+            raise self.error(f"an enum with members can't be inherited from: '{base.name}' is a fixed set of values",
+                             base_expr)
         if not isinstance(base, StructType):
             raise self.error(f"a class can only inherit from another class, not {base}", base_expr)
         if st.kind != "class":
@@ -503,6 +508,9 @@ class Checker:
                 )
 
     def resolve_struct_members(self, st: StructType) -> None:
+        if st.enum is not None:
+            self.resolve_enum_members(st)
+            return
         for stmt in st.node.body:
             match stmt:
                 case A.AnnAssign(A.Name(name), annotation, default):
@@ -538,6 +546,103 @@ class Checker:
         self.check_dunder_signatures(st)
         if st.init is not None and st.init.ret != NONE:
             raise self.error("__init__ must not return a value", st.init.node)
+
+    # ---- enums ----------------------------------------------------------------------
+
+    def resolve_enum_members(self, st: StructType) -> None:
+        """`class Color(Enum):` Each `NAME = value` in the body is a member. Values are
+        constants, worked out here (auto() too), so aliases and @unique are settled now."""
+        info = st.enum
+        info.unique = any(self.classify_decorator(d)[0] == "unique" for d in st.node.decorators)
+        values: dict[str, object] = {}  # every member so far, for `RW = R | W` and auto()
+        for stmt in st.node.body:
+            match stmt:
+                case A.Assign([A.Name(name)], value):
+                    if name.startswith("_"):
+                        raise self.error(f"enum members can't start with '_' ('{name}'): those names are reserved", stmt)
+                    if name in ("name", "value"):
+                        raise self.error(f"an enum member can't be called '{name}': every member has .name and .value", stmt)
+                    if name in values:
+                        raise self.error(f"'{name}' already defined as {values[name]!r}", stmt)
+                    v = self.enum_value(st, name, value, values)
+                    values[name] = v
+                    alias = next((m.name for m in info.members.values() if m.alias_of is None
+                                  and type(m.value) is type(v) and m.value == v), None)
+                    info.members[name] = EnumMember(name, v, stmt.loc, alias)
+                case A.FunctionDef(name):
+                    if name in ("__init__", "__new__", "__eq__", "__hash__"):
+                        raise self.error(f"an enum can't define {name}() (its members are fixed values)", stmt)
+                    if name in values:
+                        raise self.error(f"'{name}' is already defined in {st.name}", stmt)
+                    self.declare_method(st, stmt)
+                case A.Pass() | A.ExprStmt(A.StrLit()):
+                    pass
+                case A.AnnAssign():
+                    raise self.error("an enum's body has members (`RED = 1`) and methods, not fields", stmt)
+                case _:
+                    raise self.error("an enum's body can only contain members (`RED = 1`) and methods", stmt)
+        for name in values:
+            if name in st.methods:
+                raise self.error(f"'{name}' is already defined in {st.name}", st.methods[name].node)
+        for m in st.methods.values():
+            if m.lazy:
+                raise self.error("@cached_property can't be used in an enum (its members can't store anything); "
+                                 "use @property", m.node)
+        types = {name: constant_type(v) for name, v in values.items()}
+        first = next(iter(types), None)
+        for name, t in types.items():
+            if t != types[first]:
+                raise self.error(
+                    f"an enum's values must all have the same type, but {first} is {types[first]} and {name} is {t}",
+                    info.members[name].loc)
+        info.value_type = types[first] if first is not None else (STR if info.base == "StrEnum" else INT)
+        if info.flag:
+            for m in info.members.values():
+                if m.value < 0:
+                    raise self.error(f"a flag's values can't be negative ({m.name} is {m.value})", m.loc)
+        if info.unique and (aliases := [m for m in info.members.values() if m.alias_of is not None]):
+            pairs = ", ".join(f"{m.name} -> {m.alias_of}" for m in aliases)
+            raise self.error(f"duplicate values found in <enum '{st.name}'>: {pairs}", aliases[0].loc)
+        self.check_dunder_signatures(st)
+
+    def enum_value(self, st: StructType, name: str, e: A.Expr, earlier: dict[str, object]) -> object:
+        """A member's value, worked out now. `auto()` gives the next number (the next bit in
+        a Flag, the name in lowercase in a StrEnum)."""
+        info = st.enum
+        if isinstance(e, A.Call) and self.is_enum_auto(e.func):
+            if e.args or e.keywords:
+                raise self.error("auto() takes no arguments", e)
+            if info.base == "StrEnum":
+                return name.lower()
+            ints = list(earlier.values())
+            if any(type(v) is not int for v in ints):
+                last = next(v for v in reversed(ints) if type(v) is not int)
+                raise self.error(f"auto() can't follow a value that isn't an int: unable to increment {last!r}", e)
+            if not ints:
+                return 1
+            if info.flag:
+                return 2 ** max(ints).bit_length()
+            return max(ints) + 1
+        try:
+            v = enum_constant(e, earlier)
+        except ValueError:
+            raise self.error(
+                "an enum member's value must be a constant (a number, string, bytes, bool, or a tuple of those) "
+                "or auto()", e) from None
+        if info.base == "StrEnum" and type(v) is not str:
+            raise self.error(f"{v!r} is not a string (a StrEnum's values are strs)", e)
+        if info.base != "Enum" and type(v) is not int and info.base != "StrEnum":
+            raise self.error(f"{info.base} members must be ints, not {constant_type(v)}", e)
+        if type(v) is int and not INT64_MIN <= v <= INT64_MAX:
+            raise self.error("integer value is too large for int (64-bit)", e)
+        return v
+
+    def is_enum_auto(self, func: A.Expr) -> bool:
+        if isinstance(func, A.Name) and func.id in self.imported:
+            mod, member = self.imported[func.id]
+            return mod is builtins.MODULES["enum"] and member == "auto"
+        return (isinstance(func, A.Attribute) and func.attr == "auto" and isinstance(func.value, A.Name)
+                and self.modules.get(func.value.id) is builtins.MODULES["enum"])
 
     def declare_class_attr(self, st: StructType, name: str, value: A.Expr, stmt: A.Stmt) -> None:
         """`version = "1.0"`: a constant of the class, which a subclass may set to its own value."""
@@ -793,10 +898,23 @@ class Checker:
         """`@value class Point:` (from seadash import value) is a value type, kind 'struct';
         any other class is a shared reference."""
         kinds = [self.classify_decorator(d)[0] for d in node.decorators]
+        enum_base = self.enum_base(node)
         for kind, d in zip(kinds, node.decorators):
-            if kind not in ("dataclass", "value", "total_ordering"):
+            if enum_base is not None and kind != "unique":
+                raise self.error(f"an enum can only be decorated with @enum.unique, not @{kind}", d)
+            if kind == "unique" and enum_base is None:
+                raise self.error("@unique is for enums (`class Color(Enum):`)", d)
+            if kind not in ("dataclass", "value", "total_ordering", "unique"):
                 raise self.error("only @dataclass, @value and @functools.total_ordering can decorate a class (for now)", d)
-        node.kind = "struct" if "value" in kinds else "class"
+        # An enum's members are immutable values: a frozen value class, as far as copying goes.
+        node.kind = "struct" if "value" in kinds or enum_base is not None else "class"
+
+    def enum_base(self, node: A.ClassDef) -> str | None:
+        """'Enum', 'IntEnum'... if the class inherits one of the enum module's classes."""
+        if not node.bases or not isinstance(node.bases[0], A.TypeName) or node.bases[0].args:
+            return None
+        base = self.module_member_named(node.bases[0].name)
+        return base.name if isinstance(base, builtins.EnumBase) else None
 
     def declare_generic(self, node: A.FunctionDef | A.ClassDef) -> None:
         if node.name in self.structs or node.name in self.functions or node.name in self.generics:
@@ -1300,6 +1418,8 @@ class Checker:
         # (`n = 1; n += 0.5` makes n a float), like Python.
         current = self.check_expr(target)
         read_sym = target.sym
+        if isinstance(target, A.Attribute) and isinstance(read_sym, tuple) and read_sym[0] in ("enum_attr", "enum_member"):
+            self.assign(target, current, value)  # (the error for changing an enum)
         vt = self.check_expr(value)
         result = self.binop_type(op, current, vt, stmt)
         if isinstance(target, A.Name):
@@ -1328,6 +1448,12 @@ class Checker:
                         and cls.find_class_attr(attr) is not None):
                     raise self.error(f"{cls.name}.{attr} is a class attribute, a constant: it can't be changed", target)
                 owner = self.check_expr(obj)
+                if isinstance(owner, ClassRefType) and owner.st.enum is not None:
+                    what = "reassign member" if attr in owner.st.enum.members else "add a member"
+                    raise self.error(f"cannot {what} '{attr}': an enum's members are fixed when it's defined", target)
+                if isinstance(owner, StructType) and owner.enum is not None:
+                    raise self.error(f"{owner.name} is an enum: its members can't be changed (cannot set attribute "
+                                     f"'{attr}')", target)
                 if not isinstance(owner, StructType):
                     raise self.error(f"can't set attribute '{attr}' on {owner}", target)
                 if (getter := owner.find_method(attr)) and getter.lazy:  # obj.cached = v: replaces the kept value
@@ -1784,6 +1910,10 @@ class Checker:
         case matches everything, later cases can't run (and the match can't fall through)."""
         subject_t = self.check_expr(stmt.subject)
         remaining: Type | None = subject_t  # None once every value has been matched
+        enum_t = strip_optional(subject_t)
+        if not (isinstance(enum_t, StructType) and enum_t.enum is not None and not enum_t.enum.flag):
+            enum_t = None
+        covered: set[str] = set()  # the enum's members matched so far (by cases without a guard)
         fallthrough = self.state.copy()
         exits: list[State] = []
         for i, case in enumerate(stmt.cases):
@@ -1813,6 +1943,10 @@ class Checker:
                     remaining = None
                 else:
                     remaining = self.unmatched(case.pattern, remaining)
+                    if enum_t is not None and remaining is not None:  # case Color.RED: ... every member is everything
+                        covered |= enum_members_matched(case.pattern)
+                        if covered >= {m.name for m in enum_t.enum.distinct}:
+                            remaining = NONE if isinstance(remaining, OptionalType) else None
             if remaining is not None and remaining is not subject_t:
                 self.narrow_subject_in(fallthrough, stmt.subject, remaining)
         if remaining is not None:
@@ -1942,6 +2076,12 @@ class Checker:
                 raise self.never_matches(p, t, f"{with_article(t)} is never None")
             return
         vt = self.check_expr(value)
+        if isinstance(vt, StructType) and vt.enum is not None:  # case Color.RED:
+            if vt != inner:
+                raise self.never_matches(p, t, f"{with_article(t)} is never equal to a {vt} member")
+            return
+        if enum_mixin(inner) is not None and vt == enum_mixin(inner):
+            return  # an IntEnum subject with `case 1:`
         if vt not in (INT, FLOAT, BOOL, STR, BYTES):
             raise self.error(f"a value pattern must be a number, string, bytes, True/False or None, not {vt}", value)
         if inner == JSON_VALUE:
@@ -2187,11 +2327,11 @@ class Checker:
                 self.check_expr(e)
                 narrowed = self.narrowed(subject)
                 return (narrowed, self.state.copy()) if op in ("is not", "!=") else (self.state.copy(), narrowed)
-            case A.Compare(subject, ["==" | "!=" as op], [other]):
-                self.check_expr(e)  # if e.errno == errno.ENOENT: e.errno isn't None there
+            case A.Compare(subject, ["==" | "!=" | "is" | "is not" as op], [other]):
+                self.check_expr(e)  # if e.errno == errno.ENOENT: e.errno isn't None there (or `c is Color.RED`)
                 if isinstance(subject.ty, OptionalType) and other.ty not in (None, NONE) and not isinstance(other.ty, OptionalType):
                     narrowed = self.narrowed(subject)
-                    return (narrowed, self.state.copy()) if op == "==" else (self.state.copy(), narrowed)
+                    return (narrowed, self.state.copy()) if op in ("==", "is") else (self.state.copy(), narrowed)
                 return self.state.copy(), self.state.copy()
         t = self.check_expr(e)
         self.check_truthy(t, e)
@@ -2216,7 +2356,8 @@ class Checker:
         ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE, PATH, *DATETIME_TYPES) or isinstance(
             t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType, MatchType, VarTupleType,
                 GeneratorType)
-        ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__"))
+        ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__")) or (
+            isinstance(t, StructType) and t.enum is not None)  # (a member is true; an IntEnum's or flag's if not 0)
         if not ok:
             raise self.error(f"{t} can't be used as a condition", e)
 
@@ -2368,6 +2509,10 @@ class Checker:
             info = self.functions[name]
             e.sym = info
             return FuncType(tuple(p.type for p in info.params), info.ret)
+        if ((st := self.lookup_struct(name)) is not None and st.enum is not None
+                and not isinstance(strip_optional(expected) if expected else None, FuncType)):
+            e.sym = st  # an enum class: `for c in Color`, `len(Color)`, `Color["RED"]`
+            return ClassRefType(st)
         if self.lookup_struct(name) or name in builtins.FUNCTIONS:
             return self.callable_as_value(e, expected, name)
         if name in builtins.VALUES:
@@ -2444,7 +2589,7 @@ class Checker:
         return t
 
     def check_printable(self, t: Type, e: A.Expr) -> None:
-        if isinstance(t, IterType):
+        if isinstance(t, (IterType, ClassRefType)):
             raise self.error(f"{t} can't be converted to a string", e)
 
     def name_the_mutex(self, target: A.Expr, value: A.Expr) -> None:
@@ -2613,6 +2758,9 @@ class Checker:
             self.check_condition(operand)
             return BOOL
         t = self.check_expr(operand)
+        if op == "~" and isinstance(t, StructType) and t.enum is not None and t.enum.flag:
+            return t  # ~P.R: the other members
+        t = enum_mixin(t) or t  # -N.ONE: an IntEnum member is an int
         if op in ("-", "+") and (is_numeric(t) or t in (TIMEDELTA, builtins.NORMAL_DIST)):
             return t
         if op == "~" and t == INT:
@@ -2623,6 +2771,10 @@ class Checker:
         raise self.error(f"bad operand type for unary {op}: {t}{self.dunder_hint(t, UNARY_DUNDERS[op])}", e)
 
     def binop_type(self, op: str, l: Type, r: Type, e: A.Node) -> Type:
+        if (flag := enum_flag_op(op, l, r)) is not None:
+            return flag  # P.R | P.W: a flag; IntFlag.R | 8 too
+        if enum_mixin(l) or enum_mixin(r):  # N.ONE + 1: an IntEnum member is an int
+            return self.binop_type(op, enum_mixin(l) or l, enum_mixin(r) or r, e)
         name = BINARY_DUNDERS.get(op)
         if name and (isinstance(l, StructType) or isinstance(r, StructType)):
             if (m := self.dunder(l, f"__{name}__")) and accepts(m, r):  # a + b -> a.__add__(b)
@@ -2734,7 +2886,10 @@ class Checker:
         e.dunder = []
         for op, right in zip(e.ops, e.comparators):
             rt = self.check_expr(right)
-            e.dunder.append(self.comparison_dunder(op, lt, rt) or self.check_comparison(op, lt, rt, left, right, e))
+            # N.ONE < 2: an IntEnum member compares as its value (codegen decays it the same way)
+            lv = enum_mixin(lt) if enum_decays(op, lt, rt) else lt
+            rv = enum_mixin(rt) if enum_decays(op, rt, lt, right=True) else rt
+            e.dunder.append(self.comparison_dunder(op, lv, rv) or self.check_comparison(op, lv, rv, left, right, e))
             left, lt = right, rt
         return BOOL
 
@@ -2790,6 +2945,10 @@ class Checker:
                     ok = lt in (BYTES, INT)
                 case _ if rt == JSON_VALUE:
                     ok = lt == STR  # a key of a JSON object
+                case ClassRefType(st) if st.enum is not None:
+                    ok = lt == st  # Color.RED in Color
+                case StructType() if rt.enum is not None and rt.enum.flag:
+                    ok = lt == rt  # P.R in perms
                 case _:
                     raise self.error(f"'{op}' needs a list, set, dict, tuple or str on the right, not {rt}", right)
             if not ok:
@@ -2798,7 +2957,8 @@ class Checker:
             is_none_check = (isinstance(right, A.NoneLit) and (isinstance(lt, OptionalType) or lt == NONE)) or (
                 isinstance(left, A.NoneLit) and isinstance(rt, OptionalType)
             )
-            same_object = lt == rt and (
+            enum_t = strip_optional(lt) if isinstance(strip_optional(lt), StructType) else strip_optional(rt)
+            same_object = (isinstance(enum_t, StructType) and enum_t.enum is not None and join(lt, rt) is not None) or lt == rt and (
                 (isinstance(lt, StructType) and lt.kind == "class")
                 or isinstance(lt, (ListType, DictType, SetType, DequeType, CounterType, DefaultDictType))
             )
@@ -2832,6 +2992,21 @@ class Checker:
             if isinstance(value.sym.members.get(attr), builtins.Function):
                 return self.callable_as_value(e, expected, f"{value.sym.name}.{attr}")
             return self.module_member(e, value.sym, attr)
+        if isinstance(vt, ClassRefType) and vt.st.enum is not None:  # Color.RED
+            members = vt.st.enum.members
+            if attr not in members:
+                close = difflib.get_close_matches(attr, list(members), n=1)
+                hint = f"; did you mean '{close[0]}'?" if close else ""
+                raise self.error(f"type object '{vt.st.name}' has no attribute '{attr}'{hint}", e)
+            e.sym = ("enum_member", vt.st, members[attr])
+            return vt.st
+        if isinstance(vt, StructType) and vt.enum is not None and attr in ("name", "value", "_name_", "_value_"):
+            e.sym = ("enum_attr", attr.strip("_"))  # Color.RED.name, c.value
+            if attr.strip("_") == "value":
+                return vt.enum.value_type
+            if vt.enum.flag and (path := attr_path(e)) in self.state.attrs:
+                return self.state.attrs[path]  # narrowed: `if m.name is not None:`
+            return OptionalType(STR) if vt.enum.flag else STR  # (a flag of no members has no name)
         if isinstance(vt, StructType):
             if (getter := vt.find_method(attr)) and getter.kind == "getter":  # obj.area -> obj.area()
                 e.sym = ("property", getter)
@@ -2848,6 +3023,9 @@ class Checker:
             if (ca := vt.find_class_attr(attr)) is not None:  # self.version: the object's class's value
                 e.sym = ("class_attr", ca)
                 return ca.type
+            if vt.enum is not None:
+                raise self.error(f"'{vt.name}' object has no attribute '{attr}' (an enum member has .name, .value "
+                                 f"and its class's methods)", e)
             raise self.error(f"{vt.name} has no field '{attr}'", e)
         if isinstance(vt, ClassRefType) and (ca := vt.st.find_class_attr(attr)) is not None:  # Handler.version
             e.sym = ("class_attr_of", vt.st, ca)
@@ -2896,6 +3074,9 @@ class Checker:
             raise self.error(builtins.missing_member(mod, member), e)
         if isinstance(m, builtins.Function):
             raise self.error(f"'{mod.name}.{member}' can only be called here (functions aren't values yet)", e)
+        if isinstance(m, StructType) and m.enum is not None:
+            e.sym = m  # an enum class, from another module
+            return ClassRefType(m)
         if isinstance(m, StructType):
             raise self.error(f"'{mod.name}.{member}' is a class; it can be called, raised or caught", e)
         if isinstance(m, builtins.Module):
@@ -2914,6 +3095,10 @@ class Checker:
 
     def check_index(self, e: A.Index, value: A.Expr, index: A.Expr) -> Type:
         vt = self.check_expr(value)
+        if isinstance(vt, ClassRefType) and vt.st.enum is not None:  # Color["RED"]: by name
+            self.expect_type(index, STR, f"{vt.st.name}[...] (a member's name)")
+            e.sym = ("enum_name", vt.st)
+            return vt.st
         if m := self.dunder(vt, "__getitem__"):  # obj[k] -> obj.__getitem__(k)
             self.expect_type(index, m.params[0].type, f"{vt.name} index")
             e.dunder = Dunder(m)
@@ -3061,6 +3246,9 @@ class Checker:
                 return self.check_module_call(e, func.value.sym, func.attr, expected)
             if isinstance(owner, StructType):
                 method = owner.find_method(func.attr)
+                if method is None and enum_mixin(owner) is not None:  # S.A.upper(): a StrEnum member is a str
+                    func.value = A.Attribute(func.value, "value", loc=func.value.loc)
+                    return self.check_call(e, expected)
                 if method is None and (handler := builtins.method_for(owner, func.attr)) is not None:
                     ctx = builtins.CallContext(self, e, f"{owner.name}.{func.attr}()", expected, receiver=owner)
                     e.sym = CallTarget("builtin_method", (owner, func.attr))  # e.g. HTTPError.read()
@@ -3546,7 +3734,7 @@ class Checker:
             var = n.sym
             seen.add(id(var))
             t = strip_optional(var.type)
-            if id(var) not in changed or not (isinstance(t, StructType) and t.kind == "struct" and t.frozen):
+            if id(var) not in changed or not (isinstance(t, StructType) and t.kind == "struct" and t.frozen and t.enum is None):
                 continue
             if fn is not None and fn.name == "__init__" and var.name == "self":
                 continue
@@ -3747,6 +3935,16 @@ class Checker:
         return f.check(builtins.CallContext(self, e, f"{mod.name}.{member}()", expected))
 
     def check_constructor(self, e: A.Call, st: StructType) -> Type:
+        if st.enum is not None:  # Color(1): the member with that value (codegen: sd_lookup)
+            if e.keywords or len(e.args) != 1:
+                raise self.error(f"{st.name}() takes one argument, a member's value: {st.name}(value)", e)
+            t = self.check_expr(e.args[0], st.enum.value_type)
+            if t != st and not assignable(t, st.enum.value_type):
+                raise self.error(f"{st.name}() looks a member up by its value, {with_article(st.enum.value_type)}, "
+                                 f"not {with_article(t)}", e.args[0])
+            param = Param("value", t, None, e.loc)
+            e.sym = CallTarget("ctor", st, [e.args[0]], [param])
+            return st
         params = self.constructor_params(st, e)
         e.sym = CallTarget("ctor", st, self.match_args(e, params, f"{st.name}()"), params)
         return st
@@ -3803,6 +4001,19 @@ class Checker:
 
 
 # ---- helpers ----------------------------------------------------------------
+
+
+def enum_members_matched(p: A.Pattern) -> set[str]:
+    """The enum members a pattern matches by value (`Color.RED | Color.GREEN`), aliases as their member."""
+    match p:
+        case A.MatchValue(value) if isinstance(value.sym, tuple) and value.sym[0] == "enum_member":
+            member = value.sym[2]
+            return {member.alias_of or member.name}
+        case A.MatchOr(options):
+            return set().union(*(enum_members_matched(o) for o in options))
+        case A.MatchAs(inner, _) if inner is not None:
+            return enum_members_matched(inner)
+    return set()
 
 
 def walk(node):
@@ -4077,6 +4288,42 @@ def is_constant(e: A.Expr) -> bool:
         case A.TupleLit(elts):
             return all(is_constant(x) for x in elts)
     return False
+
+
+ENUM_OPERATORS = {
+    "+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, b: a * b, "<<": lambda a, b: a << b,
+    ">>": lambda a, b: a >> b, "|": lambda a, b: a | b, "&": lambda a, b: a & b, "^": lambda a, b: a ^ b,
+}
+
+
+def enum_constant(e: A.Expr, earlier: dict[str, object]) -> object:
+    """The value of an enum member's constant expression (ValueError if it isn't one): a
+    literal, a tuple of them, or ints combined with operators, using earlier members by name."""
+    match e:
+        case A.IntLit(v) | A.FloatLit(v) | A.StrLit(v) | A.BytesLit(v) | A.BoolLit(v):
+            return v
+        case A.TupleLit(elts):
+            return tuple(enum_constant(x, earlier) for x in elts)
+        case A.Name(name) if name in earlier:
+            return earlier[name]
+        case A.UnaryOp("-" | "+" | "~" as op, operand):
+            v = enum_constant(operand, earlier)
+            if type(v) not in (int, float) or (op == "~" and type(v) is not int):
+                raise ValueError
+            return -v if op == "-" else ~v if op == "~" else v
+        case A.BinOp(op, left, right) if op in ENUM_OPERATORS:
+            a, b = enum_constant(left, earlier), enum_constant(right, earlier)
+            if type(a) is not int or type(b) is not int or (op in ("<<", ">>") and not 0 <= b < 64):
+                raise ValueError
+            return ENUM_OPERATORS[op](a, b)
+    raise ValueError
+
+
+def constant_type(v: object) -> Type:
+    """The type of a constant worked out when compiling (an enum member's value)."""
+    if isinstance(v, tuple):
+        return TupleType(tuple(constant_type(x) for x in v))
+    return {bool: BOOL, int: INT, float: FLOAT, str: STR, bytes: BYTES}[type(v)]
 
 
 def type_family(t: Type) -> str:
