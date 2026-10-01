@@ -4201,6 +4201,20 @@ HTTP_SERVER_MOD = Module("http.server", {
 }, "modules/httpserver.hpp", ("ssl", "crypto", "pthread"))
 MODULES["http"] = Module("http", {"client": HTTP_CLIENT_MOD, "server": HTTP_SERVER_MOD})
 
+# ---- email.utils --------------------------------------------------------------------------
+
+EMAIL_UTILS_MOD = module_with_params(runtime_module(
+    "email.utils", "modules/emailutils.hpp",
+    formatdate=(signature(STR, ("timeval", OPT_FLOAT, "std::nullopt"), ("localtime", BOOL, "false"),
+                          ("usegmt", BOOL, "false")), "sd::emailutils::formatdate"),
+    format_datetime=(signature(STR, ("dt", DATETIME), ("usegmt", BOOL, "false")), "sd::emailutils::format_datetime"),
+    parsedate_to_datetime=(signature(DATETIME, ("data", STR)), "sd::emailutils::parsedate_to_datetime"),
+    parsedate_tz=(signature(OptionalType(TupleType((INT,) * 10)), ("data", STR)), "sd::emailutils::parsedate_tz"),
+    parsedate=(signature(OptionalType(TupleType((INT,) * 9)), ("data", STR)), "sd::emailutils::parsedate"),
+))
+MODULES["email"] = Module("email", {"utils": EMAIL_UTILS_MOD})
+
+
 
 class AttributeUnavailable(Exception):
     """An attribute that exists, but not for this value (the checker adds the location)."""

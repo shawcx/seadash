@@ -1,0 +1,95 @@
+Thu, 01 Jan 1970 00:00:00 -0000
+Sun, 09 Sep 2001 01:46:40 GMT
+Tue, 14 Nov 2023 22:13:20 -0000
+Wed, 31 Dec 1969 23:59:58 -0000 | Thu, 01 Jan 1970 00:00:01 -0000
+Tue, 29 Feb 2000 00:00:00 GMT
+31 True
+True True
+True True
+True True
+Thu, 29 Feb 2024 13:05:07 -0000
+Mon, 01 Jan 0001 00:00:00 -0000 | Fri, 31 Dec 9999 23:59:59 -0000
+Thu, 29 Feb 2024 13:05:07 +0000
+Thu, 29 Feb 2024 13:05:07 GMT
+Thu, 29 Feb 2024 13:05:07 GMT
+Mon, 01 Jul 2024 09:00:00 -0700
+Mon, 01 Jul 2024 09:00:00 +053015
+Mon, 01 Jul 2024 09:00:00 -0400
+Mon, 01 Jan 2024 09:00:00 -0500
+ValueError: usegmt option requires a UTC datetime
+ValueError: usegmt option requires a UTC datetime
+ValueError: usegmt option requires a UTC datetime
+True
+True
+'Fri, 09 Nov 2001 01:08:47 -0000' datetime.datetime(2001, 11, 9, 1, 8, 47) None
+'Fri, 09 Nov 2001 01:08:47 +0000' datetime.datetime(2001, 11, 9, 1, 8, 47, tzinfo=datetime.timezone.utc) 0:00:00
+'Fri, 09 Nov 2001 01:08:47 GMT' datetime.datetime(2001, 11, 9, 1, 8, 47, tzinfo=datetime.timezone.utc) 0:00:00
+'Fri,09 Nov 2001 01:08:47 +0530' datetime.datetime(2001, 11, 9, 1, 8, 47, tzinfo=datetime.timezone(datetime.timedelta(seconds=19800))) 5:30:00
+'Thu, 01 Jan 1970 00:00:00 -0800' datetime.datetime(1970, 1, 1, 0, 0, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=57600))) -1 day, 16:00:00
+'9 Nov 01 1:08 EST' datetime.datetime(2001, 11, 9, 1, 8, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=68400))) -1 day, 19:00:00
+'9 Nov 69 1:08 PDT' datetime.datetime(1969, 11, 9, 1, 8, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=61200))) -1 day, 17:00:00
+'1 Jan 68 01:00 cdt' datetime.datetime(2068, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=68400))) -1 day, 19:00:00
+'Sunday, 06-Nov-94 08:49:37 GMT' datetime.datetime(1994, 11, 6, 8, 49, 37, tzinfo=datetime.timezone.utc) 0:00:00
+'Sun Nov  6 08:49:37 1994' datetime.datetime(1994, 11, 6, 8, 49, 37) None
+'09 Nov 2001 01.08.47 +0100' datetime.datetime(2001, 11, 9, 1, 8, 47, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600))) 1:00:00
+'1 Jan 2001 1.2' datetime.datetime(2001, 1, 1, 1, 2) None
+'Nov 09 2001 01:08:47' datetime.datetime(2001, 11, 9, 1, 8, 47) None
+'1 jan 2001 01:00:00 z' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone.utc) 0:00:00
+'Jan 1, 2001 01:00:00' datetime.datetime(2001, 1, 1, 1, 0) None
+'1 January 2001 01:00' datetime.datetime(2001, 1, 1, 1, 0) None
+'1 SEPTEMBER 2001 01:00 UT' datetime.datetime(2001, 9, 1, 1, 0, tzinfo=datetime.timezone.utc) 0:00:00
+'1 Jan 2001, 01:00' datetime.datetime(2001, 1, 1, 1, 0) None
+'1 Jan 2001 01:00,' datetime.datetime(2001, 1, 1, 1, 0) None
+'1 Jan 1_0 01:00:00' datetime.datetime(2010, 1, 1, 1, 0) None
+'1 Jan 0 01:00:00' datetime.datetime(2000, 1, 1, 1, 0) None
+'1 Jan 2001 01:00:00 -0030' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=84600))) -1 day, 23:30:00
+'1 Jan 2001 01:00:00 +2359' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=86340))) 23:59:00
+'1 Jan 2001 01:00:00 +0060' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600))) 1:00:00
+'1 Jan 2001 01:00:00 +05_30' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=19800))) 5:30:00
+'1 Jan 2001 01:00:00 XYZ' datetime.datetime(2001, 1, 1, 1, 0) None
+'01-Jan-2001 01:00 +0100' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600))) 1:00:00
+'Mon 1 Jan 2001 01:00 +0100' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600))) 1:00:00
+'foo,1 Jan 2001 01:00 +0100' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600))) 1:00:00
+'1 Jan 2001 01:00 +0100 extra stuff' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600))) 1:00:00
+'1 Jan 2001 01:00+0100' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600))) 1:00:00
+'1 Jan 2001 01:00-0100' datetime.datetime(2001, 1, 1, 1, 0, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=82800))) -1 day, 23:00:00
+'  Tue,\t29 Feb 2000 23:59:59 +1200  ' datetime.datetime(2000, 2, 29, 23, 59, 59, tzinfo=datetime.timezone(datetime.timedelta(seconds=43200))) 12:00:00
+'' ValueError: Invalid date value or format ""
+'   ' ValueError: Invalid date value or format "   "
+'x' ValueError: Invalid date value or format "x"
+'Fri, 09 Nov 2001' ValueError: Invalid date value or format "Fri, 09 Nov 2001"
+'1 Foo 2001 01:00' ValueError: Invalid date value or format "1 Foo 2001 01:00"
+'1 Jan +5 01:00:00' ValueError: Invalid date value or format "1 Jan +5 01:00:00"
+'1 Jan , 01:00' ValueError: Invalid date value or format "1 Jan , 01:00"
+'1 Jan 2001 1:2:3:4' ValueError: Invalid date value or format "1 Jan 2001 1:2:3:4"
+'1 Jan 2001 1.2.3.4' ValueError: Invalid date value or format "1 Jan 2001 1.2.3.4"
+'1 Jan 2001 1__0:00' ValueError: Invalid date value or format "1 Jan 2001 1__0:00"
+'1 Jan 2001 _10:00' ValueError: Invalid date value or format "1 Jan 2001 _10:00"
+'1 Jan 2001 01:0x' ValueError: Invalid date value or format "1 Jan 2001 01:0x"
+'30 Feb 2001 01:00:00 +0000' ValueError: day is out of range for month
+'29 Feb 1900 01:00:00' ValueError: day is out of range for month
+'1 Jan 2001 25:00:00' ValueError: hour must be in 0..23
+'1 Jan 2001 01:60:00' ValueError: minute must be in 0..59
+'1 Jan 2001 01:00:60' ValueError: second must be in 0..59
+'1 Jan 2001 -01:00' ValueError: hour must be in 0..23
+'1 Jan 2001 01:00:00 +2400' ValueError: offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not datetime.timedelta(days=1).
+'1 Jan 2001 01:00:00 -2400' ValueError: offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not datetime.timedelta(days=-1).
+'1 Jan 2001 01:00:00 +9999' ValueError: offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not datetime.timedelta(days=4, seconds=16740).
+'30 Feb 2001 01:00:00 +9999' ValueError: offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not datetime.timedelta(days=4, seconds=16740).
+'1 Jan 2001 01:00:00 +99999999999' ValueError: offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not datetime.timedelta(days=41666666, seconds=59940).
+'1 Jan 2001 01:00:00 +3000000000000' OverflowError: days=1250000000; must have magnitude <= 999999999
+'1 Jan 2001 01:00:00 -3000000000000' OverflowError: days=-1250000000; must have magnitude <= 999999999
+'1 Jan 2001 01:00:00 +99999999999999999' OverflowError: Python int too large to convert to C int
+'1 Jan 2001 01:00:00 +9999999999999999999999' OverflowError: Python int too large to convert to C int
+'1 Jan 99999 01:00' ValueError: year 99999 is out of range
+'1 Jan 1099511627776 01:00' OverflowError: signed integer is greater than maximum
+'1099511627776 Jan 2001 01:00' OverflowError: signed integer is greater than maximum
+'-1099511627776 Jan 2001 01:00' OverflowError: signed integer is less than minimum
+'1 Jan 2001 01:00:9223372036854775808' OverflowError: Python int too large to convert to C long
+(2001, 11, 9, 1, 8, 47, 0, 1, -1, -18000) (2001, 11, 9, 1, 8, 47, 0, 1, -1)
+(2001, 11, 9, 1, 8, 47, 0, 1, -1, 0) (2001, 11, 9, 1, 8, 47, 0, 1, -1)
+(2001, 11, 9, 1, 8, 0, 0, 1, -1, 0) (2001, 11, 9, 1, 8, 0, 0, 1, -1)
+(2001, 2, 30, 1, 0, 0, 0, 1, -1, 362340) (2001, 2, 30, 1, 0, 0, 0, 1, -1)
+None None
+None None
+2001 -5

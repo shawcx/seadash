@@ -1,0 +1,126 @@
+# email.utils: RFC 2822 dates, as HTTP's Date / Last-Modified / If-Modified-Since use them.
+import email.utils
+from email.utils import formatdate, format_datetime, parsedate_to_datetime, parsedate_tz, parsedate
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+
+# formatdate: UTC ("-0000" means "no zone information"), or GMT for HTTP
+print(formatdate(0))
+print(formatdate(1e9, usegmt=True))
+print(email.utils.formatdate(timeval=1700000000.75))
+print(formatdate(-1.5), "|", formatdate(0.9999999))
+print(formatdate(951782400, False, True))  # 2000-02-29
+print(len(formatdate()), formatdate(usegmt=True).endswith(" GMT"))
+
+# localtime=True depends on the machine's zone: it must read back as the same moment.
+for t in [0, 1700000000, 1720000000]:
+    local = formatdate(t, localtime=True)
+    print(parsedate_to_datetime(local).timestamp() == t, local[-5] in "+-")
+
+# format_datetime
+print(format_datetime(datetime(2024, 2, 29, 13, 5, 7)))
+print(format_datetime(datetime(1, 1, 1)), "|", format_datetime(datetime(9999, 12, 31, 23, 59, 59, 999999)))
+print(format_datetime(datetime(2024, 2, 29, 13, 5, 7, tzinfo=timezone.utc)))
+print(format_datetime(datetime(2024, 2, 29, 13, 5, 7, tzinfo=timezone.utc), usegmt=True))
+print(format_datetime(datetime(2024, 2, 29, 13, 5, 7, tzinfo=timezone(timedelta(0), "Z")), True))
+print(format_datetime(datetime(2024, 7, 1, 9, 0, tzinfo=timezone(timedelta(hours=-7)))))
+print(format_datetime(datetime(2024, 7, 1, 9, 0, tzinfo=timezone(timedelta(hours=5, minutes=30, seconds=15)))))
+print(format_datetime(datetime(2024, 7, 1, 9, 0, tzinfo=ZoneInfo("America/New_York"))))
+print(format_datetime(datetime(2024, 1, 1, 9, 0, tzinfo=ZoneInfo("America/New_York"))))
+for dt in [datetime(2024, 1, 1), datetime(2024, 1, 1, tzinfo=timezone(timedelta(hours=1))),
+           datetime(2024, 1, 1, tzinfo=ZoneInfo("UTC"))]:
+    try:
+        print(format_datetime(dt, usegmt=True))
+    except ValueError as e:
+        print("ValueError:", e)
+
+# Round trips
+when = datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+print(parsedate_to_datetime(format_datetime(when, usegmt=True)) == when)
+print(parsedate_to_datetime(formatdate(1700000000, usegmt=True)) == when)
+
+# parsedate_to_datetime: aware, or naive for -0000 and unknown zones
+dates = [
+    "Fri, 09 Nov 2001 01:08:47 -0000",
+    "Fri, 09 Nov 2001 01:08:47 +0000",
+    "Fri, 09 Nov 2001 01:08:47 GMT",
+    "Fri,09 Nov 2001 01:08:47 +0530",
+    "Thu, 01 Jan 1970 00:00:00 -0800",
+    "9 Nov 01 1:08 EST",
+    "9 Nov 69 1:08 PDT",
+    "1 Jan 68 01:00 cdt",
+    "Sunday, 06-Nov-94 08:49:37 GMT",
+    "Sun Nov  6 08:49:37 1994",
+    "09 Nov 2001 01.08.47 +0100",
+    "1 Jan 2001 1.2",
+    "Nov 09 2001 01:08:47",
+    "1 jan 2001 01:00:00 z",
+    "Jan 1, 2001 01:00:00",
+    "1 January 2001 01:00",
+    "1 SEPTEMBER 2001 01:00 UT",
+    "1 Jan 2001, 01:00",
+    "1 Jan 2001 01:00,",
+    "1 Jan 1_0 01:00:00",
+    "1 Jan 0 01:00:00",
+    "1 Jan 2001 01:00:00 -0030",
+    "1 Jan 2001 01:00:00 +2359",
+    "1 Jan 2001 01:00:00 +0060",
+    "1 Jan 2001 01:00:00 +05_30",
+    "1 Jan 2001 01:00:00 XYZ",
+    "01-Jan-2001 01:00 +0100",
+    "Mon 1 Jan 2001 01:00 +0100",
+    "foo,1 Jan 2001 01:00 +0100",
+    "1 Jan 2001 01:00 +0100 extra stuff",
+    "1 Jan 2001 01:00+0100",
+    "1 Jan 2001 01:00-0100",
+    "  Tue,\t29 Feb 2000 23:59:59 +1200  ",
+    # errors
+    "",
+    "   ",
+    "x",
+    "Fri, 09 Nov 2001",
+    "1 Foo 2001 01:00",
+    "1 Jan +5 01:00:00",
+    "1 Jan , 01:00",
+    "1 Jan 2001 1:2:3:4",
+    "1 Jan 2001 1.2.3.4",
+    "1 Jan 2001 1__0:00",
+    "1 Jan 2001 _10:00",
+    "1 Jan 2001 01:0x",
+    "30 Feb 2001 01:00:00 +0000",
+    "29 Feb 1900 01:00:00",
+    "1 Jan 2001 25:00:00",
+    "1 Jan 2001 01:60:00",
+    "1 Jan 2001 01:00:60",
+    "1 Jan 2001 -01:00",
+    "1 Jan 2001 01:00:00 +2400",
+    "1 Jan 2001 01:00:00 -2400",
+    "1 Jan 2001 01:00:00 +9999",
+    "30 Feb 2001 01:00:00 +9999",
+    "1 Jan 2001 01:00:00 +99999999999",
+    "1 Jan 2001 01:00:00 +3000000000000",
+    "1 Jan 2001 01:00:00 -3000000000000",
+    "1 Jan 2001 01:00:00 +99999999999999999",
+    "1 Jan 2001 01:00:00 +9999999999999999999999",
+    "1 Jan 99999 01:00",
+    "1 Jan 1099511627776 01:00",
+    "1099511627776 Jan 2001 01:00",
+    "-1099511627776 Jan 2001 01:00",
+    "1 Jan 2001 01:00:9223372036854775808",
+]
+for d in dates:
+    try:
+        dt = parsedate_to_datetime(d)
+        print(repr(d), repr(dt), dt.utcoffset())
+    except ValueError as e:
+        print(repr(d), "ValueError:", e)
+    except OverflowError as e:
+        print(repr(d), "OverflowError:", e)
+
+# parsedate_tz / parsedate: time tuples (None when it can't be parsed)
+for d in ["Fri, 09 Nov 2001 01:08:47 -0500", "Fri, 09 Nov 2001 01:08:47 -0000", "9 Nov 01 1:08",
+          "30 Feb 2001 01:00:00 +9999", "nonsense", ""]:
+    print(parsedate_tz(d), parsedate(d))
+tup = parsedate_tz("Fri, 09 Nov 2001 01:08:47 -0500")
+if tup is not None:
+    print(tup[0], tup[9] // 3600)

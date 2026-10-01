@@ -9,8 +9,8 @@ in the README and in the design docs, not here.
    a client-side `ssl` module, and `urllib.request` rebuilt on them.
 2. **`http.server`** (done): `HTTPServer`, `ThreadingHTTPServer`, `BaseHTTPRequestHandler`.
    Not yet: `self.server` in a handler, `socketserver` as a module, HTTPS serving.
-3. **`SimpleHTTPRequestHandler`**, which needs `mimetypes`, `html.escape` and
-   `email.utils.formatdate`.
+3. **`SimpleHTTPRequestHandler`**. Its supporting modules are done: `mimetypes`, `html`,
+   `email.utils` (dates).
 
 Server-side TLS (`SSLContext.load_cert_chain`, `wrap_socket(server_side=True)`) would also
 make HTTPS testable locally; today HTTPS is only checked by hand against public hosts.

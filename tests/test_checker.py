@@ -1741,6 +1741,23 @@ def test_http_client_types_and_errors():
         "urlopen() context must be SSLContext, not int"
     )
 
+def test_email_utils_types_and_errors():
+    info = ok("import email.utils\nfrom email.utils import parsedate_tz, parsedate\nfrom datetime import datetime\n"
+              "a = email.utils.formatdate(5)\nb = email.utils.format_datetime(datetime.now(), usegmt=False)\n"
+              "c = email.utils.parsedate_to_datetime(a)\nd = parsedate_tz(a)\ne = parsedate(a)\n")
+    assert {"a: str", "b: str", "c: datetime", "d: tuple[int, int, int, int, int, int, int, int, int, int]?",
+            "e: tuple[int, int, int, int, int, int, int, int, int]?"} <= set(variables(info))
+    assert err("import email.utils\nemail.utils.formatdate('now')\n").message == (
+        "email.utils.formatdate() argument 'timeval' must be float?, not str"
+    )
+    assert err("from email.utils import format_datetime\nformat_datetime('x')\n").message == (
+        "email.utils.format_datetime() argument 'dt' must be datetime, not str"
+    )
+    assert err("import email.utils\nemail.utils.parsedate_to_datetime(None)\n").message == (
+        "email.utils.parsedate_to_datetime() argument 'data' must be str, not None"
+    )
+    assert err("import email\nemail.utils.mktime_tz(1)\n").message == "module 'email.utils' has no member 'mktime_tz'"
+
 MATCH_HEADER = """
 from dataclasses import dataclass
 
