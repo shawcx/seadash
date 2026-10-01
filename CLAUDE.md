@@ -60,6 +60,7 @@ The name is final (a nod to the author's two kids).
 .venv/bin/python -m pytest -q tests/          # everything (~20s; ~5s once the build cache is warm)
 .venv/bin/sd run file.sd                      # also: build, check, emit (the C++), clean (the cache)
 .venv/bin/python bench/run.py [name]          # benchmarks vs python3, checks identical output
+tools/linux/check.sh [--sanitize]             # on macOS: the same checks on Linux/g++-14 (Docker)
 ```
 
 Requires g++-14 on Linux or Apple clang on macOS, and the zlib, PCRE2 and OpenSSL dev
