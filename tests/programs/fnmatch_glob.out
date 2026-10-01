@@ -1,0 +1,134 @@
+'*' ['a.txt', 'b.py', '.hidden', 'README', 'readme.md', 'x[1].txt', 'data-2.csv', 'ü.txt', 'a\nb', 'a\\b', '!x'] []
+'*.txt' ['a.txt', 'x[1].txt', 'ü.txt'] ['b.py', '.hidden', 'README']
+'?.txt' ['a.txt', 'ü.txt'] ['b.py', '.hidden', 'README']
+'[ab].*' ['a.txt', 'b.py'] ['.hidden', 'README', 'readme.md']
+'[!ab]*' ['.hidden', 'README', 'readme.md', 'x[1].txt', 'data-2.csv', 'ü.txt', '!x'] ['a.txt', 'b.py', 'a\nb']
+'*[0-9]*' ['x[1].txt', 'data-2.csv'] ['a.txt', 'b.py', '.hidden']
+'[a-c]*' ['a.txt', 'b.py', 'a\nb', 'a\\b'] ['.hidden', 'README', 'readme.md']
+'*.[!t]*' ['b.py', '.hidden', 'readme.md', 'data-2.csv'] ['a.txt', 'README', 'x[1].txt']
+'a?b' ['a\nb', 'a\\b'] ['a.txt', 'b.py', '.hidden']
+'a\\b' ['a\\b'] ['a.txt', 'b.py', '.hidden']
+'[!]x' [] ['a.txt', 'b.py', '.hidden']
+'[]' [] ['a.txt', 'b.py', '.hidden']
+'[^a]*' ['a.txt', 'a\nb', 'a\\b'] ['b.py', '.hidden', 'README']
+'x[[]1].txt' ['x[1].txt'] ['a.txt', 'b.py', '.hidden']
+'[z-a]*' [] ['a.txt', 'b.py', '.hidden']
+'[!z-a]*' ['a.txt', 'b.py', '.hidden', 'README', 'readme.md', 'x[1].txt', 'data-2.csv', 'ü.txt', 'a\nb', 'a\\b', '!x'] []
+'README' ['README'] ['a.txt', 'b.py', '.hidden']
+'readme*' ['readme.md'] ['a.txt', 'b.py', '.hidden']
+'???.*' [] ['a.txt', 'b.py', '.hidden']
+'[\\]b' [] ['a.txt', 'b.py', '.hidden']
+'*-*' ['data-2.csv'] ['a.txt', 'b.py', '.hidden']
+'[a-]*' ['a.txt', 'a\nb', 'a\\b'] ['b.py', '.hidden', 'README']
+False True
+True False True
+True True True False
+True True False True
+True True False False
+True True True True
+['x.py'] ['a.txt!', 'x[1].txt!', 'ü.txt!']
+'*.txt' (?s:.*\.txt)
+'a*b*c' (?s:a(?>.*?b).*c)
+'**x' (?s:.*x)
+'?' (?s:.)
+'[abc]' (?s:[abc])
+'[!abc]' (?s:[^abc])
+'[a-z]' (?s:[a-z])
+'[!]' (?s:\[!\])
+'[]]' (?s:[]])
+'[!]]' (?s:[^]])
+'[^a]' (?s:[\^a])
+'[[a]' (?s:[\[a])
+'[a&&b]' (?s:[a\&\&b])
+'[a--b]' (?s:[b])
+'[\\]' (?s:[\\])
+'a\\*' (?s:a\\.*)
+'[c-b-a]' (?s:[\-a])
+'[b-a]' (?s:(?!))
+'[!b-a]' (?s:.)
+'[a-]' (?s:[a\-])
+'[z-a-]' (?s:[\-])
+'*.?x*y**z' (?s:(?>.*?\..x)(?>.*?y).*z)
+'[é-a]' (?s:(?!))
+'[a-é]' (?s:[a-é])
+'ü*' (?s:ü.*)
+'a b#c~d&e' (?s:a\ b\#c\~d\&e)
+'(x)+{1}' (?s:\(x\)\+\{1\})
+'[a|b]' (?s:[a\|b])
+'[!-a]' (?s:[^\-a])
+'[-a]' (?s:[\-a])
+'' (?s:)
+'*' (?s:.*)
+* ['a.txt', 'b.py', 'broken', 'empty', 'linkdir', 'other', 'q?.txt', 'sub', 'we[ird].txt']
+*.txt ['a.txt', 'q?.txt', 'we[ird].txt']
+.* ['.hdir', '.hidden']
+include_hidden * ['.hdir', '.hidden', 'a.txt', 'b.py', 'broken', 'empty', 'linkdir', 'other', 'q?.txt', 'sub', 'we[ird].txt']
+*/ ['empty/', 'linkdir/', 'other/', 'sub/']
+*/* ['linkdir/c.txt', 'linkdir/d.py', 'linkdir/deep', 'other/f.txt', 'sub/c.txt', 'sub/d.py', 'sub/deep']
+*/*.txt ['linkdir/c.txt', 'other/f.txt', 'sub/c.txt']
+sub/* ['sub/c.txt', 'sub/d.py', 'sub/deep']
+sub//* ['sub/c.txt', 'sub/d.py', 'sub/deep']
+sub/ ['sub/']
+a.txt/ []
+a.txt ['a.txt']
+broken ['broken']
+missing []
+nope/* []
+*/deep ['linkdir/deep', 'sub/deep']
+?.* ['a.txt', 'b.py']
+[ab].* ['a.txt', 'b.py']
+q?.txt ['q?.txt']
+escape ['we[ird].txt']
+escape q ['q?.txt']
+unescaped []
+** ['a.txt', 'b.py', 'broken', 'empty', 'linkdir', 'other', 'q?.txt', 'sub', 'we[ird].txt']
+** recursive ['a.txt', 'b.py', 'broken', 'empty', 'linkdir', 'linkdir/c.txt', 'linkdir/d.py', 'linkdir/deep', 'linkdir/deep/e.txt', 'other', 'other/f.txt', 'q?.txt', 'sub', 'sub/c.txt', 'sub/d.py', 'sub/deep', 'sub/deep/e.txt', 'we[ird].txt']
+**/ recursive ['empty/', 'linkdir/', 'linkdir/deep/', 'other/', 'sub/', 'sub/deep/']
+**/*.txt ['linkdir/c.txt', 'other/f.txt', 'sub/c.txt']
+**/*.txt recursive ['a.txt', 'linkdir/c.txt', 'linkdir/deep/e.txt', 'other/f.txt', 'q?.txt', 'sub/c.txt', 'sub/deep/e.txt', 'we[ird].txt']
+sub/** recursive ['sub/', 'sub/c.txt', 'sub/d.py', 'sub/deep', 'sub/deep/e.txt']
+sub/**/ recursive ['sub/', 'sub/deep/']
+sub/**/*.txt recursive ['sub/c.txt', 'sub/deep/e.txt']
+**/**/e.txt recursive ['linkdir/deep/e.txt', 'linkdir/deep/e.txt', 'linkdir/deep/e.txt', 'sub/deep/e.txt', 'sub/deep/e.txt', 'sub/deep/e.txt']
+**/.* recursive ['.hdir', '.hidden', 'linkdir/.secret', 'sub/.secret']
+** hidden ['.hdir', '.hdir/x.txt', '.hidden', 'a.txt', 'b.py', 'broken', 'empty', 'linkdir', 'linkdir/.secret', 'linkdir/c.txt', 'linkdir/d.py', 'linkdir/deep', 'linkdir/deep/e.txt', 'other', 'other/f.txt', 'q?.txt', 'sub', 'sub/.secret', 'sub/c.txt', 'sub/d.py', 'sub/deep', 'sub/deep/e.txt', 'we[ird].txt']
+*/** recursive ['empty/', 'linkdir/', 'linkdir/c.txt', 'linkdir/d.py', 'linkdir/deep', 'linkdir/deep/e.txt', 'other/', 'other/f.txt', 'sub/', 'sub/c.txt', 'sub/d.py', 'sub/deep', 'sub/deep/e.txt']
+a** ['a.txt']
+empty pattern []
+Path root ['d.py']
+None root ['/a.txt']
+absolute ['/sub/c.txt', '/sub/d.py', '/sub/deep']
+absolute ** ['/b.py', '/linkdir/d.py', '/sub/d.py']
+absolute ignores root_dir ['/b.py']
+trailing ['/']
+cwd *.txt ['a.txt', 'q?.txt', 'we[ird].txt']
+cwd ./*.py ['./b.py']
+cwd ../* 1
+cwd ** ['a.txt', 'b.py', 'broken', 'empty', 'linkdir', 'linkdir/c.txt', 'linkdir/d.py', 'linkdir/deep', 'linkdir/deep/e.txt', 'other', 'other/f.txt', 'q?.txt', 'sub', 'sub/c.txt', 'sub/d.py', 'sub/deep', 'sub/deep/e.txt', 'we[ird].txt']
+dir_fd ['a.txt', 'q?.txt', 'we[ird].txt']
+dir_fd sub ['sub/c.txt', 'sub/d.py', 'sub/deep']
+dir_fd root_dir ['c.txt', 'd.py', 'deep']
+iglob ['a.txt', 'linkdir/c.txt', 'linkdir/deep/e.txt', 'other/f.txt', 'q?.txt', 'sub/c.txt', 'sub/deep/e.txt', 'we[ird].txt']
+iglob count 9
+a[*]b[?]c[[]d]e plain /x/[[]y]/[*]
+'*.txt' (?s:(?!\.)[^/]*\.txt)
+   (?s:(?!\.)[^/]*\.txt) (?s:[^/]*\.txt)
+'a/*/b' (?s:a/[^/.][^/]*/b)
+   (?s:a/[^/.][^/]*/b) (?s:a/[^/]+/b)
+'**/*.py' (?s:(?!\.)[^/]*/(?!\.)[^/]*\.py)
+   (?s:(?:[^/.][^/]*/)*(?!\.)[^/]*\.py) (?s:(?:.+/)?[^/]*\.py)
+'a/**' (?s:a/(?!\.)[^/]*)
+   (?s:a/(?:[^/.][^/]*/)*(?:[^/.][^/]*)?) (?s:a/.*)
+'**' (?s:(?!\.)[^/]*)
+   (?s:(?:[^/.][^/]*/)*(?:[^/.][^/]*)?) (?s:.*)
+'a/**/**/b' (?s:a/(?!\.)[^/]*/(?!\.)[^/]*/b)
+   (?s:a/(?:[^/.][^/]*/)*b) (?s:a/(?:.+/)?b)
+'.x/*' (?s:\.x/[^/.][^/]*)
+   (?s:\.x/[^/.][^/]*) (?s:\.x/[^/]+)
+'[ab]/?' (?s:[ab]/(?!\.)[^/])
+   (?s:[ab]/(?!\.)[^/]) (?s:[ab]/[^/])
+'a//b' (?s:a//b)
+   (?s:a//b) (?s:a//b)
+'/abs/*' (?s:/abs/[^/.][^/]*)
+   (?s:/abs/[^/.][^/]*) (?s:/abs/[^/]+)
+(?s:a[/\\]b[/\\]c[^/\\]*) (?s:a\.b[^\.]*)

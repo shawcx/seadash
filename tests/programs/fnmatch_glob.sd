@@ -1,0 +1,125 @@
+# fnmatch and glob. glob returns names in directory order, so results are sorted here.
+import fnmatch
+import glob
+import os
+import tempfile
+from pathlib import Path
+
+# ---- fnmatch ----
+
+names = ["a.txt", "b.py", ".hidden", "README", "readme.md", "x[1].txt", "data-2.csv", "ü.txt", "a\nb", "a\\b", "!x"]
+for pat in ["*", "*.txt", "?.txt", "[ab].*", "[!ab]*", "*[0-9]*", "[a-c]*", "*.[!t]*", "a?b", "a\\b", "[!]x", "[]",
+            "[^a]*", "x[[]1].txt", "[z-a]*", "[!z-a]*", "README", "readme*", "???.*", "[\\]b", "*-*", "[a-]*"]:
+    print(repr(pat), fnmatch.filter(names, pat), fnmatch.filterfalse(names, pat)[:3])
+
+print(fnmatch.fnmatch("README", "readme"), fnmatch.fnmatchcase("README", "README"))
+print(fnmatch.fnmatch("foo.c", "*.[ch]"), fnmatch.fnmatch("foo.o", "*.[ch]"), fnmatch.fnmatch(".x", "*"))
+print(fnmatch.fnmatch("ü", "?"), fnmatch.fnmatch("üb", "?b"), fnmatch.fnmatch("é", "[a-ü]"), fnmatch.fnmatch("a", "[ü-a]"))
+print(fnmatch.fnmatch("[", "["), fnmatch.fnmatch("[a", "[a"), fnmatch.fnmatch(":", "[[:alpha:]]"), fnmatch.fnmatch("l]", "[[:alpha:]]"))
+print(fnmatch.fnmatch("a&b", "a[&]b"), fnmatch.fnmatch("~", "[~~]"), fnmatch.fnmatch("-", "[a--]"), fnmatch.fnmatch("ab", "a[]b"))
+print(fnmatch.fnmatch(":", "[::]"), fnmatch.fnmatch("a", "[.a.]"), fnmatch.fnmatch("b", "[!=a=]"), fnmatch.fnmatch("x", "[^:x:]"))
+print(fnmatch.filter(("x.py", "y.txt"), "*.py"), fnmatch.filter((n + "!" for n in names), "*.txt!"))
+
+def unanchored(regex: str) -> str:
+    # translate() ends its regex in \z from Python 3.14 on, \Z before: leave it out
+    return regex.removesuffix("\\z").removesuffix("\\Z")
+
+
+for pat in ["*.txt", "a*b*c", "**x", "?", "[abc]", "[!abc]", "[a-z]", "[!]", "[]]", "[!]]", "[^a]", "[[a]", "[a&&b]",
+            "[a--b]", "[\\]", "a\\*", "[c-b-a]", "[b-a]", "[!b-a]", "[a-]", "[z-a-]", "*.?x*y**z", "[é-a]", "[a-é]",
+            "ü*", "a b#c~d&e", "(x)+{1}", "[a|b]", "[!-a]", "[-a]", "", "*"]:
+    print(repr(pat), unanchored(fnmatch.translate(pat)))
+
+# ---- glob ----
+
+def show(label: str, paths: list[str]) -> None:
+    print(label, sorted(paths))
+
+with tempfile.TemporaryDirectory() as tmp:
+    for name in ["a.txt", "b.py", ".hidden", "we[ird].txt", "q?.txt", "sub/c.txt", "sub/d.py", "sub/deep/e.txt",
+                 "sub/.secret", ".hdir/x.txt", "other/f.txt"]:
+        os.makedirs(os.path.dirname(os.path.join(tmp, name)), exist_ok=True)
+        with open(os.path.join(tmp, name), "w") as f:
+            f.write(name)
+    os.makedirs(os.path.join(tmp, "empty"))
+    os.symlink("sub", os.path.join(tmp, "linkdir"))
+    os.symlink("missing", os.path.join(tmp, "broken"))
+
+    show("*", glob.glob("*", root_dir=tmp))
+    show("*.txt", glob.glob("*.txt", root_dir=tmp))
+    show(".*", glob.glob(".*", root_dir=tmp))
+    show("include_hidden *", glob.glob("*", root_dir=tmp, include_hidden=True))
+    show("*/", glob.glob("*/", root_dir=tmp))
+    show("*/*", glob.glob("*/*", root_dir=tmp))
+    show("*/*.txt", glob.glob("*/*.txt", root_dir=tmp))
+    show("sub/*", glob.glob("sub/*", root_dir=tmp))
+    show("sub//*", glob.glob("sub//*", root_dir=tmp))
+    show("sub/", glob.glob("sub/", root_dir=tmp))
+    show("a.txt/", glob.glob("a.txt/", root_dir=tmp))
+    show("a.txt", glob.glob("a.txt", root_dir=tmp))
+    show("broken", glob.glob("broken", root_dir=tmp))
+    show("missing", glob.glob("missing", root_dir=tmp))
+    show("nope/*", glob.glob("nope/*", root_dir=tmp))
+    show("*/deep", glob.glob("*/deep", root_dir=tmp))
+    show("?.*", glob.glob("?.*", root_dir=tmp))
+    show("[ab].*", glob.glob("[ab].*", root_dir=tmp))
+    show("q?.txt", glob.glob("q?.txt", root_dir=tmp))
+    show("escape", glob.glob(glob.escape("we[ird].txt"), root_dir=tmp))
+    show("escape q", glob.glob(glob.escape("q?.txt"), root_dir=tmp))
+    show("unescaped", glob.glob("we[ird].txt", root_dir=tmp))
+    show("**", glob.glob("**", root_dir=tmp))
+    show("** recursive", glob.glob("**", root_dir=tmp, recursive=True))
+    show("**/ recursive", glob.glob("**/", root_dir=tmp, recursive=True))
+    show("**/*.txt", glob.glob("**/*.txt", root_dir=tmp))
+    show("**/*.txt recursive", glob.glob("**/*.txt", root_dir=tmp, recursive=True))
+    show("sub/** recursive", glob.glob("sub/**", root_dir=tmp, recursive=True))
+    show("sub/**/ recursive", glob.glob("sub/**/", root_dir=tmp, recursive=True))
+    show("sub/**/*.txt recursive", glob.glob("sub/**/*.txt", root_dir=tmp, recursive=True))
+    show("**/**/e.txt recursive", glob.glob("**/**/e.txt", root_dir=tmp, recursive=True))
+    show("**/.* recursive", glob.glob("**/.*", root_dir=tmp, recursive=True))
+    show("** hidden", glob.glob("**", root_dir=tmp, recursive=True, include_hidden=True))
+    show("*/** recursive", glob.glob("*/**", root_dir=tmp, recursive=True))
+    show("a**", glob.glob("a**", root_dir=tmp, recursive=True))
+    show("empty pattern", glob.glob("", root_dir=tmp))
+    show("Path root", glob.glob("*.py", root_dir=Path(tmp) / "sub"))
+    # absolute patterns (shown relative to tmp: /tmp is a symlink on some systems)
+    n = len(tmp)
+    root: str | None = None
+    show("None root", [p[n:] for p in glob.glob(os.path.join(tmp, "a.*"), root_dir=root)])
+    show("absolute", [p[n:] for p in glob.glob(os.path.join(tmp, "sub", "*"))])
+    show("absolute **", [p[n:] for p in glob.glob(tmp + "/**/*.py", recursive=True)])
+    show("absolute ignores root_dir", [p[n:] for p in glob.glob(os.path.join(tmp, "*.py"), root_dir="/nowhere")])
+    show("trailing", [p[n:] for p in glob.glob(tmp + "/")])
+
+    # relative to the current directory
+    here = os.getcwd()
+    os.chdir(tmp)
+    show("cwd *.txt", glob.glob("*.txt"))
+    show("cwd ./*.py", glob.glob("./*.py"))
+    print("cwd ../*", len([p for p in glob.glob("../*") if p == "../" + os.path.basename(tmp)]))
+    show("cwd **", glob.glob("**", recursive=True))
+    os.chdir(here)
+
+    # dir_fd
+    fd = os.open(tmp, os.O_RDONLY)
+    show("dir_fd", glob.glob("*.txt", dir_fd=fd))
+    show("dir_fd sub", glob.glob("sub/*", dir_fd=fd))
+    show("dir_fd root_dir", glob.glob("*", root_dir="sub", dir_fd=fd))
+    os.close(fd)
+
+    # iglob is lazy
+    it = glob.iglob("**/*.txt", root_dir=tmp, recursive=True)
+    first = next(it)
+    rest = list(it)
+    show("iglob", [first] + rest)
+    count = 0
+    for p in glob.iglob("*", root_dir=tmp):
+        count += 1
+    print("iglob count", count)
+
+print(glob.escape("a*b?c[d]e"), glob.escape("plain"), glob.escape("/x/[y]/*"))
+for pat in ["*.txt", "a/*/b", "**/*.py", "a/**", "**", "a/**/**/b", ".x/*", "[ab]/?", "a//b", "/abs/*"]:
+    print(repr(pat), unanchored(glob.translate(pat)))
+    print("  ", unanchored(glob.translate(pat, recursive=True)),
+          unanchored(glob.translate(pat, recursive=True, include_hidden=True)))
+print(unanchored(glob.translate("a/b\\c*", seps="/\\")), unanchored(glob.translate("a.b*", seps=".")))

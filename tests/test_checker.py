@@ -2205,6 +2205,26 @@ def test_partial_errors(src, msg):
     assert err("from typing import Callable\n" + PARTIAL + src).message == msg
 
 
+def test_fnmatch_glob_types():
+    info = ok("import fnmatch\nimport glob\nfrom pathlib import Path\n"
+              "a = fnmatch.filter({'x'}, '*')\nb = glob.glob('*', root_dir=Path('.'), recursive=True)\n"
+              "c = glob.iglob('**', include_hidden=True)\nd = fnmatch.translate('*')\ne = glob.translate('*', seps='/')\n")
+    assert {"a: list[str]", "b: list[str]", "c: Iterator[str]", "d: str", "e: str"} <= set(variables(info))
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("glob.glob('*', '.')\n", "glob.glob() takes 1 positional argument but 2 were given"),
+    ("glob.glob('*', root_dir=3)\n", "glob.glob() argument 'root_dir' must be a str, Path or None, not int"),
+    ("glob.iglob('*', recursive=1)\n", "glob.iglob() argument 'recursive' must be bool, not int"),
+    ("glob.glob('*', hidden=True)\n", "glob.glob() got an unexpected keyword argument 'hidden'"),
+    ("fnmatch.filter([1, 2], '*')\n", "fnmatch.filter() names must be strings, not int"),
+    ("fnmatch.filter(3, '*')\n", "fnmatch.filter() argument 'names' must be something you can loop over, not int"),
+    ("fnmatch.fnmatch('a', b'*')\n", "fnmatch.fnmatch() argument 'pat' must be str, not bytes"),
+])
+def test_fnmatch_glob_errors(src, msg):
+    assert err("import fnmatch\nimport glob\n" + src).message == msg
+
+
 def test_partial_types():
     info = ok("from typing import Callable\n" + PARTIAL + "p = partial(f, 1)\nq = partial(f, b=2, c=4)\nr = partial(f, 1, 2, 3)\n"
               "s: Callable[[int, int], int] = partial(f, 1)\n")
