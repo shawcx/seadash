@@ -42,7 +42,7 @@ from .types import (
 MUTATING_METHODS = frozenset(
     "append insert pop remove extend sort reverse clear update setdefault add discard "
     "appendleft popleft extendleft rotate subtract popitem intersection_update difference_update "
-    "symmetric_difference_update".split()
+    "symmetric_difference_update __delitem__ __delslice__".split()
 )
 
 # Built-in functions that only read their arguments (or copy them): passing a list to

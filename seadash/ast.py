@@ -365,6 +365,15 @@ class Nonlocal(Stmt):
 
 
 @dataclass
+class Delete(Stmt):
+    """`del a, xs[i], d[k], xs[1:3]`. The checker turns items and slices into calls to
+    `__delitem__` (`lowered`), so they read as changes to the container everywhere."""
+
+    targets: list[Expr]
+    lowered: list[Stmt] = field(default_factory=list)
+
+
+@dataclass
 class Global(Stmt):
     """`global a`: assignments in this function go to the module-level variable."""
 

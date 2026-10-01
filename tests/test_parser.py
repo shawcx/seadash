@@ -423,7 +423,7 @@ def test_locations_are_recorded():
     ("def f(a=1, b): pass\n", "parameter without a default follows parameter with a default", Loc(1, 12)),
     ("def f(a, a): pass\n", "duplicate parameter 'a'", Loc(1, 10)),
     ("else:\n    pass\n", "'else' without a matching 'if'", Loc(1, 1)),
-    ("del x\n", "'del' is not supported yet", Loc(1, 1)),
+    ("del f()\n", "'del' takes names, items and slices: del x, xs[i], d[k], xs[1:3]", Loc(1, 5)),
     ("with f() x:\n    pass\n", "expected ':' after 'with', found name 'x'", Loc(1, 10)),
     ("try:\n    pass\nx = 1\n", "expected 'except' or 'finally' after the 'try' block, found name 'x'", Loc(3, 1)),
     ("try:\n    pass\nexcept:\n    pass\nexcept E:\n    pass\n", "a bare 'except:' must be the last except clause", Loc(3, 1)),

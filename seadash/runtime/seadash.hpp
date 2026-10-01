@@ -1882,9 +1882,15 @@ list<T> slice(const list<T>& s, opt_int lo, opt_int hi, opt_int step_) {
     return list<T>(slice(s.vec(), lo, hi, step_));  // (on the vector: no handle per item)
 }
 
-template <class Seq>
-Seq slice(const Seq& s, opt_int lo, opt_int hi, opt_int step_) {
-    std::int64_t n = static_cast<std::int64_t>(s.size());
+// Where s[lo:hi:step] starts and stops in a sequence of n items, as Python's slice.indices().
+struct SliceBounds {
+    std::int64_t start, stop, step;
+    std::int64_t count() const {  // how many items it covers
+        if (step > 0) return start < stop ? (stop - start + step - 1) / step : 0;
+        return start > stop ? (start - stop - step - 1) / -step : 0;
+    }
+};
+inline SliceBounds slice_bounds(std::int64_t n, opt_int lo, opt_int hi, opt_int step_) {
     std::int64_t step = step_.value_or(1);
     if (step == 0) raise("ValueError", "slice step cannot be zero");
     auto adjust = [&](opt_int v, std::int64_t dflt) {
@@ -1898,10 +1904,14 @@ Seq slice(const Seq& s, opt_int lo, opt_int hi, opt_int step_) {
         }
         return i;
     };
-    std::int64_t start = adjust(lo, step < 0 ? n - 1 : 0);
-    std::int64_t stop = adjust(hi, step < 0 ? -1 : n);
+    return {adjust(lo, step < 0 ? n - 1 : 0), adjust(hi, step < 0 ? -1 : n), step};
+}
+
+template <class Seq>
+Seq slice(const Seq& s, opt_int lo, opt_int hi, opt_int step_) {
+    auto b = slice_bounds(static_cast<std::int64_t>(s.size()), lo, hi, step_);
     Seq out;
-    for (std::int64_t i = start; step > 0 ? i < stop : i > stop; i += step) out.push_back(s[static_cast<std::size_t>(i)]);
+    for (std::int64_t i = b.start; b.step > 0 ? i < b.stop : i > b.stop; i += b.step) out.push_back(s[static_cast<std::size_t>(i)]);
     return out;
 }
 
@@ -4088,6 +4098,40 @@ T list_pop(const list<T>& v, std::int64_t i = -1) {
     v.erase(v.begin() + i);
     return out;
 }
+// del xs[i], del xs[lo:hi:step], del d[k]
+template <class T>
+void del_item(const list<T>& v, std::int64_t i) {
+    std::int64_t n = static_cast<std::int64_t>(v.size());
+    if (i < 0) i += n;
+    if (i < 0 || i >= n) raise("IndexError", "list assignment index out of range");
+    v.erase(v.begin() + i);
+}
+template <class T>
+void del_slice(const list<T>& v, opt_int lo, opt_int hi, opt_int step) {
+    auto b = slice_bounds(static_cast<std::int64_t>(v.size()), lo, hi, step);
+    if (b.step == 1) {
+        if (b.start < b.stop) v.erase(v.begin() + b.start, v.begin() + b.stop);
+        return;
+    }
+    if (b.step < 0) {  // the same items, walked forwards
+        if (b.count() == 0) return;
+        b = {b.start + (b.count() - 1) * b.step, b.start + 1, -b.step};
+    }
+    auto& vec = v.vec();
+    std::size_t out = static_cast<std::size_t>(b.start), next = out;
+    for (std::size_t i = out; i < vec.size(); ++i) {
+        bool dropped = static_cast<std::int64_t>(i) < b.stop && i == next;
+        if (dropped) next += static_cast<std::size_t>(b.step);
+        else vec[out++] = std::move(vec[i]);
+    }
+    vec.resize(out);
+}
+template <class K, class V>
+void del_item(dict<K, V>& d, const std::type_identity_t<K>& k) {
+    d.at(k);  // (KeyError if it's missing)
+    d.erase(k);
+}
+
 template <class T, class X>
 void list_insert(const list<T>& v, std::int64_t i, X&& x) {
     std::int64_t n = static_cast<std::int64_t>(v.size());

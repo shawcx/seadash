@@ -1,0 +1,97 @@
+# del: names, list and deque items, slices (with steps), dict, Counter and defaultdict keys, and
+# a class's own __delitem__.
+from collections import Counter, defaultdict, deque
+from dataclasses import dataclass, field
+from typing import Callable
+
+
+def attempt(what: str, f: Callable[[], None]) -> None:
+    try:
+        f()
+        print(what, "ok")
+    except (IndexError, KeyError, ValueError) as e:
+        print(what, repr(e))
+
+
+xs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+del xs[0]
+del xs[-1]
+print(xs)
+del xs[1:3]
+print(xs)
+del xs[::2]
+print(xs)
+ys = list(range(10))
+del ys[::-3]
+print(ys)
+zs = list(range(10))
+del zs[8:2:-2], zs[0]
+print(zs)
+ws = [1, 2, 3]
+del ws[5:], ws[:0]
+print(ws)
+attempt("del ws[9]", lambda: ws.__delitem__(9))
+
+d = {"a": 1, "b": 2, "c": 3}
+del d["a"]
+print(d)
+attempt("del d['zz']", lambda: d.__delitem__("zz"))
+
+c = Counter("hello")
+del c["l"]
+del c["missing"]  # (a Counter doesn't mind)
+print(c)
+dd: defaultdict[str, list[int]] = defaultdict(list)
+dd["x"].append(1)
+del dd["x"]
+print(dict(dd))
+q = deque([1, 2, 3, 4])
+del q[0], q[-1]
+print(q)
+
+
+@dataclass
+class Bag:
+    items: list[int] = field(default_factory=list)
+    names: dict[str, int] = field(default_factory=dict)
+
+    def drop_first(self) -> None:
+        del self.items[0]
+
+
+b = Bag([5, 6, 7], {"k": 1})
+b.drop_first()
+del b.names["k"]
+print(b)
+
+
+@dataclass
+class Sparse:
+    data: dict[int, str]
+
+    def __delitem__(self, i: int) -> None:
+        print("deleting", i)
+        del self.data[i]
+
+
+s = Sparse({1: "one", 2: "two"})
+del s[1]
+print(s.data)
+
+
+def scratch() -> int:
+    big = list(range(1000))
+    total = sum(big)
+    del big
+    big = [total]
+    return big[0]
+
+
+print(scratch())
+name = "temp"
+del name
+name = "again"
+print(name)
+grid = [[1, 2], [3, 4]]
+del grid[0][1]
+print(grid)

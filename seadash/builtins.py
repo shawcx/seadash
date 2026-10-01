@@ -1033,6 +1033,9 @@ LIST_METHODS = {
     "copy": returns(same),
     "extend": list_extend,
     "sort": list_sort,
+    # (`del xs[i]` and `del xs[a:b:c]`, as the checker writes them)
+    "__delitem__": returns(NONE, args=(INT,)),
+    "__delslice__": returns(NONE, args=(OptionalType(INT), OptionalType(INT), OptionalType(INT))),
 }
 
 def dict_update(ctx: CallContext) -> Type:
@@ -1082,6 +1085,7 @@ TYPE_FUNCTIONS[("dict", "fromkeys")] = dict_fromkeys
 DICT_METHODS = {
     "get": dict_get,
     "pop": dict_pop,
+    "__delitem__": returns(NONE, args=(key_of,)),  # (`del d[k]`)
     "popitem": returns(lambda d: TupleType((d.key, d.value))),
     "setdefault": returns(value_of, args=(key_of, value_of)),
     "update": dict_update,
@@ -1127,6 +1131,7 @@ def deque_extend(ctx: CallContext) -> Type:
 DEQUE_METHODS = {
     "append": returns(NONE, args=(elem_of,)),
     "appendleft": returns(NONE, args=(elem_of,)),
+    "__delitem__": returns(NONE, args=(INT,)),  # (`del q[i]`)
     "pop": returns(elem_of),
     "popleft": returns(elem_of),
     "extend": deque_extend,

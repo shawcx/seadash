@@ -48,7 +48,7 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - Built-in types: printing a `range` or a dict view (`print(d.keys())`), keeping a `range` in a
   variable or indexing it, `float.as_integer_ratio` (the ratio often needs more than 64 bits),
   `int.real`/`imag`/`numerator`/`denominator`/`conjugate`, `tuple * n`, `f.encoding`, `%` formatting.
-- Statements: `del`, assigning to a slice (`xs[1:3] = ...`), unpacking with a star (`a, *rest = xs`,
+- Statements: assigning to a slice (`xs[1:3] = ...`), unpacking with a star (`a, *rest = xs`,
   `f(*args)`, `[*xs, *ys]`, `{**d}`).
 - Arithmetic on bools (`(a > b) - (a < b)`, `True + 1`, `sum([True, False])`).
 - Decorators on nested functions (other than `@functools.wraps`).

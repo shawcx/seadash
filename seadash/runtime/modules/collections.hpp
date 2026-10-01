@@ -221,6 +221,7 @@ public:
     std::optional<std::int64_t> maxlen() const { return st().maxlen; }
 
     T& at(std::int64_t i) const { return st().d[norm_index(i, st().d.size(), "deque")]; }
+    void erase_at(std::int64_t i) const { st().d.erase(st().d.begin() + norm_index(i, st().d.size(), "deque")); }
     auto begin() const { return st().d.begin(); }
     auto end() const { return st().d.end(); }
     const void* identity() const { return &st(); }
@@ -289,6 +290,16 @@ T& index(const deque<T>& d, std::int64_t i) {
 template <class T, class X>
 bool contains(const deque<T>& d, const X& x) {
     return std::find(d.begin(), d.end(), x) != d.end();
+}
+
+// del q[i]; del c[k] (a Counter ignores a missing key)
+template <class T>
+void del_item(const deque<T>& d, std::int64_t i) {
+    d.erase_at(i);
+}
+template <class K>
+void del_item(Counter<K>& c, const std::type_identity_t<K>& k) {
+    c.erase(k);
 }
 
 }  // namespace sd

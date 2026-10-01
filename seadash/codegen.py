@@ -1003,6 +1003,13 @@ class CodeGen:
                 self.assign(target, self.expr(value), value.ty)
             case A.AugAssign(target, op, value):
                 self.aug_assign(s, target, op, value)
+            case A.Delete(names, lowered):
+                for item in lowered:  # del xs[i] -> xs.__delitem__(i)
+                    self.stmt(item)
+                for name in names:  # del x: what it held is let go now, as in Python
+                    if isinstance(name.ty, (ListType, DictType, SetType, DequeType, OptionalType)) or (
+                            isinstance(name.ty, StructType) and name.ty.kind == "class") or name.ty in (STR, BYTES):
+                        self.line(f"{self.var_ref(name.sym)} = {{}};")
             case A.Pass():
                 pass
             case A.Break():
@@ -3039,6 +3046,11 @@ class CodeGen:
         r = self.expr(e.func.value)
         args = [self.expr(a) for a in e.args]
         rest = "".join(", " + a for a in args)
+        if name == "__delslice__":  # del xs[a:b:c]
+            parts = ", ".join(self.expr_as(a, OptionalType(INT)) for a in e.args)
+            return f"sd::del_slice({r}, {parts})"
+        if name == "__delitem__" and not isinstance(recv_type, StructType):  # del xs[i], del d[k]
+            return f"sd::del_item({r}{rest})"
         if recv_type == STR and name == "format":
             return self.str_format(e)
         if recv_type == STR and name == "format_map":

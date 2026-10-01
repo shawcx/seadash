@@ -35,9 +35,6 @@ COMPARISON_OPS = {"<", ">", "==", "!=", "<=", ">="}
 
 AUGMENTED_OPS = {"+=", "-=", "*=", "/=", "//=", "%=", "**=", "@=", "&=", "|=", "^=", "<<=", ">>="}
 
-# Python keywords we recognise but don't implement yet, so users get an honest error.
-NOT_YET_SUPPORTED = {"del"}
-
 
 def parse(source: str) -> A.Module:
     return Parser(tokenize(source)).parse_module()
@@ -123,8 +120,6 @@ class Parser:
                     raise self.error(f"'{tok.value}' without a matching 'if'")
                 case "except" | "finally":
                     raise self.error(f"'{tok.value}' without a matching 'try'")
-                case kw if kw in NOT_YET_SUPPORTED:
-                    raise self.error(f"'{kw}' is not supported yet")
         if self.at("@"):
             return [self.parse_decorated()]
         if tok.kind == K.NAME and tok.value == "match" and (stmt := self.try_parse_match()) is not None:
@@ -174,6 +169,16 @@ class Parser:
                     exc = self.parse_expr()
                     cause = self.parse_expr() if self.accept("from") else None
                     return A.Raise(exc, cause, loc=loc)
+                case "del":
+                    self.next()
+                    def flatten(t: A.Expr) -> list[A.Expr]:  # del a, (b, c), [d]
+                        if isinstance(t, (A.TupleLit, A.ListLit)):
+                            return [x for elt in t.elts for x in flatten(elt)]
+                        if not isinstance(t, (A.Name, A.Index, A.Attribute)):
+                            raise self.error("'del' takes names, items and slices: del x, xs[i], d[k], xs[1:3]", t.loc)
+                        return [t]
+
+                    return A.Delete(flatten(self.parse_expr_list()), loc=loc)
                 case "nonlocal" | "global":
                     self.next()
                     names = [self.expect_name(f"a name after '{tok.value}'").value]
@@ -189,8 +194,6 @@ class Parser:
                     return self.parse_import()
                 case "from":
                     return self.parse_from_import()
-                case kw if kw in NOT_YET_SUPPORTED:
-                    raise self.error(f"'{kw}' is not supported yet")
 
         first = self.parse_expr_list()
 
@@ -933,8 +936,6 @@ class Parser:
             case K.KEYWORD if tok.value == "None":
                 self.next()
                 return A.NoneLit(loc=loc)
-            case K.KEYWORD if tok.value in NOT_YET_SUPPORTED:
-                raise self.error(f"'{tok.value}' is not supported yet")
             case K.OP if tok.value == "(":
                 return self.parse_paren()
             case K.OP if tok.value == "[":

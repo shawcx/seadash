@@ -2514,3 +2514,29 @@ def test_enum_auto_values():
     assert [m.value for m in a.enum.members.values()] == [1, 10, 11]
     assert [m.value for m in f.enum.members.values()] == [3, 4]
     assert [m.value for m in s.enum.members.values()] == ["hello"]
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("x = 1\ndel x\nprint(x)\n", "'x' was deleted (line 2): give it a new value before using it again"),
+    ("x = 1\nif len('a') > 0:\n    del x\nprint(x)\n",
+     "'x' might have been deleted (line 3): give it a new value before using it again"),
+    ("del nope\n", "name 'nope' is not defined"),
+    ("class P:\n    a: int\np = P(1)\ndel p.a\n", "can't delete attribute 'a': an object's fields are fixed by its class"),
+    ("s = 'abc'\ndel s[0]\n", "str doesn't support item deletion"),
+    ("t = (1, 2)\ndel t[0]\n", "tuple[int, int] doesn't support item deletion"),
+    ("d = {1: 2}\ndel d[1:2]\n", "'del' of a slice needs a list, not dict[int, int]"),
+    ("d = {'a': 1}\ndel d[1]\n", "dict key must be str, not int"),
+    ("xs = [1]\ndel xs['a']\n", "list index must be int, not str"),
+    ("x = 1\ndef f():\n    global x\n    del x\n",
+     "'del' of a global or nonlocal variable isn't supported; give 'x' a new value instead"),
+    ("def f():\n    x = 1\n    g = lambda: x\n    del x\n    return g\n",
+     "'x' is used by a nested function or lambda, so it can't be deleted"),
+    ("x = 1\ndel x\ndef f() -> int:\n    return x\n", "functions can't use the module-level 'x': it's deleted (line 2)"),
+    ("class C:\n    n: int\nc = C(1)\ndel c[0]\n", "C doesn't support item deletion: give it a __delitem__ method"),
+])
+def test_del_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_del_then_rebind():
+    assert variables(ok("xs = [1, 2]\ndel xs\nxs = 'now a str'\nprint(xs)\n")) == ["xs: list[int]", "xs_1: str"]

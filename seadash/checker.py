@@ -81,6 +81,15 @@ class Moved(MaybeUnbound):
     var: Var  # (so `data = []` afterwards still knows it's a list[int])
 
 
+@dataclass(frozen=True)
+class Deleted(MaybeUnbound):
+    """After `del x`: reading x is an error until it's given a new value."""
+
+    loc: Loc
+    var: Var  # (so `x = []` afterwards can reuse it)
+    maybe: bool = False  # deleted on some paths to here, not all
+
+
 Entry = Bound | Conflict | MaybeUnbound
 
 
@@ -119,6 +128,8 @@ def merge(states: list[State]) -> State:
 def merge_entries(entries: list[Entry | None]) -> Entry:
     if moved := next((e for e in entries if isinstance(e, Moved)), None):
         return moved  # (moved on some path: say so, rather than "might not be assigned")
+    if deleted := next((e for e in entries if isinstance(e, Deleted)), None):
+        return Deleted(deleted.loc, deleted.var, maybe=not all(isinstance(e, Deleted) for e in entries))
     if any(e is None or isinstance(e, MaybeUnbound) for e in entries):
         return MaybeUnbound()
     first = entries[0]
@@ -255,6 +266,7 @@ class Checker:
         self.needed_modules: list[builtins.Module] = []  # used without an import: Path.glob needs fnmatch
         self.globals: dict[str, Var] = {}
         self.module_assign_counts: dict[str, int] = {}
+        self.module_deleted: dict[str, Loc] = {}  # `del x` at module level: functions can't use x
         self.scope: FunctionScope | None = None
         self.state = State()
         self.loops: list[LoopContext] = []
@@ -344,6 +356,9 @@ class Checker:
         # types before function bodies that read them are checked.
         for name, count in count_assignments(top_level).items():
             self.module_assign_counts[name] = count
+        for stmt in walk(top_level):
+            if isinstance(stmt, A.Delete):
+                self.module_deleted.update((t.id, t.loc) for t in stmt.targets if isinstance(t, A.Name))
         main_scope = FunctionScope(None, None, assigned_names(top_level), [])
         self.enter(main_scope, State())
         self.check_block(top_level)
@@ -1376,12 +1391,61 @@ class Checker:
                     raise self.error("'nonlocal' is only allowed in nested functions", stmt)
             case A.Global():
                 pass  # handled when the function body starts
+            case A.Delete():
+                self.check_delete(stmt)
             case A.ClassDef():
                 raise self.error("a class can only be defined at the top level of a module", stmt)
             case A.Import() | A.ImportFrom():
                 raise self.error("imports must be at the top level of a module", stmt)
             case _:
                 raise self.error(f"unsupported statement {type(stmt).__name__}", stmt)
+
+    def check_delete(self, stmt: A.Delete) -> None:
+        """`del x` unbinds x; `del xs[i]`, `del d[k]` and `del xs[a:b]` become calls to the
+        container's __delitem__ (or __delslice__ for a list), checked like any call."""
+        names: list[A.Name] = []
+        for target in stmt.targets:
+            match target:
+                case A.Name(name):
+                    if name not in self.state.names and name not in self.globals:
+                        raise self.error(f"name '{name}' is not defined", target)
+                    self.check_expr(target)  # (it must be bound now)
+                    var = target.sym
+                    if name in self.scope.global_names or name in self.scope.nonlocals or (
+                            isinstance(var, Var) and var.kind == "global" and not self.scope.is_module):
+                        raise self.error(f"'del' of a global or nonlocal variable isn't supported; "
+                                         f"give '{name}' a new value instead", target)
+                    if not isinstance(var, Var) or var.kind not in ("local", "param", "global"):
+                        raise self.error(f"'{name}' can't be deleted", target)
+                    if var.captured:
+                        raise self.error(f"'{name}' is used by a nested function or lambda, so it can't be deleted", target)
+                    names.append(target)
+                case A.Attribute(_, attr):
+                    raise self.error(f"can't delete attribute '{attr}': an object's fields are fixed by its class", target)
+                case A.Index(container, index):
+                    ct = self.check_expr(container)
+                    if isinstance(ct, StructType) and self.dunder(ct, "__delitem__") is None:
+                        raise self.error(f"{ct.name} doesn't support item deletion: give it a __delitem__ method", target)
+                    if isinstance(index, A.Slice):
+                        if not isinstance(ct, ListType):
+                            raise self.error(f"'del' of a slice needs a list, not {ct}", target)
+                        parts = [p if p is not None else A.NoneLit(loc=index.loc) for p in (index.lower, index.upper, index.step)]
+                        call = A.Call(A.Attribute(container, "__delslice__", loc=target.loc), parts, loc=target.loc)
+                    else:
+                        if not isinstance(ct, (StructType, ListType, DictType, DequeType, CounterType, DefaultDictType)):
+                            raise self.error(f"{ct} doesn't support item deletion", target)
+                        if isinstance(ct, (ListType, DequeType)):
+                            self.expect_type(index, INT, f"{'list' if isinstance(ct, ListType) else 'deque'} index")
+                        elif isinstance(ct, DictType):
+                            self.expect_type(index, ct.key, "dict key")
+                        call = A.Call(A.Attribute(container, "__delitem__", loc=target.loc), [index], loc=target.loc)
+                    stmt.lowered.append(A.ExprStmt(call, loc=target.loc))
+        stmt.targets = names  # (the items are in `lowered` now)
+        for lowered in stmt.lowered:
+            self.check_stmt(lowered)
+        for target in names:
+            self.state.names[target.id] = Deleted(target.loc, target.sym)
+            self.state.forget_attrs((target.id,))
 
     def expected_for_target(self, target: A.Expr) -> Type | None:
         """The type a target currently holds, as a hint for `xs = []` style values."""
@@ -2487,6 +2551,9 @@ class Checker:
                 f"'{name}' has different types depending on the path taken to get here: {described}. "
                 f"Use one type on every path, or give it a new name", e,
             )
+        if isinstance(entry, Deleted):
+            how = "might have been deleted" if entry.maybe else "was deleted"
+            raise self.error(f"'{name}' {how} (line {entry.loc.line}): give it a new value before using it again", e)
         if isinstance(entry, Moved):
             how = f"`with {entry.mutex} as {name}:`" if entry.mutex else "a `with` block"
             raise self.error(
@@ -2498,6 +2565,9 @@ class Checker:
             raise self.error(f"'{name}' {what}", e)
         if not self.scope.is_module and name in self.module_assign_counts:
             var = self.globals.get(name)
+            if var is None and name in self.module_deleted:
+                raise self.error(f"functions can't use the module-level '{name}': it's deleted (line "
+                                 f"{self.module_deleted[name].line})", e)
             if var is None:
                 raise self.error(
                     f"functions can only use module-level variables that are assigned exactly once; "
@@ -4076,6 +4146,8 @@ def assigned_targets(stmts: list[A.Stmt]) -> list[str]:
                 names.extend(target_names(target))
             case A.ExceptHandler(_, A.Name(name)):
                 names.append(name)
+            case A.Delete(targets):  # (deleting a name makes it local, as assigning does)
+                names.extend(t.id for t in targets if isinstance(t, A.Name))
             case A.MatchAs(_, A.Name(name)) | A.MatchStar(A.Name(name)):
                 names.append(name)
             case A.MatchMapping(_, _, A.Name(name)):
