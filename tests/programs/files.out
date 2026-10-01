@@ -19,3 +19,8 @@ remove: [Errno 2] No such file or directory: 'sub/y.txt'
 mkdir: [Errno 17] File exists: 'sub'
 None default
 /abs/b a/ True
+True why
+error: [Errno 17] File exists: 'sub/y.txt' -> 'link'
+error: [Errno 2] No such file or directory: 'nothere' -> 'x'
+True sub
+chdir: [Errno 2] No such file or directory: 'missing'

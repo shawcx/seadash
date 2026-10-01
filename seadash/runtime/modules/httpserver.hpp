@@ -10,8 +10,14 @@
 #include <ctime>
 #include <thread>
 
+#include <sys/stat.h>
+
 #include "cookie_file.hpp"
+#include "emailutils.hpp"
 #include "httpclient.hpp"
+#include "mimetypes.hpp"
+#include "os.hpp"
+#include "urllib.hpp"
 #include "socket.hpp"
 
 namespace sd::httpserver {
@@ -484,6 +490,213 @@ private:
             headers.add(line.substr(0, colon), value);
         }
     }
+};
+
+// posixpath.normpath
+inline std::string normpath(const std::string& path) {
+    if (path.empty()) return ".";
+    std::size_t lead = path[0] == '/' ? (path.starts_with("//") && !path.starts_with("///") ? 2 : 1) : 0;
+    std::vector<std::string> parts;
+    std::size_t i = 0;
+    while (i <= path.size()) {
+        std::size_t j = path.find('/', i);
+        if (j == std::string::npos) j = path.size();
+        std::string comp = path.substr(i, j - i);
+        if (comp.empty() || comp == ".") {
+        } else if (comp != ".." || (!lead && parts.empty()) || (!parts.empty() && parts.back() == "..")) {
+            parts.push_back(comp);
+        } else if (!parts.empty()) {
+            parts.pop_back();
+        }
+        i = j + 1;
+    }
+    std::string out(lead, '/');
+    for (std::size_t k = 0; k < parts.size(); ++k) out += (k ? "/" : "") + parts[k];
+    return out.empty() ? "." : out;
+}
+
+// urllib.parse.unquote(s) (errors='replace'): bytes that aren't UTF-8 become U+FFFD.
+inline std::string unquote_text(const std::string& s) {
+    std::string raw = urlparse::unquote(s), out;
+    for (std::size_t i = 0; i < raw.size();) {
+        unsigned char c = static_cast<unsigned char>(raw[i]);
+        std::size_t width = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+        bool ok = width > 0 && i + width <= raw.size();
+        for (std::size_t k = 1; ok && k < width; ++k) ok = (static_cast<unsigned char>(raw[i + k]) >> 6) == 0x2;
+        if (ok) {
+            out += raw.substr(i, width);
+            i += width;
+        } else {
+            out += "\xEF\xBF\xBD";
+            ++i;
+        }
+    }
+    return out;
+}
+
+// SimpleHTTPRequestHandler: serves the files under `directory` (the current directory unless
+// the server was given partial(SimpleHTTPRequestHandler, directory=...)), with directory
+// listings, index.html, and If-Modified-Since. A port of CPython's.
+struct SimpleHTTPRequestHandler : BaseHTTPRequestHandler {
+    std::string directory = os::getcwd();
+
+    static std::string sd_class_server_version() { return "SimpleHTTP/0.6"; }
+    std::string sd_attr_server_version() const override { return sd_class_server_version(); }
+    static std::tuple<std::string, std::string> sd_class_index_pages() { return {"index.html", "index.htm"}; }
+    virtual std::tuple<std::string, std::string> sd_attr_index_pages() const { return sd_class_index_pages(); }
+
+    bool sd_dispatch(const std::string& c) override {
+        if (c == "GET") do_GET();
+        else if (c == "HEAD") do_HEAD();
+        else return BaseHTTPRequestHandler::sd_dispatch(c);
+        return true;
+    }
+    virtual void do_GET() {
+        if (auto f = send_head()) {
+            copyfile(*f, wfile);
+            (*f)->close();
+        }
+    }
+    virtual void do_HEAD() {
+        if (auto f = send_head()) (*f)->close();
+    }
+
+    // The response's headers, and the file to send (none if the response is complete).
+    virtual std::optional<std::shared_ptr<BinaryFile>> send_head() {
+        std::string fspath = translate_path(path);
+        if (os::path::isdir(fspath)) {
+            std::size_t cut = path.find_first_of("?#");
+            std::string before = path.substr(0, cut), after = cut == std::string::npos ? "" : path.substr(cut);
+            if (!before.ends_with('/')) {
+                send_response(301);
+                send_header("Location", before + "/" + after);
+                send_header("Content-Length", "0");
+                end_headers();
+                return std::nullopt;
+            }
+            auto [first, second] = sd_attr_index_pages();
+            bool found = false;
+            for (const std::string& index : {first, second}) {
+                std::string candidate = os::path::join(fspath, index);
+                if (os::path::isfile(candidate)) {
+                    fspath = candidate;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return list_directory(fspath);
+        }
+        std::string ctype = guess_type(fspath);
+        if (fspath.ends_with('/')) {
+            send_error(404, "File not found");
+            return std::nullopt;
+        }
+        std::FILE* fp = std::fopen(fspath.c_str(), "rb");
+        struct stat info {};
+        if (!fp || ::fstat(fileno(fp), &info) != 0 || S_ISDIR(info.st_mode)) {
+            if (fp) std::fclose(fp);
+            send_error(404, "File not found");
+            return std::nullopt;
+        }
+        auto f = std::make_shared<BinaryFile>(fp, fspath, "rb");
+        if (headers.has("If-Modified-Since") && !headers.has("If-None-Match")) {
+            try {  // (a date that can't be read, or that isn't UTC, is ignored, as in Python)
+                auto ims = emailutils::parsedate_to_datetime(*headers.get("If-Modified-Since"));
+                auto offset = ims.utcoffset();
+                if (!offset || offset->total_us() == 0) {
+                    datetime::datetime utc(ims.year(), ims.month(), ims.day(), ims.hour(), ims.minute(), ims.second(), 0,
+                                           datetime::timezone::utc());
+                    if (static_cast<double>(info.st_mtime) <= utc.timestamp()) {
+                        send_response(304);
+                        end_headers();
+                        f->close();
+                        return std::nullopt;
+                    }
+                }
+            } catch (const Thrown&) {
+            }
+        }
+        send_response(200);
+        send_header("Content-type", ctype);
+        send_header("Content-Length", std::to_string(info.st_size));
+        send_header("Last-Modified", date_time_string(static_cast<double>(info.st_mtime)));
+        end_headers();
+        return f;
+    }
+
+    virtual std::optional<std::shared_ptr<BinaryFile>> list_directory(const std::string& fspath) {
+        std::vector<std::string> names;
+        try {
+            names = os::listdir(fspath);
+        } catch (const Thrown&) {
+            send_error(404, "No permission to list directory");
+            return std::nullopt;
+        }
+        std::stable_sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
+            return str_lower(a) < str_lower(b);
+        });
+        std::string display = escape_html(unquote_text(path));
+        std::string title = "Directory listing for " + display;
+        std::string page = "<!DOCTYPE HTML>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>" + title +
+                           "</title>\n</head>\n<body>\n<h1>" + title + "</h1>\n<hr>\n<ul>";
+        for (const std::string& name : names) {
+            std::string full = os::path::join(fspath, name), shown = name, link = name;
+            struct stat info {};
+            bool is_link = ::lstat(full.c_str(), &info) == 0 && S_ISLNK(info.st_mode);
+            if (os::path::isdir(full)) shown = link = name + "/";
+            if (is_link) shown = name + "@";
+            page += "\n<li><a href=\"" + urlparse::quote(link) + "\">" + escape_html(shown) + "</a></li>";
+        }
+        page += "\n</ul>\n<hr>\n</body>\n</html>\n";
+        send_response(200);
+        send_header("Content-type", "text/html; charset=utf-8");
+        send_header("Content-Length", std::to_string(page.size()));
+        end_headers();
+        std::FILE* mem = std::tmpfile();
+        if (!mem) raise_os(errno, std::nullopt);
+        std::fwrite(page.data(), 1, page.size(), mem);
+        std::rewind(mem);
+        return std::make_shared<BinaryFile>(mem, "<listing>", "rb");
+    }
+
+    // The request's path as a file under `directory`: no "..", no absolute parts.
+    virtual std::string translate_path(const std::string& request_path) {
+        std::string p = request_path.substr(0, request_path.find('?'));
+        p = p.substr(0, p.find('#'));
+        std::string trimmed = p.substr(0, p.find_last_not_of(" \t\n\r\f\v") + 1);
+        bool trailing_slash = trimmed.ends_with('/');
+        p = normpath(unquote_text(p));
+        std::string out = directory;
+        for (const std::string& word : str_split(p, "/")) {
+            if (word.empty() || word == "." || word == "..") continue;  // (and "dir/word" can't happen: split on /)
+            out = os::path::join(out, word);
+        }
+        if (trailing_slash) out += "/";
+        return out;
+    }
+
+    virtual void copyfile(const std::shared_ptr<BinaryFile>& source, const std::shared_ptr<BinaryFile>& output) {
+        for (bytes chunk; !(chunk = source->read(64 * 1024)).data.empty();) output->write(chunk);
+    }
+
+    // The Content-type: compressed files by their encoding, then mimetypes, then a default.
+    virtual std::string guess_type(const std::string& fspath) {
+        static const std::pair<const char*, const char*> encodings[] = {
+            {".gz", "application/gzip"}, {".Z", "application/octet-stream"}, {".bz2", "application/x-bzip2"},
+            {".xz", "application/x-xz"}};
+        std::string base = fspath.substr(fspath.rfind('/') == std::string::npos ? 0 : fspath.rfind('/') + 1);
+        std::size_t dot = base.rfind('.');
+        std::size_t name_start = base.find_first_not_of('.');  // (leading dots aren't an extension: .bashrc)
+        std::string ext = dot == std::string::npos || name_start == std::string::npos || dot < name_start ? "" : base.substr(dot);
+        for (const std::string& e : {ext, str_lower(ext)})
+            for (auto [suffix, type] : encodings)
+                if (e == suffix) return type;
+        auto [type, encoding] = mimetypes::guess_type(fspath);
+        return type.value_or("application/octet-stream");
+    }
+
+    std::string sd_repr() const override { return "<SimpleHTTPRequestHandler>"; }
+    std::string sd_class_name() const override { return "SimpleHTTPRequestHandler"; }
 };
 
 // HTTPServer / ThreadingHTTPServer (socketserver.TCPServer): accepts connections and hands

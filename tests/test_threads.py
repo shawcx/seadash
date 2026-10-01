@@ -666,3 +666,25 @@ def test_sys_argv_is_a_library_table():
 ])
 def test_partial_as_thread_work(src, msg):
     assert msg in compile_error("from functools import partial\nfrom typing import Callable\n" + src).message
+
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("HTTPServer(('', 0), partial(SimpleHTTPRequestHandler, 'public'))\n",
+     "partial() of a handler class gives it settings by keyword only, e.g. partial(SimpleHTTPRequestHandler, directory='public')"),
+    ("HTTPServer(('', 0), partial(SimpleHTTPRequestHandler, folder='public'))\n",
+     "SimpleHTTPRequestHandler has no setting 'folder' (its fields: "),
+    ("HTTPServer(('', 0), partial(SimpleHTTPRequestHandler, directory=3))\n",
+     "SimpleHTTPRequestHandler.directory is str, not int"),
+    ("seen: list[str] = []\nclass H(SimpleHTTPRequestHandler):\n    def translate_path(self, path: str) -> str:\n"
+     "        seen.append(path)\n        return path\nThreadingHTTPServer(('', 0), H).serve_forever()\n",
+     "thread code uses the module-level 'seen' (list[str]), but it's modified"),
+])
+def test_simple_handler_errors(src, msg):
+    head = "from functools import partial\nfrom http.server import HTTPServer, ThreadingHTTPServer, SimpleHTTPRequestHandler\n"
+    assert msg in compile_error(head + src).message
+
+
+def test_simple_handler_on_threads():
+    compile_ok("from functools import partial\nfrom http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler\n"
+               "ThreadingHTTPServer(('', 0), partial(SimpleHTTPRequestHandler, directory='.')).serve_forever()\n")

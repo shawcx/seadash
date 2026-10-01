@@ -3696,9 +3696,12 @@ inline const std::string& raw(const std::string& s) { return s; }
 
 // OSError subclasses with Python's message: [Errno 2] No such file or directory: 'x.txt'
 // (no path for sockets: [Errno 111] Connection refused)
-[[noreturn]] inline void raise_os(int err, const std::optional<std::string>& path) {
+// (path2: the second file of a two-file call, os.rename(a, b): "...: 'a' -> 'b'", as in Python)
+[[noreturn]] inline void raise_os(int err, const std::optional<std::string>& path,
+                                  const std::optional<std::string>& path2 = std::nullopt) {
     std::string what = std::strerror(err);
-    std::string msg = "[Errno " + std::to_string(err) + "] " + what + (path ? ": " + repr_str(*path) : "");
+    std::string msg = "[Errno " + std::to_string(err) + "] " + what + (path ? ": " + repr_str(*path) : "") +
+                      (path && path2 ? " -> " + repr_str(*path2) : "");
     auto with = [&]<class E>() { return Thrown{std::make_shared<E>(msg, err, what, path)}; };
     switch (err) {
         case ECONNREFUSED: throw with.template operator()<ConnectionRefusedError>();

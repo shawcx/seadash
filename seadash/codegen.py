@@ -3004,8 +3004,13 @@ class CodeGen:
             args = e.http_args
             st: StructType = args["RequestHandlerClass"].sym  # made for each connection, from its fields' defaults
             fields = [self.expr_as(f.default, f.type) for f in st.all_fields().values()]
+            ctor = [] if st.builtin else ["sd::init", *fields]
             base = "sd::httpserver::BaseHTTPRequestHandler"
-            make = f"[] {{ return std::static_pointer_cast<{base}>(std::make_shared<{class_name(st)}>({', '.join(['sd::init', *fields])})); }}"
+            settings = getattr(e, "handler_settings", {})  # partial(Handler, directory=...): set on each handler
+            captures = ", ".join(f"sd_s{i} = {self.expr_as(v, st.find_field(k).type)}" for i, (k, v) in enumerate(settings.items()))
+            sets = " ".join(f"sd_h->{ident(k)} = sd::send(sd_s{i});" for i, k in enumerate(settings))
+            make = (f"[{captures}] {{ auto sd_h = std::make_shared<{class_name(st)}>({', '.join(ctor)}); {sets} "
+                    f"return std::static_pointer_cast<{base}>(sd_h); }}")
             bind = self.expr(args["bind_and_activate"]) if "bind_and_activate" in args else "true"
             address = self.expr_as(args["server_address"], TupleType((STR, INT)))
             return f"sd::httpserver::HTTPServer({address}, {make}, {bind}, {'true' if name == 'ThreadingHTTPServer' else 'false'})"

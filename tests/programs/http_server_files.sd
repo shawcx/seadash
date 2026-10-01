@@ -1,0 +1,100 @@
+# SimpleHTTPRequestHandler: files, directory listings, index pages, redirects, If-Modified-Since,
+# directory= through functools.partial, and a subclass overriding its methods.
+import http.client
+import os
+import tempfile
+import threading
+from functools import partial
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+
+class Quiet(SimpleHTTPRequestHandler):
+    def log_message(self, format: str, *args: str) -> None:
+        pass
+
+
+class Custom(Quiet):
+    index_pages = ("home.html", "index.html")
+
+    def guess_type(self, path: str) -> str:
+        if path.endswith(".sd"):
+            return "text/x-seadash"
+        return super().guess_type(path)
+
+    def translate_path(self, path: str) -> str:
+        return super().translate_path(path.replace("/old/", "/sub/"))
+
+    def do_GET(self):
+        if self.path == "/ping":
+            self.send_response(200)
+            self.send_header("Content-Length", "4")
+            self.end_headers()
+            self.wfile.write(b"pong")
+            return
+        super().do_GET()
+
+
+def write(path: str, text: str) -> None:
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def fetch(port: int, method: str, path: str, headers: dict[str, str]) -> None:
+    conn = http.client.HTTPConnection("127.0.0.1", port)
+    conn.request(method, path, headers=headers)
+    r = conn.getresponse()
+    body = r.read()
+    modified = r.getheader("Last-Modified") is not None
+    print(method, path, r.status, r.getheader("Content-type"), r.getheader("Content-Length"), r.getheader("Location"),
+          modified, body)
+    conn.close()
+
+
+with tempfile.TemporaryDirectory() as root:
+    os.mkdir(os.path.join(root, "sub"))
+    os.mkdir(os.path.join(root, "home"))
+    os.mkdir(os.path.join(root, "a dir"))
+    write(os.path.join(root, "hello.txt"), "hello\n")
+    write(os.path.join(root, "sub", "index.html"), "<p>index</p>\n")
+    write(os.path.join(root, "home", "home.html"), "<p>home</p>\n")
+    write(os.path.join(root, "a dir", "x&y <z>.txt"), "odd\n")
+    write(os.path.join(root, "data.json.gz"), "not really gzip")
+    write(os.path.join(root, "prog.sd"), "print(1)\n")
+    write(os.path.join(root, "README"), "plain\n")
+    os.symlink(os.path.join(root, "hello.txt"), os.path.join(root, "link.txt"))
+    future, past = "Fri, 01 Jan 2100 00:00:00 GMT", "Thu, 01 Jan 1970 00:00:00 GMT"
+    with HTTPServer(("127.0.0.1", 0), partial(Quiet, directory=root)) as server:
+        t = threading.Thread(target=server.serve_forever)
+        t.start()
+        port = server.server_address[1]
+        none: dict[str, str] = {}
+        for path in ["/hello.txt", "/sub", "/sub?q=1#top", "/sub/", "/", "/missing", "/../hello.txt", "/hello.txt?x=1",
+                     "/a%20dir/", "/a%20dir/x%26y%20%3Cz%3E.txt", "/data.json.gz", "/README", "/link.txt", "/hello.txt/",
+                     "//hello.txt", "/sub/../hello.txt", "/%2e%2e/hello.txt"]:
+            fetch(port, "GET", path, none)
+        fetch(port, "HEAD", "/hello.txt", none)
+        fetch(port, "HEAD", "/", none)
+        fetch(port, "GET", "/hello.txt", {"If-Modified-Since": future})
+        fetch(port, "GET", "/hello.txt", {"If-Modified-Since": past})
+        fetch(port, "GET", "/hello.txt", {"If-Modified-Since": "Fri, 01 Jan 2100 00:00:00 +0100"})
+        fetch(port, "GET", "/hello.txt", {"If-Modified-Since": "nonsense"})
+        fetch(port, "GET", "/hello.txt", {"If-Modified-Since": future, "If-None-Match": "x"})
+        fetch(port, "POST", "/hello.txt", none)
+        server.shutdown()
+        t.join()
+    with HTTPServer(("127.0.0.1", 0), partial(Custom, directory=root)) as server:
+        t = threading.Thread(target=server.serve_forever)
+        t.start()
+        port = server.server_address[1]
+        for path in ["/ping", "/prog.sd", "/home/", "/old/index.html", "/hello.txt"]:
+            fetch(port, "GET", path, {})
+        server.shutdown()
+        t.join()
+    os.chdir(root)
+    with HTTPServer(("127.0.0.1", 0), Quiet) as server:  # (the current directory, by default)
+        t = threading.Thread(target=server.serve_forever)
+        t.start()
+        fetch(server.server_address[1], "GET", "/sub/", {})
+        server.shutdown()
+        t.join()
+print(Quiet.server_version, Custom.index_pages, SimpleHTTPRequestHandler.index_pages)

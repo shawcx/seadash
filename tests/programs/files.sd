@@ -86,3 +86,21 @@ except FileExistsError as e:
     print("mkdir:", e)
 print(os.getenv("SEADASH_SURELY_UNSET"), os.getenv("SEADASH_SURELY_UNSET", "default"))
 print(os.path.join("a", "/abs", "b"), os.path.join("a", ""), os.path.abspath("x") == os.path.join(os.getcwd(), "x"))
+with open("sub/y.txt", "w") as f:
+    f.write("why")
+os.symlink("sub/y.txt", "link")
+print(os.path.isfile("link"), open("link").read())
+for src, dst in [("sub/y.txt", "link"), ("nothere", "x")]:
+    try:
+        if src == "nothere":
+            os.rename(src, dst)
+        else:
+            os.symlink(src, dst)
+    except OSError as e:
+        print("error:", e)
+os.chdir("sub")
+print(os.path.isfile("y.txt"), os.path.basename(os.getcwd()))
+try:
+    os.chdir("missing")
+except FileNotFoundError as e:
+    print("chdir:", e)

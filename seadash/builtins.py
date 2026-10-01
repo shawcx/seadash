@@ -1521,6 +1521,8 @@ MODULES["os"] = module_with_params(runtime_module(
     rmdir=(signature(NONE, ("path", STR)), "sd::os::rmdir"),
     chmod=(signature(NONE, ("path", STR), ("mode", INT)), "sd::os::chmod"),
     rename=(signature(NONE, ("src", STR), ("dst", STR)), "sd::os::rename"),
+    symlink=(signature(NONE, ("src", STR), ("dst", STR)), "sd::os::symlink"),
+    chdir=(signature(NONE, ("path", STR)), "sd::os::chdir"),
     getenv=(os_getenv, "sd::os::getenv"),
     sep=(STR, "sd::os::path::sep()"),
     # file descriptors (the program closes what it opens)
@@ -4145,9 +4147,48 @@ for _name, _value in (("server_version", "BaseHTTP/0.6"), ("sys_version", "seada
     HANDLER.class_attrs[_name] = ClassAttr(_name, STR, A.StrLit(_value), Loc(0, 0))
 
 
+SIMPLE_HANDLER = StructType("SimpleHTTPRequestHandler", "class", None, base=HANDLER, builtin=True, runtime_fields=True,
+                            cpp_name="sd::httpserver::SimpleHTTPRequestHandler", module="http.server")
+SIMPLE_HANDLER.fields["directory"] = Field("directory", STR, None, Loc(0, 0))
+runtime_method(SIMPLE_HANDLER, "do_GET", NONE)
+runtime_method(SIMPLE_HANDLER, "do_HEAD", NONE)
+runtime_method(SIMPLE_HANDLER, "send_head", OptionalType(BINARY_FILE))
+runtime_method(SIMPLE_HANDLER, "list_directory", OptionalType(BINARY_FILE), ("path", STR))
+runtime_method(SIMPLE_HANDLER, "translate_path", STR, ("path", STR))
+runtime_method(SIMPLE_HANDLER, "copyfile", NONE, ("source", BINARY_FILE), ("outputfile", BINARY_FILE))
+runtime_method(SIMPLE_HANDLER, "guess_type", STR, ("path", STR))
+SIMPLE_HANDLER.class_attrs["server_version"] = ClassAttr("server_version", STR, A.StrLit("SimpleHTTP/0.6"), Loc(0, 0))
+SIMPLE_HANDLER.class_attrs["index_pages"] = ClassAttr("index_pages", TupleType((STR, STR)),
+                                                      A.TupleLit([A.StrLit("index.html"), A.StrLit("index.htm")]), Loc(0, 0))
+
+
+def partial_of(ctx: CallContext, node: A.Expr) -> bool:
+    """Is `node` a call of functools.partial?"""
+    if not isinstance(node, A.Call):
+        return False
+    f, checker = node.func, ctx.checker
+    member = None
+    if isinstance(f, A.Name) and f.id in checker.imported and f.id not in checker.state.names:
+        mod, name = checker.imported[f.id]
+        member = mod.members.get(name)
+    elif isinstance(f, A.Attribute) and isinstance(f.value, A.Name) and f.value.id in checker.modules:
+        member = checker.modules[f.value.id].members.get(f.attr)
+    return member is MODULES["functools"].members["partial"]
+
+
 def handler_class(ctx: CallContext, node: A.Expr) -> StructType:
     """The RequestHandlerClass argument: a subclass of BaseHTTPRequestHandler, which the server
-    makes one of for each connection (with no arguments)."""
+    makes one of for each connection (with no arguments), or partial(Handler, setting=value),
+    whose settings (fields: directory=) are set on each one it makes."""
+    settings: dict[str, A.Expr] = {}
+    if partial_of(ctx, node):
+        if len(node.args) != 1:
+            raise ctx.error("partial() of a handler class gives it settings by keyword only, e.g. "
+                            "partial(SimpleHTTPRequestHandler, directory='public')", node)
+        for kw in node.keywords:
+            settings[kw.name] = kw.value
+        node.compile_time = True  # (codegen builds the server's handler factory from it instead)
+        node = node.args[0]
     st = ctx.checker.lookup_struct(node.id) if isinstance(node, A.Name) else None
     if st is None or not st.is_subclass_of(HANDLER) or st is HANDLER:
         raise ctx.error(f"{ctx.what} needs the handler class itself (a subclass of BaseHTTPRequestHandler with do_GET... "
@@ -4164,8 +4205,24 @@ def handler_class(ctx: CallContext, node: A.Expr) -> StructType:
         if f.default is None:
             raise ctx.error(f"{st.name}.{f.name} needs a default value: the server makes a new {st.name} for each "
                             f"connection, with no arguments", node)
+    for name, value in settings.items():
+        f = st.find_field(name)
+        if f is None:
+            known = ", ".join(sorted(fl for t in st.ancestors() for fl in t.fields)) or "none"
+            raise ctx.error(f"{st.name} has no setting '{name}' (its fields: {known})", value)
+        actual = ctx.checker.check_expr(value, f.type)
+        if not assignable(actual, f.type):
+            raise ctx.error(f"{st.name}.{name} is {f.type}, not {actual}", value)
+        if reason := unsendable_reason(f.type):
+            raise ctx.error(f"{st.name}.{name} can't be a setting: each connection's handler gets its own copy, and {reason}", value)
+    ctx.call.handler_settings = settings
     node.sym, node.ty = st, ClassRefType(st)
     return st
+
+
+def unsendable_reason(t: Type) -> str | None:
+    from .threads import unsendable
+    return unsendable(t)
 
 
 def http_server_new(threading: bool):
@@ -4175,6 +4232,8 @@ def http_server_new(threading: bool):
         if "bind_and_activate" in args:
             ctx.checker.expect_type(args["bind_and_activate"], BOOL, "bind_and_activate")
         st = handler_class(ctx, args["RequestHandlerClass"])
+        if partial_of(ctx, args["RequestHandlerClass"]):
+            args["RequestHandlerClass"] = args["RequestHandlerClass"].args[0]  # (its settings are in handler_settings)
         ctx.call.http_args = args  # (for codegen)
         t = HTTPServerType(st, threading)
         if threading:  # every request is handled on a thread of its own: the handler's code is thread code
@@ -4198,6 +4257,7 @@ HTTP_SERVER_MOD = Module("http.server", {
     "HTTPServer": Function("HTTPServer", http_server_new(False), as_type=HTTPServerType()),
     "ThreadingHTTPServer": Function("ThreadingHTTPServer", http_server_new(True), as_type=HTTPServerType(None, True)),
     "BaseHTTPRequestHandler": HANDLER,
+    "SimpleHTTPRequestHandler": SIMPLE_HANDLER,
 }, "modules/httpserver.hpp", ("ssl", "crypto", "pthread"))
 MODULES["http"] = Module("http", {"client": HTTP_CLIENT_MOD, "server": HTTP_SERVER_MOD})
 

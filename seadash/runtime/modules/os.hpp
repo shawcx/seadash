@@ -147,7 +147,13 @@ inline void rmdir(const std::string& p) {
 }
 
 inline void rename(const std::string& src, const std::string& dst) {
-    if (std::rename(src.c_str(), dst.c_str()) != 0) raise_os(errno, src);
+    if (std::rename(src.c_str(), dst.c_str()) != 0) raise_os(errno, src, dst);
+}
+inline void symlink(const std::string& src, const std::string& dst) {
+    if (::symlink(src.c_str(), dst.c_str()) != 0) raise_os(errno, src, dst);
+}
+inline void chdir(const std::string& path) {
+    if (::chdir(path.c_str()) != 0) raise_os(errno, path);
 }
 
 inline std::optional<std::string> getenv(const std::string& key) {
