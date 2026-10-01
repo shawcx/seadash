@@ -45,7 +45,7 @@ from .types import (
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
-    TupleType, Type, Var, element_type, is_numeric, user_dunder, ClassRefType, enum_decays, enum_flag_op, enum_mixin,
+    TupleType, Type, Var, element_type, is_numeric, user_dunder, ClassRefType, bool_decays, enum_decays, enum_flag_op, enum_mixin,
 )
 
 CPP_KEYWORDS = frozenset(
@@ -1893,6 +1893,8 @@ class CodeGen:
                 return f"(!{self.cond(operand)})"
             case A.UnaryOp(op, operand) if e.dunder is not None:  # -vec -> vec.__neg__()
                 return self.dunder_call(e.dunder, self.expr(operand), operand.ty, [])
+            case A.UnaryOp(op, operand) if operand.ty == BOOL:  # -True: the int it is
+                return f"({op}static_cast<std::int64_t>({self.expr(operand)}))"
             case A.UnaryOp(op, operand):
                 return f"({op}{self.expr(operand)})"
             case A.BinOp(op, left, right):
@@ -2198,6 +2200,13 @@ class CodeGen:
             lc, lt = f"{lc}.sd_value()", enum_mixin(lt)
         if enum_mixin(rt) is not None:
             rc, rt = f"{rc}.sd_value()", enum_mixin(rt)
+        if lt == rt == BOOL and op in ("&", "|", "^"):
+            return f"static_cast<bool>({lc} {op} {rc})"  # (C++ gives an int)
+        if bool_decays(op, lt, rt):  # True + 1: a bool as the int it is
+            if lt == BOOL:
+                lc, lt = f"static_cast<std::int64_t>({lc})", INT
+            if rt == BOOL:
+                rc, rt = f"static_cast<std::int64_t>({rc})", INT
         if lt in DATETIME_TYPES or rt in DATETIME_TYPES:  # C++ operators on the datetime values
             if op in ("//", "%"):
                 return f"sd::datetime::{'floordiv' if op == '//' else 'mod'}({lc}, {rc})"

@@ -488,6 +488,8 @@ def b_sum(ctx: CallContext) -> Type:
     start = ctx.args[1] if n == 2 else ctx.keyword_arg("start")
     if elem == TIMEDELTA and start is None:
         raise ctx.error(f"{ctx.what} of timedeltas needs a starting value: sum(items, timedelta())", ctx.args[0])
+    if elem == BOOL:  # sum(x > 0 for x in xs): how many are true
+        elem = INT
     if not (is_numeric(elem) or elem == TIMEDELTA):
         raise ctx.error(f"{ctx.what} needs numbers (or timedeltas), not {elem}", ctx.args[0])
     if start is None:

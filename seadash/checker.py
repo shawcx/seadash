@@ -42,7 +42,7 @@ from .types import (
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
     SYNC_ARITY, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
-    SetType, StructType, TupleType, Type, Var, EnumInfo, EnumMember, enum_decays, enum_flag_op, enum_mixin,
+    SetType, StructType, TupleType, Type, Var, EnumInfo, EnumMember, bool_decays, enum_decays, enum_flag_op, enum_mixin,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
 )
 
@@ -2952,6 +2952,11 @@ class Checker:
         if op == "~" and isinstance(t, StructType) and t.enum is not None and t.enum.flag:
             return t  # ~P.R: the other members
         t = enum_mixin(t) or t  # -N.ONE: an IntEnum member is an int
+        if t == BOOL and op in ("-", "+"):
+            return INT  # -True is -1
+        if t == BOOL and op == "~":
+            raise self.error("'~' on a bool is deprecated in Python (it gives -2 for True); use 'not' to negate it, "
+                             "or ~int(x) for the int's bits", e)
         if op in ("-", "+") and (is_numeric(t) or t in (TIMEDELTA, builtins.NORMAL_DIST)):
             return t
         if op == "~" and t == INT:
@@ -2966,6 +2971,8 @@ class Checker:
             return flag  # P.R | P.W: a flag; IntFlag.R | 8 too
         if enum_mixin(l) or enum_mixin(r):  # N.ONE + 1: an IntEnum member is an int
             return self.binop_type(op, enum_mixin(l) or l, enum_mixin(r) or r, e)
+        if bool_decays(op, l, r):  # True + 1: a bool is an int
+            return self.binop_type(op, INT if l == BOOL else l, INT if r == BOOL else r, e)
         name = BINARY_DUNDERS.get(op)
         if name and (isinstance(l, StructType) or isinstance(r, StructType)):
             if (m := self.dunder(l, f"__{name}__")) and accepts(m, r):  # a + b -> a.__add__(b)

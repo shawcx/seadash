@@ -2608,3 +2608,10 @@ def test_unpacking_types():
 ])
 def test_keyword_and_positional_only_errors(src, msg):
     assert err(src).message == msg
+
+
+def test_bool_arithmetic():
+    assert variables(ok("a = True + 1\nb = -True\nc = True & False\nd = sum([True, False])\ne = True / 2\n")) == [
+        "a: int", "b: int", "c: bool", "d: int", "e: float"]
+    assert err("print(~True)\n").message == (
+        "'~' on a bool is deprecated in Python (it gives -2 for True); use 'not' to negate it, or ~int(x) for the int's bits")

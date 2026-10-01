@@ -1,0 +1,16 @@
+# A bool is an int in arithmetic, as in Python: True + 1, sum of bools, (a > b) - (a < b).
+def compare(a: int, b: int) -> int:
+    return (a > b) - (a < b)
+
+
+xs = [4, -1, 7, 0, 3]
+print(True + 1, True * 3, -True, +False, True / 2, True // 2, True % 2, True ** 2, 2 ** True)
+print(True & False, True | False, True ^ True, True & 3, 6 | True, True << 3, 1.5 + True)
+print(sum(x > 0 for x in xs), sum([True, False, True]), sum([x > 2 for x in xs], 10))
+print([compare(a, b) for a, b in [(1, 2), (2, 2), (3, 2)]])
+count = 0
+for x in xs:
+    count += x % 2 == 0
+print(count)
+flags = [True, True, False]
+print(sum(flags) / len(flags), flags.count(True))

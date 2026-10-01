@@ -802,6 +802,16 @@ def enum_decays(op: str, t: Type, other: Type, right: bool = False) -> bool:
     return op in ("<", "<=", ">", ">=") or strip_optional(other) != t
 
 
+def bool_decays(op: str, l: Type, r: Type) -> bool:
+    """In `l op r`, is a bool used as the int it is in Python (True + 1, sum of bools,
+    (a > b) - (a < b))? Not where two bools meet in & | ^, which give a bool."""
+    if BOOL not in (l, r) or op not in ("+", "-", "*", "/", "//", "%", "**", "&", "|", "^", "<<", ">>"):
+        return False
+    if l == r == BOOL and op in ("&", "|", "^"):
+        return False
+    return all(t in (BOOL, INT, FLOAT) for t in (l, r))
+
+
 def enum_flag_op(op: str, l: Type, r: Type) -> Type | None:
     """The flag type `l op r` gives, if it's a flag operation: `P.R | P.W`, or an IntFlag
     with an int (`IP.R | 8`)."""

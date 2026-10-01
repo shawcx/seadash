@@ -394,6 +394,10 @@ struct Bool {
     Bool(bool b) : v(b) {}
     operator bool() const { return v; }
     auto operator<=>(const Bool&) const = default;
+    bool operator==(const Bool&) const = default;
+    // (exact matches, so `flags.count(True)` isn't ambiguous between Bool and bool)
+    friend bool operator==(const Bool& a, bool b) { return a.v == b; }
+    friend auto operator<=>(const Bool& a, bool b) { return a.v <=> b; }
 };
 
 // ============================================================================
@@ -2264,7 +2268,8 @@ auto filter(F&& f, It&& it) {
 template <class It>
 auto sum(It&& it) {
     auto&& src = iter(std::forward<It>(it));
-    elem_t<decltype(src)> total{};
+    using E = elem_t<decltype(src)>;
+    std::conditional_t<std::is_same_v<E, bool> || std::is_same_v<E, Bool>, std::int64_t, E> total{};  // (bools count)
     for (auto&& v : src) total += v;
     return total;
 }
