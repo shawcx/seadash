@@ -713,7 +713,9 @@ private:
         bool threading = false;
         std::mutex mu;
         std::condition_variable cv;
-        bool shutdown_request = false, serving = false, closed = false;
+        // is_shut_down is Python's event of that name: unset until a serve_forever() has finished,
+        // so a shutdown() made before serve_forever() starts still stops it.
+        bool shutdown_request = false, is_shut_down = false, closed = false;
         std::vector<std::thread> workers;
         ~State() {
             for (auto& t : workers)
@@ -792,7 +794,9 @@ public:
         s_->sock.bind(s_->address);
         s_->address = s_->sock.getsockname();
     }
-    void server_activate() { s_->sock.listen(5); }
+    // Python's backlog is 5 (request_queue_size). Its clients take turns under the GIL; ours run
+    // in parallel, and on macOS connections beyond a full queue are reset, so take the system's.
+    void server_activate() { s_->sock.listen(SOMAXCONN); }
 
     std::tuple<std::string, std::int64_t> server_address() const { return s_->address; }
     std::int64_t server_port() const { return std::get<1>(s_->address); }
@@ -803,7 +807,7 @@ public:
     void serve_forever(double poll_interval = 0.5) {
         {
             std::lock_guard lk(s_->mu);
-            s_->serving = true;
+            s_->is_shut_down = false;
         }
         try {
             while (true) {
@@ -821,22 +825,22 @@ public:
             }
         } catch (...) {
             std::lock_guard lk(s_->mu);
-            s_->serving = false;
+            s_->is_shut_down = true;
             s_->shutdown_request = false;
             s_->cv.notify_all();
             throw;
         }
         std::lock_guard lk(s_->mu);
-        s_->serving = false;
+        s_->is_shut_down = true;
         s_->shutdown_request = false;
         s_->cv.notify_all();
     }
-    // Stops serve_forever() and waits until it has. (Called from another thread.)
+    // Stops serve_forever() and waits until it has, as Python's does: called before
+    // serve_forever() starts, it waits for it to start and stop. (Called from another thread.)
     void shutdown() {
         std::unique_lock lk(s_->mu);
-        if (!s_->serving) return;
         s_->shutdown_request = true;
-        s_->cv.wait(lk, [&] { return !s_->serving; });
+        s_->cv.wait(lk, [&] { return s_->is_shut_down; });
     }
     void handle_request() { handle_one(true); }
     // Closes the listening socket, and waits for any requests still being handled.

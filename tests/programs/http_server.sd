@@ -156,4 +156,10 @@ with HTTPServer(("127.0.0.1", 0), KeepAlive) as server:  # handle_request(): jus
     one.start()
     raw(server.server_address[1], b"GET /once HTTP/1.0\r\n\r\n")
     one.join()
+with HTTPServer(("127.0.0.1", 0), KeepAlive) as server:  # shutdown() before serve_forever() starts
+    t = threading.Thread(target=server.serve_forever)
+    t.start()
+    server.shutdown()
+    t.join()
+print("stopped", t.is_alive())
 print(Handler.server_version, KeepAlive.protocol_version, Counting.protocol_version)

@@ -49,4 +49,5 @@ log: "%s" %s %s ['POST /echo HTTP/1.1', '201', '-']
 'HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nServer: BaseHTTP/0.6 X\r\nDate: X\r\nContent-Length: 7\r\n\r\n/expect'
 True 200
 'HTTP/1.1 200 OK\r\nServer: BaseHTTP/0.6 X\r\nDate: X\r\nContent-Length: 5\r\n\r\n/once'
+stopped False
 Test/1.0 HTTP/1.1 HTTP/1.0
