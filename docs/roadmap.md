@@ -32,7 +32,27 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - `sqlite3`: `row_factory`/`sqlite3.Row`, `create_function`, iterating a cursor directly.
 - `uuid`: `u.int` (128 bits), `getnode()`.
 - `math`: `fsum` (an exactly rounded sum; `sum()` adds floats left to right).
+- Built-in functions: `callable`, `id`, `issubclass`, `type`, `getattr`/`hasattr`/`setattr`, `frozenset`,
+  `bytearray`, `memoryview`, `complex`, `slice`; `isinstance` on anything but class instances.
+- Built-in types: printing a `range` or a dict view (`print(d.keys())`), keeping a `range` in a
+  variable or indexing it, `float.as_integer_ratio` (the ratio often needs more than 64 bits),
+  `int.real`/`imag`/`numerator`/`denominator`/`conjugate`, `tuple * n`, `f.encoding`, `%` formatting.
+- Statements: `del`, assigning to a slice (`xs[1:3] = ...`), unpacking with a star (`a, *rest = xs`,
+  `f(*args)`, `[*xs, *ys]`, `{**d}`).
+- Functions: keyword-only and positional-only parameters (`*`, `/`), `*args` and `**kwargs`, default
+  values in nested functions and lambdas, and keywords or defaults when calling a function held in
+  a variable.
 - No tracebacks for uncaught exceptions.
+
+## Open questions
+
+- **Mutable default arguments.** `def f(xs: list[int] = [])` makes a new list on every call; Python
+  makes one when the function is defined and shares it between calls. Match Python, or keep this and
+  list it in the README's differences?
+- **Keywords on built-in methods.** Some accept keywords Python doesn't (`"x".center(width=5)`), others
+  take none at all (`xs.pop(index=0)`): the built-ins declare their parameters in three different ways.
+- **`uuid.UUID` and threads.** A UUID can't be passed to a thread or kept in a `@value` class, though
+  it's an immutable value; marking it `IMMUTABLE` in `types.py` would allow both.
 
 ## Decided against
 

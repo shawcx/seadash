@@ -2495,6 +2495,8 @@ class Checker:
                     return BOOL
                 if l == r and isinstance(l, SetType):
                     return l
+                if op == "|" and l == r and type(l) is DictType:
+                    return l  # the items of both, the right one's winning
         if isinstance(l, OptionalType) or isinstance(r, OptionalType):
             maybe = l if isinstance(l, OptionalType) else r
             try:  # would it work once None is ruled out?
@@ -2565,7 +2567,8 @@ class Checker:
     def check_comparison(self, op: str, lt: Type, rt: Type, left: A.Expr, right: A.Expr, e: A.Compare) -> None:
         if op in ("<", ">", "<=", ">="):
             ordered = (is_numeric(lt) and is_numeric(rt)) or (
-                lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T) or isinstance(lt, (TupleType, ListType, VarTupleType)))
+                lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T)
+                              or isinstance(lt, (TupleType, ListType, VarTupleType, SetType)))  # (sets: subset and superset)
             )
             if not ordered:
                 owner = lt if isinstance(lt, StructType) else rt
@@ -2579,7 +2582,7 @@ class Checker:
                 case _ if rt == builtins.HTTP_HEADERS:  # "Content-Type" in headers
                     ok = lt == STR
                 case ListType(elem) | SetType(elem) | DequeType(elem) | VarTupleType(elem) | GeneratorType(elem) | IterType(
-                    elem, "range"
+                    elem, "range" | "keys" | "values" | "items"
                 ):
                     ok = assignable(lt, elem)
                 case DictType(key):

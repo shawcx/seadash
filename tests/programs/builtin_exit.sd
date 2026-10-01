@@ -1,0 +1,11 @@
+# exit() and quit() end the program like sys.exit().
+def check(n: int):
+    if n > 2:
+        print("leaving")
+        exit(3)
+    print("checked", n)
+
+
+check(1)
+check(5)
+quit()

@@ -1,0 +1,66 @@
+# File positions and properties: tell, seek, truncate, readable/writable/seekable, closed, name, mode;
+# and len() and reversed() of a range.
+import sys
+import tempfile
+from pathlib import Path
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = Path(tmp) / "f.txt"
+    with open(p, "w") as f:
+        print(f.closed, f.name == str(p), f.mode, f.readable(), f.writable(), f.seekable(), f.isatty(), f.tell(), f.write("hello\nworld\n"), f.tell())
+        print(f.truncate(5), f.tell(), f.seek(0), f.seek(0, 2), f.tell())
+        for offset, whence in [(1, 1), (-1, 2), (-1, 0), (0, 5)]:
+            try:
+                print(f.seek(offset, whence))
+            except OSError as e:
+                print("OSError:", e)
+            except ValueError as e:
+                print("ValueError:", e)
+    print(f.closed, f.name == str(p), f.mode)
+    try:
+        f.tell()
+    except ValueError as e:
+        print("ValueError:", e)
+    try:
+        f.seek(0)
+    except ValueError as e:
+        print("ValueError:", e)
+    try:
+        f.writable()
+    except ValueError as e:
+        print("ValueError:", e)
+    with open(p) as f:
+        print(f.read(2), f.tell(), f.readline(), f.tell(), f.seek(1), f.read(), f.tell(), f.seek(0, 2), f.seek(0, 1), f.mode, f.readable(), f.writable())
+    with open(p, "rb+") as b:
+        print(b.mode, b.readable(), b.writable(), b.seek(2), b.read(2), b.tell(), b.seek(-1, 2), b.seek(-1, 1), b.tell(), b.truncate(), b.truncate(10), b.seek(0, 2), b.seek(100), b.tell(), b.read())
+        for offset, whence in [(-1, 0), (0, 5), (-100, 2)]:
+            try:
+                print(b.seek(offset, whence))
+            except ValueError as e:
+                print("ValueError:", e)
+            except OSError as e:
+                print("OSError:", e)
+        try:
+            b.truncate(-1)
+        except OSError as e:
+            print("OSError:", e)
+    with open(p, "rb") as b:
+        print(b.read(), b.closed, b.seekable(), b.name == str(p))
+        try:
+            b.truncate()
+        except OSError as e:
+            print("OSError:", e)
+    with open(p, "ab") as b:
+        print(b.mode, b.tell(), b.readable(), b.writable())
+    with open(p, "a+") as f:
+        print(f.mode, f.tell(), f.readable(), f.writable(), repr(f.read()), f.seek(0), f.read(3))
+    with open(p, "w+") as f:
+        print(f.mode, f.readable(), f.writable(), f.write("abc"), f.seek(0), f.read())
+    with open(p, "r+") as f:
+        print(f.mode, f.readable(), f.writable(), f.truncate(2), f.read(), p.stat().st_size)
+print(sys.stdout.name, sys.stdout.mode, sys.stderr.name, sys.stdin.name, sys.stdin.mode, sys.stdout.closed, sys.stdout.writable(), sys.stdout.readable())
+print(len(range(4)), len(range(10, 0, -3)), len(range(5, 5)), len(range(0, 10, 3)), len(range(5, 0)), len(range(-5, 5, 2)), len(range(5, -5, -2)))
+print(list(reversed(range(3))), list(reversed(range(10, 0, -3))), list(reversed(range(0, 10, 3))), list(reversed(range(5, 5))), list(reversed(range(2, 11, 4))), sum(reversed(range(10 ** 9, 10 ** 9 + 3))))
+for i in reversed(range(3)):
+    print(i, end=" ")
+print([i * i for i in reversed(range(1, 4))], sorted(reversed(range(3))), max(reversed(range(4))), 2 in range(0, 10, 2))

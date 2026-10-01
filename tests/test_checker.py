@@ -872,7 +872,7 @@ def test_bytes_types(expr, ty):
 
 @pytest.mark.parametrize("src,msg", [
     ('x = b"a" + "b"', "unsupported operand types for +: bytes and str (convert with s.encode() or b.decode())"),
-    ('x = bytes("abc")', "bytes(str) needs an encoding; use s.encode() instead"),
+    ('x = bytes("abc")', 'bytes(str) needs an encoding: bytes(s, "utf-8"), or s.encode()'),
     ('b = b"x"\nb[0] = 1', "bytes can't be changed in place (it's immutable)"),
     ('x = "a" b"b"', "can't combine bytes and str literals"),
     ("import zlib\nx = zlib.compress(5)", "zlib.compress() argument must be bytes or str, not int"),
@@ -2052,3 +2052,39 @@ def test_file_descriptor_errors(line, msg):
 def test_string_method_errors(line, msg):
     e = err(f"x = {line}\n")
     assert msg in e.message
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("x = int(3.5, 10)", "int() can't convert non-string with explicit base"),
+    ('x = int("1", "2")', "int() base must be an int, not str"),
+    ('x = int("1", 2, base=2)', "int() got multiple values for argument 'base'"),
+    ("x = bin(1.5)", "'float' object cannot be interpreted as an integer"),
+    ('x = divmod("a", 1)', "divmod() arguments must be numbers, not str"),
+    ("x = (1.5).bit_length()", "float has no method 'bit_length'"),
+    ('x = (5).to_bytes(2, byteorder=1)', "int.to_bytes() argument 'byteorder' must be str, not int"),
+    ('x = int.from_bytes("ab")', "int.from_bytes() argument 'bytes' must be bytes, not str"),
+    ("x = min(1, 2, default=0)", "Cannot specify a default for min() with multiple positional arguments"),
+    ('x = max([1], default="x")', "max() default must be int (or None), not str"),
+    ('x = str("a", "utf-8")', "decoding str is not supported"),
+    ('x = str(5, encoding="utf-8")', "str() with an encoding needs bytes to decode"),
+    ('x = bytes(5, "utf-8")', "encoding without a string argument"),
+    ('x = list(zip([1], strict=1))', "zip() argument 'strict' must be bool, not int"),
+    ('x = list(map(lambda a: a, [1], [2]))', "this lambda takes 1 parameter, but (int, int) -> ? is expected here"),
+    ('x = dict(a=1, b="x")', "dict() values must all be one type, not int and str"),
+    ('x = dict({1: 2}, a=3)', "dict() keywords are str keys, but this has int keys"),
+    ('d = {"a": 1}\nx = dict(d, b="x")', "dict() argument 'b' must be int, not str"),
+    ("d = {1: 2}\nd.update(k=3)", "dict.update() keywords are str keys, but this dict has int keys"),
+    ('d = {"a": 1}\nd.update([("b", "c")])', "dict.update() needs a dict[str, int] or (str, int) pairs, not list[tuple[str, str]]"),
+    ('d = {"a": 1}\nd.update({}, {})', "update expected at most 1 argument, got 2"),
+    ('x = dict.fromkeys(["a"])', "dict.fromkeys() without a value makes every value None: say what they'll hold later, "
+                                 "e.g. `d: dict[str, int | None] = dict.fromkeys(names)`"),
+    ('x = {1}.union(["a"])', "set.union() needs int items, not str"),
+    ("x = {1}.isdisjoint(5)", "set.isdisjoint() argument must be something you can loop over, not int"),
+    ("x = {1} < [1]", "'<' isn't supported between set[int] and list[int]"),
+    ('x = (1, 2).index("a")', "a str can never be in a tuple[int, int]"),
+    ("x = reversed(5)", "reversed() argument must be a list, tuple, str or range, not int"),
+    ('f = open("x")\nx = f.seek("a")', "TextIO.seek() argument must be int, not str"),
+    ("exit('bye')", "exit() argument must be int, not str"),
+])
+def test_builtin_function_and_method_errors(src, msg):
+    assert err(src + "\n").message == msg

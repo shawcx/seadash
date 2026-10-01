@@ -36,6 +36,7 @@ from . import ast as A
 from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
+from .threads import MUTATING_METHODS  # (a parameter changed by one of these is passed by value)
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
     BuiltinClass, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
@@ -61,11 +62,6 @@ CPP_KEYWORDS = frozenset(
     """.split()  # (the last line: C library names that are macros on some systems)
 )
 
-# Built-in methods that modify their receiver (so a parameter used this way is passed by value).
-MUTATING_METHODS = frozenset(
-    "append insert pop remove extend sort reverse clear update setdefault add discard "
-    "appendleft popleft extendleft rotate subtract".split()
-)
 
 MATH_FLOAT_1 = {"sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log2", "log10", "fabs"}
 MATH_VALUES = {
@@ -1391,6 +1387,9 @@ class CodeGen:
             if op == "+" and isinstance(read_type, ListType) and write is read_var:
                 self.line(f"sd::list_extend({self.var_ref(write)}, {self.expr(value)});")
                 return
+            if op == "|" and type(read_type) is DictType and write is read_var:
+                self.line(f"sd::dict_update({self.var_code(read_var, read_type)}, {self.expr(value)});")  # d |= other, in place
+                return
             if isinstance(read_type, (ListType, SetType)) and write is read_var and result == read_type and s.dunder is None:
                 # xs *= 2, s |= t: in place, so other references to the list or set see it
                 current = self.var_code(read_var, read_type)
@@ -1429,6 +1428,8 @@ class CodeGen:
         new = self.binop_code(op, ref, read_type, self.expr(value), value.ty, result, s.dunder)
         if isinstance(read_type, ListType) and op == "+" and s.dunder is None:
             self.line(f"sd::list_extend({ref}, {self.expr(value)});")  # obj.xs += ys extends it in place
+        elif op == "|" and type(read_type) is DictType:
+            self.line(f"sd::dict_update({ref}, {self.expr(value)});")
         elif isinstance(read_type, (ListType, SetType)) and result == read_type and s.dunder is None:
             self.line(f"sd::assign_contents({ref}, {new});")
         else:
@@ -1703,6 +1704,8 @@ class CodeGen:
                 return f"{obj}.get_template()"
             if vt == UUID_T and e.sym[1] == "bytes":
                 return f"{obj}.get_bytes()"
+            if isinstance(vt, FileType):  # f.closed, f.name, f.mode
+                return f"{obj}->{'is_closed' if e.sym[1] == 'closed' else 'get_' + e.sym[1]}()"
             if isinstance(vt, NamespaceType):  # args.count
                 return f"{obj}.get<{self.cpp_type(e.ty)}>({cpp_string(e.sym[1])})"
             return f"{obj}.{e.sym[1]}()"  # m.string(), pattern.groups()
@@ -1789,6 +1792,8 @@ class CodeGen:
             case "-" | "&" | "|" | "^" if isinstance(lt, SetType):
                 fn = {"-": "sub", "&": "and", "|": "or", "^": "xor"}[op]
                 return f"sd::set_{fn}({lc}, {rc})"
+            case "|" if type(lt) is DictType:
+                return f"sd::dict_or({lc}, {rc})"
         return f"({lc} {op} {rc})"
 
     def boolop(self, e: A.BoolOp) -> str:
@@ -1846,6 +1851,9 @@ class CodeGen:
                 return f"({lc}.get() == {rc}.get())"  # identity, whatever __eq__ says
             case "is not":
                 return f"({lc}.get() != {rc}.get())"
+            case "<=" | "<" | ">=" | ">" if isinstance(left.ty, SetType):  # subset and superset
+                a, b = (lc, rc) if op[0] == "<" else (rc, lc)
+                return f"sd::set_{'issubset' if '=' in op else 'proper_subset'}({a}, {b})"
         return f"({lc} {op} {rc})"
 
     def comprehension(self, e: A.Expr) -> str:
@@ -2362,6 +2370,13 @@ class CodeGen:
                 sep = self.keyword(e, "sep")
                 end = self.keyword(e, "end")
                 head = [self.expr(sep) if sep else '" "', self.expr(end) if end else r'"\n"']
+                flush = self.keyword(e, "flush")
+                if flush is not None and not (isinstance(flush, A.BoolLit) and not flush.value):
+                    if file := self.keyword(e, "file"):
+                        out = self.fresh("out")
+                        return (f"[&] {{ auto {out} = {self.expr(file)}; sd::print_to({', '.join([out, *head, *args])}); "
+                                f"if ({self.expr(flush)}) {out}->flush(); }}()")
+                    return f"[&] {{ sd::print({', '.join(head + args)}); if ({self.expr(flush)}) std::fflush(stdout); }}()"
                 if file := self.keyword(e, "file"):
                     return f"sd::print_to({', '.join([self.expr(file), *head, *args])})"
                 return f"sd::print({', '.join(head + args)})"
@@ -2374,12 +2389,26 @@ class CodeGen:
                 return f"sd::len({a})"
             case "hash":
                 return f"static_cast<std::int64_t>(sd::Hash{{}}({a}))"
+            case "str" if len(e.args) == 2 or e.keywords:  # str(data, "utf-8")
+                return f"sd::bytes_decode({a}, {self.expr(e.args[1] if len(e.args) == 2 else e.keywords[0].value)})"
             case "str":
                 return f"sd::str({a})" if a else '""s'
             case "repr":
                 return f"sd::repr({a})"
+            case "dict.fromkeys":
+                value = self.expr_as(e.args[1], e.ty.value) if len(e.args) == 2 else f"{self.cpp_type(e.ty.value)}{{}}"
+                return f"sd::dict_fromkeys<{self.cpp_type(e.ty.key)}, {self.cpp_type(e.ty.value)}>({a}, {value})"
             case "str.maketrans" | "bytes.maketrans" | "bytes.fromhex":
                 return f"sd::{name.replace('.', '_')}({', '.join(args)})"
+            case "int.from_bytes" | "float.fromhex":  # (with keywords and defaults)
+                check = builtins.TYPE_FUNCTIONS[tuple(name.split("."))]
+                return self.function_call(builtins.Function(name, check, f"sd::{name.replace('.', '_')}", check.params), e)
+            case "bin" | "oct" | "hex":
+                return f"sd::{name}({a})"
+            case "divmod":
+                return f"sd::divmod({', '.join(self.expr_as(x, e.ty.elts[0]) for x in e.args)})"
+            case "exit" | "quit":
+                return f"throw sd::Exit{{static_cast<int>({a or '0'})}}"
             case "__same_class__":  # (in generated dataclass methods: Python compares only the same class)
                 return f"(typeid(*{args[0]}) == typeid(*{args[1]}))"
             case "__class_name__":
@@ -2393,7 +2422,8 @@ class CodeGen:
             case "ascii":
                 return f"sd::ascii(sd::repr({a}))"
             case "int":
-                return f"sd::to_int({a or ''})"
+                base = e.args[1] if len(e.args) == 2 else self.keyword(e, "base")
+                return f"sd::to_int({', '.join(x for x in (a, self.expr(base) if base else None) if x)})"
             case "float":
                 return f"sd::to_float({a or ''})"
             case "bool":
@@ -2410,6 +2440,11 @@ class CodeGen:
                 return f"sd::datetime::abs({a})"
             case "abs":
                 return f"sd::abs({a})"
+            case "min" | "max" if (default := self.keyword(e, "default")) is not None:
+                fallback, result = self.expr_as(default, e.ty), self.cpp_type(e.ty)
+                if key := self.keyword(e, "key"):
+                    return f"sd::{name}_by_or<{result}>({a}, {self.expr(key)}, {fallback})"
+                return f"sd::{name}_of_or<{result}>({a}, {fallback})"
             case "min" | "max":
                 if key := self.keyword(e, "key"):
                     return f"sd::{name}_by({a}, {self.expr(key)})"
@@ -2420,6 +2455,8 @@ class CodeGen:
             case "sum" if len(e.args) == 2 or e.keywords:
                 start = e.args[1] if len(e.args) == 2 else self.keyword(e, "start")
                 return f"sd::sum({self.expr(e.args[0])}, {self.expr_as(start, e.ty)})"
+            case "zip" if (strict := self.keyword(e, "strict")) is not None:
+                return f"sd::zip_strict<{self.cpp_type(e.ty.elem)}>({', '.join([self.expr(strict), *args])})"
             case "zip":
                 return f"sd::zip_lazy<{self.cpp_type(e.ty.elem)}>({', '.join(args)})"
             case "sum" | "any" | "all" | "reversed" | "ord" | "chr":
@@ -2431,12 +2468,15 @@ class CodeGen:
                     return f"sd::sorted_by({a}, {self.expr(key)}, {rev_code})"
                 return f"sd::sorted({a}, {rev_code})"
             case "map":
-                return f"sd::map_lazy<{self.cpp_type(e.ty.elem)}>({args[0]}, {args[1]})"
+                return f"sd::map_lazy<{self.cpp_type(e.ty.elem)}>({', '.join(args)})"
+            case "filter" if isinstance(e.args[0], A.NoneLit):  # the items that are true
+                return f"sd::filter_lazy<{self.cpp_type(e.ty.elem)}>([](const auto& x) {{ return sd::truthy(x); }}, {args[1]})"
             case "filter":
                 return f"sd::filter_lazy<{self.cpp_type(e.ty.elem)}>({args[0]}, {args[1]})"
             case "enumerate":
                 item = self.cpp_type(e.ty.elem.elts[1])
-                return f"sd::enumerate_lazy<{item}>({args[0]}, {args[1] if len(args) > 1 else '0'})"
+                start = e.args[1] if len(e.args) > 1 else self.keyword(e, "start")
+                return f"sd::enumerate_lazy<{item}>({args[0]}, {self.expr(start) if start else '0'})"
             case "list":
                 return f"sd::to_list({a})" if a else f"{self.cpp_type(e.ty)}{{}}"
             case "iter" if isinstance(e.args[0].ty, GeneratorType):
@@ -2455,6 +2495,13 @@ class CodeGen:
                 return f"{self.cpp_type(e.ty)}(sd::to_list({a}))" if a else f"{self.cpp_type(e.ty)}{{}}"
             case "tuple":
                 return "std::tuple<>{}"
+            case "dict" if e.keywords:  # dict(a=1), dict(other, b=2): the keywords are str keys
+                tmp = self.fresh("d")
+                positional = A.Call(e.func, e.args, [], loc=e.loc, ty=e.ty)
+                positional.pairs = getattr(e, "pairs", False)
+                base = self.builtin_call("dict", positional)
+                sets = " ".join(f"{tmp}[{cpp_string(kw.name)}] = {self.expr_as(kw.value, e.ty.value)};" for kw in e.keywords)
+                return f"[&] {{ auto {tmp} = {base}; {sets} return {tmp}; }}()"
             case "dict" if getattr(e, "pairs", False):
                 k, v = e.ty.key, e.ty.value
                 return f"sd::dict_from_pairs<{self.cpp_type(k)}, {self.cpp_type(v)}>({a})"
@@ -2464,6 +2511,8 @@ class CodeGen:
                 return f"{self.cpp_type(e.ty)}{{}}"
             case "input":
                 return f"sd::input({a or ''})"
+            case "bytes" if len(e.args) == 2 or e.keywords:  # bytes(text, "utf-8")
+                return f"sd::str_encode({a}, {self.expr(e.args[1] if len(e.args) == 2 else e.keywords[0].value)})"
             case "bytes":
                 return f"sd::to_bytes({a or ''})"
             case "round":
@@ -2574,8 +2623,8 @@ class CodeGen:
         if recv_type == STR and name == "format_map":
             vt = e.args[0].ty.value
             return f"sd::str_format_map({r}, {args[0]}, {cpp_string(str(strip_optional(vt)).split('[')[0])[:-1]})"
-        if recv_type in (STR, BYTES):
-            prefix = "str" if recv_type == STR else "bytes"
+        if recv_type in (STR, BYTES, INT, FLOAT):
+            prefix = str(recv_type)
             handler = builtins.method_for(recv_type, name)
             if hasattr(handler, "params"):  # keywords and defaults: s.split(maxsplit=1), s.find(x, 2)
                 codes = []
@@ -2675,6 +2724,8 @@ class CodeGen:
         match recv_type:
             case VarTupleType(elem):
                 return f"{r}.{name}({self.expr_as(e.args[0], elem)})"
+            case TupleType():
+                return f"sd::tuple_{'count' if name == 'count' else 'find'}({r}, {args[0]})"
             case ProcessType():
                 return self.process_method(r, recv_type, name, e)
             case PatternType():
@@ -2721,6 +2772,11 @@ class CodeGen:
                         return f"{r}.{name}()"
                     case "copy":
                         return f"sd::shallow_copy({r})"
+                    case "update" if e.keywords or not e.args:  # d.update(other, key=value)
+                        tmp = self.fresh("d")
+                        steps = [f"sd::dict_update({tmp}{rest});"] if e.args else []
+                        steps += [f"{tmp}[{cpp_string(kw.name)}] = {self.expr_as(kw.value, value)};" for kw in e.keywords]
+                        return f"[&] {{ auto {tmp} = {r}; {' '.join(steps)} }}()"
                 return f"sd::dict_{name}({r}{rest})"
             case SetType():
                 match name:
@@ -2732,18 +2788,7 @@ class CodeGen:
                         return f"{r}.clear()"
                     case "copy":
                         return f"sd::shallow_copy({r})"
-                    case "remove":
-                        return f"sd::set_remove({r}{rest})"
-                    case "union":
-                        return f"sd::set_or({r}{rest})"
-                    case "intersection":
-                        return f"sd::set_and({r}{rest})"
-                    case "difference":
-                        return f"sd::set_sub({r}{rest})"
-                    case "issubset":
-                        return f"sd::set_issubset({r}{rest})"
-                    case "issuperset":
-                        return f"sd::set_issubset({args[0]}, {r})"
+                return f"sd::set_{name}({r}{rest})"  # (the rest take other collections: s.union(xs, ys))
         raise NotImplementedError(f"codegen for {recv_type}.{name}()")
 
     def function_call(self, member: builtins.Function, e: A.Call) -> str:

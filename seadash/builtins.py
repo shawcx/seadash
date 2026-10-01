@@ -200,7 +200,7 @@ def printable(t: Type) -> bool:
 def sized(t: Type) -> bool:
     return t in (STR, BYTES, JSON_VALUE, HTTP_HEADERS) or isinstance(t, (ListType, DictType, SetType, TupleType, DequeType, VarTupleType)) or bool(
         user_dunder(t, "__len__")
-    )
+    ) or (isinstance(t, IterType) and t.kind in ("keys", "values", "items", "range"))  # len(d.keys()), len(range(n))
 
 
 def ordered(t: Type) -> bool:
@@ -215,12 +215,13 @@ def bytes_like(t: Type) -> bool:
 
 
 def b_print(ctx: CallContext) -> Type:
-    ctx.arity(0, MANY, keywords=("sep", "end", "file"))
+    ctx.arity(0, MANY, keywords=("sep", "end", "file", "flush"))
     for i in range(len(ctx.args)):
         ctx.need(i, printable, "something printable")
     ctx.keyword("sep", STR)
     ctx.keyword("end", STR)
     ctx.keyword("file", TEXT_FILE)
+    ctx.keyword("flush", BOOL)
     return NONE
 
 
@@ -273,9 +274,24 @@ def b_len(ctx: CallContext) -> Type:
 
 
 def b_str(ctx: CallContext) -> Type:
-    if ctx.arity(0, 1):
+    n = ctx.arity(0, 2, keywords=("encoding",))
+    if n == 2 or ctx.call.keywords:  # str(data, "utf-8") is data.decode("utf-8")
+        if n == 0 or ctx.arg(0) != BYTES:
+            what = "decoding str is not supported" if n and ctx.args[0].ty == STR else "str() with an encoding needs bytes to decode"
+            raise ctx.error(what, ctx.args[0] if n else None)
+        encoding_argument(ctx, n)
+    elif n:
         ctx.need(0, printable, "something printable")
     return STR
+
+
+def encoding_argument(ctx: CallContext, n: int) -> None:
+    """The encoding of str(data, encoding) or bytes(text, encoding): the second argument or encoding=."""
+    if n == 2 and ctx.call.keywords:
+        raise ctx.error(f"{ctx.what} got multiple values for argument 'encoding'", ctx.call.keywords[0])
+    if n == 2:
+        ctx.expect(1, STR)
+    ctx.keyword("encoding", STR)
 
 
 def b_repr(ctx: CallContext) -> Type:
@@ -335,9 +351,46 @@ def b_format(ctx: CallContext) -> Type:
 
 
 def b_int(ctx: CallContext) -> Type:
-    if ctx.arity(0, 1):
+    n = ctx.arity(0, 2, keywords=("base",))
+    if n:
         ctx.need(0, lambda t: t in (INT, FLOAT, BOOL, STR), "an int, float, bool or str")
+    base = ctx.args[1] if n == 2 else ctx.keyword_arg("base")
+    if base is not None:
+        if n == 2 and ctx.keyword_arg("base") is not None:
+            raise ctx.error("int() got multiple values for argument 'base'", ctx.keyword_arg("base"))
+        if n == 0:
+            raise ctx.error("int() missing string argument")
+        if ctx.args[0].ty != STR:
+            raise ctx.error("int() can't convert non-string with explicit base", ctx.args[0])
+        if ctx.checker.check_expr(base, INT) != INT:
+            raise ctx.error(f"int() base must be an int, not {base.ty}", base)
     return INT
+
+
+def b_digits(ctx: CallContext) -> Type:
+    """bin(n), oct(n), hex(n)."""
+    ctx.arity(1)
+    t = ctx.arg(0)
+    if t not in (INT, BOOL):
+        raise ctx.error(f"'{t}' object cannot be interpreted as an integer", ctx.args[0])
+    return STR
+
+
+def b_divmod(ctx: CallContext) -> Type:
+    ctx.arity(2)
+    types = [ctx.arg(i) for i in range(2)]
+    for i, t in enumerate(types):
+        if t not in (INT, FLOAT, BOOL):
+            raise ctx.error(f"divmod() arguments must be numbers, not {t}", ctx.args[i])
+    result = FLOAT if FLOAT in types else INT
+    return TupleType((result, result))
+
+
+def b_exit(ctx: CallContext) -> Type:
+    """exit() and quit(): like sys.exit()."""
+    if ctx.arity(0, 1):
+        ctx.expect(0, INT)
+    return NONE
 
 
 def b_float(ctx: CallContext) -> Type:
@@ -380,11 +433,19 @@ def b_hash(ctx: CallContext) -> Type:
 
 
 def b_min_max(ctx: CallContext) -> Type:
-    n = ctx.arity(1, MANY, keywords=("key",))
+    n = ctx.arity(1, MANY, keywords=("key", "default"))
+    default = ctx.keyword_arg("default")
     if n == 1:
         elem = ctx.iterable(0)
         ctx.sort_key(elem)
-        return elem
+        if default is None:
+            return elem
+        result = join(elem, ctx.checker.check_expr(default, elem))
+        if result is None:
+            raise ctx.error(f"{ctx.what} default must be {elem} (or None), not {default.ty}", default)
+        return result
+    if default is not None:
+        raise ctx.error(f"Cannot specify a default for {ctx.what} with multiple positional arguments", default)
     if ctx.keyword_arg("key") is not None:
         raise ctx.error(f"{ctx.what} only supports key= with a single iterable argument")
     result = ctx.need(0, ordered, "a number, str, tuple or list")
@@ -426,9 +487,9 @@ def b_sorted(ctx: CallContext) -> Type:
 
 
 def b_map(ctx: CallContext) -> Type:
-    ctx.arity(2)
-    elem = ctx.iterable(1)  # the iterable first: it decides the function's parameter type
-    result = ctx.function(ctx.args[0], (elem,), "function")
+    n = ctx.arity(2, MANY)
+    elems = tuple(ctx.iterable(i) for i in range(1, n))  # the iterables first: they decide the function's parameter types
+    result = ctx.function(ctx.args[0], elems, "function")
     if result == NONE:
         raise ctx.error(f"{ctx.what} function must return a value", ctx.args[0])
     return GeneratorType(result)
@@ -437,6 +498,9 @@ def b_map(ctx: CallContext) -> Type:
 def b_filter(ctx: CallContext) -> Type:
     ctx.arity(2)
     elem = ctx.iterable(1)
+    if isinstance(ctx.args[0], A.NoneLit):  # filter(None, xs): the items that are true
+        ctx.checker.check_truthy(elem, ctx.args[1])
+        return GeneratorType(elem)
     result = ctx.function(ctx.args[0], (elem,), "function")
     ctx.checker.check_truthy(result, ctx.args[0])
     return GeneratorType(elem)
@@ -444,22 +508,27 @@ def b_filter(ctx: CallContext) -> Type:
 
 def b_reversed(ctx: CallContext) -> Type:
     ctx.arity(1)
-    t = ctx.need(0, lambda t: isinstance(t, (ListType, TupleType)) or t == STR, "a list, tuple or str")
+    t = ctx.need(0, lambda t: isinstance(t, (ListType, TupleType)) or t == STR or t == IterType(INT, "range"),
+                 "a list, tuple, str or range")
     if isinstance(t, TupleType):
         return IterType(ctx.iterable(0), "reversed")
     return IterType(element_type(t), "reversed")
 
 
 def b_enumerate(ctx: CallContext) -> Type:
-    n = ctx.arity(1, 2)
+    n = ctx.arity(1, 2, keywords=("start",))
     elem = ctx.iterable(0)
     if n == 2:
+        if ctx.call.keywords:
+            raise ctx.error("enumerate() got multiple values for argument 'start'", ctx.call.keywords[0])
         ctx.expect(1, INT)
+    ctx.keyword("start", INT)
     return GeneratorType(TupleType((INT, elem)))
 
 
 def b_zip(ctx: CallContext) -> Type:
-    n = ctx.arity(2, MANY)
+    n = ctx.arity(1, MANY, keywords=("strict",))
+    ctx.keyword("strict", BOOL)
     return GeneratorType(TupleType(tuple(ctx.iterable(i) for i in range(n))))
 
 
@@ -527,7 +596,36 @@ def b_tuple(ctx: CallContext) -> Type:
     return TupleType(())
 
 
+def dict_keywords(ctx: CallContext) -> Type:
+    """dict(a=1, b=2) and dict(other, c=3): the keywords are str keys."""
+    if len(ctx.args) > 1:
+        raise ctx.error(f"dict() takes at most 1 argument ({len(ctx.args)} given)")
+    keywords, ctx.call.keywords = ctx.call.keywords, []
+    try:
+        result = b_dict(ctx) if ctx.args else None  # (the dict or pairs they're added to)
+    finally:
+        ctx.call.keywords = keywords
+    if result is not None and result.key != STR:
+        raise ctx.error(f"dict() keywords are str keys, but this has {result.key} keys", ctx.args[0])
+    value = result.value if result is not None else ctx.expected.value if (
+        isinstance(ctx.expected, DictType) and ctx.expected.key == STR) else None
+    fixed = value is not None
+    for kw in keywords:
+        t = ctx.checker.check_expr(kw.value, value)
+        if value is None:
+            value = t
+        elif fixed and not assignable(t, value):
+            raise ctx.error(f"dict() argument '{kw.name}' must be {value}, not {t}", kw.value)
+        elif not fixed:
+            if (joined := join(value, t)) is None:
+                raise ctx.error(f"dict() values must all be one type, not {value} and {t}", kw.value)
+            value = joined
+    return DictType(STR, value)
+
+
 def b_dict(ctx: CallContext) -> Type:
+    if ctx.call.keywords:
+        return dict_keywords(ctx)
     if ctx.arity(0, 1):  # dict(other_dict) copies; dict(pairs) builds from (key, value) tuples
         hint = ctx.expected if type(ctx.expected) is DictType else None
         t = ctx.arg(0, hint)
@@ -559,11 +657,17 @@ def b_input(ctx: CallContext) -> Type:
 
 
 def b_bytes(ctx: CallContext) -> Type:
-    if not ctx.arity(0, 1):
+    n = ctx.arity(0, 2, keywords=("encoding",))
+    if n == 2 or ctx.call.keywords:  # bytes(text, "utf-8") is text.encode("utf-8")
+        if n == 0 or ctx.arg(0) != STR:
+            raise ctx.error("encoding without a string argument", ctx.args[0] if n else None)
+        encoding_argument(ctx, n)
+        return BYTES
+    if not n:
         return BYTES
     t = ctx.arg(0)
     if t == STR:
-        raise ctx.error("bytes(str) needs an encoding; use s.encode() instead", ctx.args[0])
+        raise ctx.error('bytes(str) needs an encoding: bytes(s, "utf-8"), or s.encode()', ctx.args[0])
     if t != INT and element_type(t) != INT:
         raise ctx.error(f"bytes() needs a length or a list of ints (0-255), not {t}", ctx.args[0])
     mark_tuple_iterable(ctx.args[0], t, INT)
@@ -587,7 +691,7 @@ def b_round(ctx: CallContext) -> Type:
     ctx.need(0, is_numeric, "a number")
     if n == 2:
         ctx.expect(1, INT)
-        return FLOAT
+        return ctx.args[0].ty  # round(1250, -2) is the int 1200
     return INT
 
 
@@ -630,6 +734,12 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "ord": b_ord,
     "chr": b_chr,
     "round": b_round,
+    "bin": b_digits,
+    "oct": b_digits,
+    "hex": b_digits,
+    "divmod": b_divmod,
+    "exit": b_exit,
+    "quit": b_exit,
 }
 
 VALUES: dict[str, Value] = {
@@ -906,11 +1016,56 @@ LIST_METHODS = {
     "sort": list_sort,
 }
 
+def dict_update(ctx: CallContext) -> Type:
+    """d.update(other), d.update(pairs), d.update(key=value): any of them, or both."""
+    d: DictType = ctx.receiver
+    if len(ctx.args) > 1:
+        raise ctx.error(f"update expected at most 1 argument, got {len(ctx.args)}")
+    if ctx.args:
+        t = ctx.arg(0, DictType(d.key, d.value))
+        if isinstance(t, DictType):
+            if not (assignable(t.key, d.key) and assignable(t.value, d.value)):
+                raise ctx.error(f"dict.update() argument must be {DictType(d.key, d.value)}, not {t}", ctx.args[0])
+        else:
+            pair = ctx.iterable(0)
+            if not (isinstance(pair, TupleType) and len(pair.elts) == 2 and assignable(pair.elts[0], d.key)
+                    and assignable(pair.elts[1], d.value)):
+                raise ctx.error(f"dict.update() needs a {DictType(d.key, d.value)} or ({d.key}, {d.value}) pairs, not {t}",
+                                ctx.args[0])
+    for kw in ctx.call.keywords:
+        if d.key != STR:
+            raise ctx.error(f"dict.update() keywords are str keys, but this dict has {d.key} keys", kw)
+        if not assignable(ctx.checker.check_expr(kw.value, d.value), d.value):
+            raise ctx.error(f"dict.update() argument '{kw.name}' must be {d.value}, not {kw.value.ty}", kw.value)
+    return NONE
+
+
+def dict_fromkeys(ctx: CallContext) -> Type:
+    """dict.fromkeys(keys, value): every key with the same value (None if there's no value)."""
+    n = ctx.arity(1, 2)
+    key = ctx.iterable(0)
+    if not is_hashable(key):
+        raise ctx.error(f"dict keys must be int, float, str, bool, or a tuple of those; not {key}", ctx.args[0])
+    hint = ctx.expected.value if isinstance(ctx.expected, DictType) else None
+    if n == 2:
+        value = ctx.arg(1, hint)
+        if hint is not None and assignable(value, hint):
+            value = hint
+        return DictType(key, value)
+    if not isinstance(hint, OptionalType):
+        raise ctx.error("dict.fromkeys() without a value makes every value None: say what they'll hold later, "
+                        "e.g. `d: dict[str, int | None] = dict.fromkeys(names)`")
+    return DictType(key, hint)
+
+
+TYPE_FUNCTIONS[("dict", "fromkeys")] = dict_fromkeys
+
 DICT_METHODS = {
     "get": dict_get,
     "pop": dict_pop,
+    "popitem": returns(lambda d: TupleType((d.key, d.value))),
     "setdefault": returns(value_of, args=(key_of, value_of)),
-    "update": returns(NONE, args=(same,)),
+    "update": dict_update,
     "keys": returns(lambda d: IterType(d.key, "keys")),
     "values": returns(lambda d: IterType(d.value, "values")),
     "items": returns(lambda d: IterType(TupleType((d.key, d.value)), "items")),
@@ -967,15 +1122,44 @@ DEQUE_METHODS = {
     "copy": returns(same),
 }
 
+def set_others(result, lo: int = 1, hi: int = 1):
+    """A set method taking other collections of the same items (any iterables, as in Python)."""
+
+    def handler(ctx: CallContext) -> Type:
+        for i in range(ctx.arity(lo, hi)):
+            elem = ctx.iterable(i)
+            if not assignable(elem, ctx.receiver.elem):
+                raise ctx.error(f"{ctx.what} needs {ctx.receiver.elem} items, not {elem}", ctx.args[i])
+        return result(ctx.receiver) if callable(result) else result
+
+    return handler
+
+
 SET_METHODS = {
     "add": returns(NONE, args=(elem_of,)),
     "remove": returns(NONE, args=(elem_of,)),
     "discard": returns(NONE, args=(elem_of,)),
+    "pop": returns(elem_of),
     "clear": returns(NONE),
     "copy": returns(same),
-    **{name: returns(same, args=(same,)) for name in ("union", "intersection", "difference")},
-    **{name: returns(BOOL, args=(same,)) for name in ("issubset", "issuperset")},
+    **{name: set_others(same, 0, MANY) for name in ("union", "intersection", "difference")},
+    "symmetric_difference": set_others(same),
+    **{name: set_others(NONE, 0, MANY) for name in ("update", "intersection_update", "difference_update")},
+    "symmetric_difference_update": set_others(NONE),
+    **{name: set_others(BOOL) for name in ("issubset", "issuperset", "isdisjoint")},
 }
+
+
+def tuple_search(ctx: CallContext) -> Type:
+    """t.count(x) and t.index(x) on a tuple: x is compared with each item it could equal."""
+    ctx.arity(1)
+    x = ctx.arg(0)
+    if not any(join(x, item) is not None or (is_numeric(x) and is_numeric(item)) for item in ctx.receiver.elts):
+        raise ctx.error(f"a {x} can never be in a {ctx.receiver}", ctx.args[0])
+    return INT
+
+
+TUPLE_METHODS = {"count": tuple_search, "index": tuple_search}
 
 
 def content(f: FileType) -> Type:
@@ -999,7 +1183,12 @@ FILE_METHODS = {
     "close": returns(NONE),
     "flush": returns(NONE),
     "fileno": returns(INT),
+    **{name: returns(BOOL) for name in ("readable", "writable", "seekable", "isatty")},
+    "tell": returns(INT),
+    "seek": returns(INT, 1, 2, (INT, INT)),
+    "truncate": returns(INT, 0, 1, (INT,)),
 }
+FILE_ATTRIBUTES = {"closed": lambda t: BOOL, "name": lambda t: STR, "mode": lambda t: STR}
 
 
 def json_value_get(ctx: CallContext) -> Type:
@@ -1039,6 +1228,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = DEQUE_METHODS
         case VarTupleType():
             table = {"count": returns(INT, args=(elem_of,)), "index": returns(INT, args=(elem_of,))}
+        case TupleType():
+            table = TUPLE_METHODS
         case ParserType():
             return PARSER_METHODS.get(name)
         case SubParsersType():
@@ -1065,6 +1256,10 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = STR_METHODS
         case _ if t == BYTES:
             table = BYTES_METHODS
+        case _ if t == INT:
+            table = INT_METHODS
+        case _ if t == FLOAT:
+            table = FLOAT_METHODS
         case _:
             return None
     return table.get(name)
@@ -1595,6 +1790,20 @@ STR_METHODS.update(text_methods(STR, '" "s'))
 BYTES_METHODS.update(text_methods(BYTES, 'sd::bytes(" "s)'))
 BYTES_METHODS["translate"] = sync_method(BYTES, ("table", OptionalType(BYTES)), ("delete", BYTES, "sd::bytes()"))
 
+INT_METHODS = {
+    "bit_length": sync_method(INT),
+    "bit_count": sync_method(INT),
+    "to_bytes": sync_method(BYTES, ("length", INT, "1_i"), ("byteorder", STR, '"big"s'), ("signed", BOOL, "false")),
+    "is_integer": sync_method(BOOL),
+    "as_integer_ratio": sync_method(TupleType((INT, INT))),
+}
+FLOAT_METHODS = {
+    "is_integer": sync_method(BOOL),
+    "hex": sync_method(STR),
+}
+TYPE_FUNCTIONS[("int", "from_bytes")] = sync_method(INT, ("bytes", BYTES), ("byteorder", STR, '"big"s'), ("signed", BOOL, "false"))
+TYPE_FUNCTIONS[("float", "fromhex")] = sync_method(FLOAT, ("string", STR))
+
 
 def plural_args(n: int) -> str:
     return "1 argument" if n == 1 else f"{n} arguments"
@@ -1909,6 +2118,10 @@ def type_attributes(t: Type) -> dict | None:
         return {"size": lambda t: INT, "format": lambda t: STR}
     if isinstance(t, NamespaceType):
         return {name: (lambda _, ft=ft: ft) for name, ft in t.fields}
+    if isinstance(t, DequeType):
+        return {"maxlen": lambda t: OptionalType(INT)}
+    if isinstance(t, FileType):
+        return FILE_ATTRIBUTES
     if isinstance(t, PatternType):
         return PATTERN_ATTRIBUTES
     if isinstance(t, MatchType):

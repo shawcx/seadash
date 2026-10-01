@@ -1,0 +1,65 @@
+# Keyword and extra-argument forms of the built-in functions: default=, start=, strict=, flush=,
+# map() over several iterables, filter(None, ...), dict(key=value), str(data, encoding), bytes(text, encoding).
+import sys
+
+xs = [3, 1, 2]
+fs = [1.5, 2.5]
+ws = ["bb", "a", "ccc"]
+empty: list[int] = []
+none: list[str] = []
+print(min(empty, default=0), max(fs, default=0.0), max(xs, default=-1), min(none, key=len, default="x"), max(ws, key=len, default=""))
+print(max(empty, default=None), min(xs, default=None), min(empty, default=2.5), max((v * 2 for v in empty), default=-1))
+for label in ["min", "max", "key"]:
+    try:
+        if label == "min":
+            print(min(empty))
+        elif label == "max":
+            print(max(empty))
+        else:
+            print(max(none, key=len))
+    except ValueError as e:
+        print("ValueError:", e)
+print(list(enumerate(ws, start=2)), list(enumerate(ws, 1)), list(enumerate("ab", start=-1)))
+print("a", "b", sep="-", end="!\n", flush=True)
+print("to a file", file=sys.stdout, flush=True)
+quiet = False
+print("c", flush=quiet)
+print(list(zip(xs)), list(zip(xs, ws, strict=True)), list(zip(xs, ws, fs)), list(zip(xs, fs, strict=False)))
+cases: list[tuple[list[int], list[int], list[int]]] = [([1, 2], [1], [1, 2]), ([1], [1, 2], [1]), ([1], [1], [1, 2]), ([1, 2], [1, 2], [1]),
+                                                        ([1], [1, 2], [1, 2]), ([1, 2], [1], [1]), ([], [1], []), ([1], [2], [3])]
+for a, b, c in cases:
+    try:
+        print(list(zip(a, b, c, strict=True)))
+    except ValueError as e:
+        print("ValueError:", e)
+    try:
+        print(list(zip(a, b, strict=True)))
+    except ValueError as e:
+        print("ValueError:", e)
+print(list(map(lambda a, b: a + b, xs, [10, 20])), list(map(lambda a, b, c: f"{a}{b}{c}", xs, ws, fs)), list(map(str, xs)))
+print(list(map(lambda v, w: w * v, (v for v in xs), ws)), sum(map(lambda a, b: a * b, xs, xs)))
+print(list(filter(None, [0, 1, 2, 0])), list(filter(None, ["", "a", ""])), list(filter(None, [[], [1]])), list(filter(None, [0.0, 0.5])))
+d = {"x": 1}
+print(dict(a=1, b=2), dict(d, a=2), dict([("k", 1)], a=2), dict(d, x=5), dict(name="n", kind="k"), dict(a=1.5, b=2.5), d)
+pairs = dict(zip(ws, xs), extra=9)
+ratios: dict[str, float] = dict(half=0.5, one=1.0)
+maybe: dict[str, int | None] = dict(a=1, b=None)
+print(pairs, ratios, maybe)
+data = b"h\xc3\xa9llo"
+print(str(data, "utf-8"), str(b"ab", encoding="ascii"), str(data, "latin-1") == data.decode("latin-1"), str(b"ab"), str(), str(5))
+print(bytes("hi", "utf-8"), bytes("hé", encoding="latin-1"), bytes("hé", "utf-8"), bytes(3), bytes([1, 2]))
+try:
+    print(bytes("é", "ascii"))
+except UnicodeEncodeError as e:
+    print("UnicodeEncodeError:", e)
+try:
+    print(str(b"\xff", "utf-8"))
+except UnicodeDecodeError as e:
+    print("UnicodeDecodeError:", e)
+for text, encoding in [("hé", "ascii"), ("a€€bé", "latin-1"), ("a€€bé", "ascii"), ("\U0001f600", "latin1"),
+                       ("xéÿ", "ISO-8859-1"), ("ok", "US-ASCII"), ("abé€", "utf8"), ("é€", "L1")]:
+    try:
+        print(text.encode(encoding), bytes(text, encoding) == text.encode(encoding))
+    except UnicodeEncodeError as e:
+        print("UnicodeEncodeError:", e)
+print(b"h\xe9\xff".decode("latin-1"), str(b"\x80abc", "iso-8859-1"), b"ab".decode("L1"), len(b"\xe9".decode("latin1").encode()))

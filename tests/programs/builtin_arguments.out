@@ -1,0 +1,44 @@
+0 2.5 3 x ccc
+None 1 2.5 -1
+ValueError: min() iterable argument is empty
+ValueError: max() iterable argument is empty
+ValueError: max() iterable argument is empty
+[(2, 'bb'), (3, 'a'), (4, 'ccc')] [(1, 'bb'), (2, 'a'), (3, 'ccc')] [(-1, 'a'), (0, 'b')]
+a-b!
+to a file
+c
+[(3,), (1,), (2,)] [(3, 'bb'), (1, 'a'), (2, 'ccc')] [(3, 'bb', 1.5), (1, 'a', 2.5)] [(3, 1.5), (1, 2.5)]
+ValueError: zip() argument 2 is shorter than argument 1
+ValueError: zip() argument 2 is shorter than argument 1
+ValueError: zip() argument 2 is longer than argument 1
+ValueError: zip() argument 2 is longer than argument 1
+ValueError: zip() argument 3 is longer than arguments 1-2
+[(1, 1)]
+ValueError: zip() argument 3 is shorter than arguments 1-2
+[(1, 1), (2, 2)]
+ValueError: zip() argument 2 is longer than argument 1
+ValueError: zip() argument 2 is longer than argument 1
+ValueError: zip() argument 2 is shorter than argument 1
+ValueError: zip() argument 2 is shorter than argument 1
+ValueError: zip() argument 2 is longer than argument 1
+ValueError: zip() argument 2 is longer than argument 1
+[(1, 2, 3)]
+[(1, 2)]
+[13, 21] ['3bb1.5', '1a2.5'] ['3', '1', '2']
+['bbbbbb', 'a', 'cccccc'] 14
+[1, 2] ['a'] [[1]] [0.5]
+{'a': 1, 'b': 2} {'x': 1, 'a': 2} {'k': 1, 'a': 2} {'x': 5} {'name': 'n', 'kind': 'k'} {'a': 1.5, 'b': 2.5} {'x': 1}
+{'bb': 3, 'a': 1, 'ccc': 2, 'extra': 9} {'half': 0.5, 'one': 1.0} {'a': 1, 'b': None}
+héllo ab True b'ab'  5
+b'hi' b'h\xe9' b'h\xc3\xa9' b'\x00\x00\x00' b'\x01\x02'
+UnicodeEncodeError: 'ascii' codec can't encode character '\xe9' in position 0: ordinal not in range(128)
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+UnicodeEncodeError: 'ascii' codec can't encode character '\xe9' in position 1: ordinal not in range(128)
+UnicodeEncodeError: 'latin-1' codec can't encode characters in position 1-2: ordinal not in range(256)
+UnicodeEncodeError: 'ascii' codec can't encode characters in position 1-2: ordinal not in range(128)
+UnicodeEncodeError: 'latin-1' codec can't encode character '\U0001f600' in position 0: ordinal not in range(256)
+b'x\xe9\xff' True
+b'ok' True
+b'ab\xc3\xa9\xe2\x82\xac' True
+UnicodeEncodeError: 'latin-1' codec can't encode character '\u20ac' in position 1: ordinal not in range(256)
+héÿ abc ab 2

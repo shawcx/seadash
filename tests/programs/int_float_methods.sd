@@ -1,0 +1,61 @@
+# bin/oct/hex, divmod, int(s, base), round(int, n), and the methods of int and float.
+n = 10
+x = 2.5
+print(bin(n), hex(n), oct(n), bin(-5), hex(255), bin(0), bin(True), hex(2**63 - 1), oct(-8))
+print(divmod(7, 2), divmod(-7, 2), divmod(7, -2), divmod(7.5, 2), divmod(-7.5, 2), divmod(7, 2.0), divmod(True, 2))
+q, r = divmod(n, 3)
+print(q, r, divmod(7.5, -2), divmod(-7.5, -2.0), divmod(9.0, 3), divmod(0.3, 0.1), divmod(5.0, float("inf")), divmod(1e300, 1e-300))
+print(0.3 // 0.1, -7.5 // 2.0, 7.5 % -2.0, 7.5 // 2, 7.5 % 2, 1.0 % 0.1)
+for a, b in [(1, 0)]:
+    try:
+        print(divmod(a, b))
+    except ZeroDivisionError as e:
+        print("ZeroDivisionError:", e)
+    try:
+        print(divmod(float(a), b))
+    except ZeroDivisionError as e:
+        print("ZeroDivisionError:", e)
+print(n.bit_length(), (0).bit_length(), (-10).bit_length(), (255).bit_count(), (-255).bit_count(), (-2**63).bit_length())
+print((255).to_bytes(2, "big"), (255).to_bytes(2, "little"), (255).to_bytes(), (-1).to_bytes(2, "big", signed=True))
+print((0).to_bytes(0), (2**63 - 1).to_bytes(8), (1).to_bytes(10), (-1).to_bytes(10, signed=True), (-1).to_bytes(10, "little", signed=True))
+print((1).to_bytes(length=2, byteorder="little"), (-128).to_bytes(1, signed=True), (127).to_bytes(1, signed=True))
+for value, length, order, signed in [(256, 1, "big", False), (-1, 2, "big", False), (128, 1, "big", True), (1, 0, "big", False),
+                                     (1, -1, "big", False), (1, 2, "middle", False), (-129, 1, "big", True), (-1, 0, "big", True)]:
+    try:
+        print(value.to_bytes(length, order, signed=signed))
+    except OverflowError as e:
+        print("OverflowError:", e)
+    except ValueError as e:
+        print("ValueError:", e)
+print(int.from_bytes(b"\x00\xff", "big"), int.from_bytes(b"\xff", "little", signed=True), int.from_bytes(b""), int.from_bytes(b"\x01\x02"))
+print(int.from_bytes(b"\xff" * 8, "big", signed=True), int.from_bytes(b"\x00" * 4 + b"\x7f" + b"\xff" * 7), int.from_bytes(b"\xff" * 12, byteorder="little", signed=True))
+print(int.from_bytes(b"\x80" + b"\x00" * 7, signed=True), int.from_bytes(b"\x34\x12", byteorder="little"))
+try:
+    print(int.from_bytes(b"\x01", "x"))
+except ValueError as e:
+    print("ValueError:", e)
+print(n.is_integer(), x.is_integer(), (2.0).is_integer(), float("inf").is_integer(), float("nan").is_integer(), n.as_integer_ratio(), (-3).as_integer_ratio())
+for v in [2.5, 0.0, -0.0, 1.0, 0.1, -2.5, float("inf"), float("-inf"), float("nan"), 5e-324, 1e308, 2.2250738585072014e-308, 1e-310, 123456.789]:
+    print(v.hex(), float.fromhex(v.hex()) == v or v != v)
+for s in ["0x1.8p+1", "1.8p1", " -0x1p-2 ", "inf", "nan", "abc", "0X1.FFp3", "1", "0x.8", "-Infinity", "0x1p-2000", "1e3", "0x1.8", "0x", "", "0x1p5000", "p1", "0x1.p", "1..2", "0x1p+", "+0x10"]:
+    try:
+        print(float.fromhex(s))
+    except OverflowError as e:
+        print("OverflowError:", e)
+    except ValueError as e:
+        print("ValueError:", e)
+for s, base in [("ff", 16), ("0xff", 16), ("0b11", 0), ("0o17", 0), ("17", 0), ("017", 0), ("z", 36), ("Z", 36), ("12", 2), ("", 16), ("1_0", 2),
+                (" -0x1f ", 16), ("+11", 2), ("0b11", 2), ("0b11", 16), ("10", 1), ("10", 37), ("10", -1), ("0x", 16), ("1__0", 10), ("_1", 10),
+                ("1_", 10), ("0_7", 0), ("0", 0), ("00", 0), ("0x_f", 16), ("0x_f", 0), ("-9223372036854775808", 10), ("0_0", 0), ("-0", 0),
+                ("0x", 0), ("0b", 2), ("1 2", 10), ("- 1", 10), ("-", 10), ("0x10", 10), ("7fffffffffffffff", 16), ("-8000000000000000", 16)]:
+    try:
+        print(int(s, base))
+    except ValueError as e:
+        print("ValueError:", e)
+print(int("ff", base=16), int("1_000"), int(" 12 "), int("+5"), int("-12"))
+for s in ["1__0", "_1", "1_", "  ", "1e3", "0x10"]:
+    try:
+        print(int(s))
+    except ValueError as e:
+        print("ValueError:", e)
+print(round(1234, -2), round(1250, -2), round(1350, -2), round(-1250, -2), round(15, -1), round(25, -1), round(5, 1), round(5, 0), round(2.5, 0), round(1234.5678, -2), round(2.675, 2), round(-15, -1), round(149, -2), round(150, -2), round(7, -1), round(5, -1), round(-5, -1), round(n, -5))

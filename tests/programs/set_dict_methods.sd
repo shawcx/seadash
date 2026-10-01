@@ -1,0 +1,78 @@
+# The rest of the set and dict methods and operators; tuple.count/index; deque.maxlen.
+from collections import deque, defaultdict
+
+d = {"a": 1, "b": 2}
+print(d.popitem(), d, len(d))
+d.update(k=2)
+d.update([("j", 3)])
+d.update({"a": 9}, z=3)
+d.update()
+d.update((("t", 1), ("u", 2)))
+print(d)
+d |= {"y": 2}
+print(d | {"x": 1}, d | {"a": 0}, d)
+alias = d
+alias |= {"shared": 1}
+print("shared" in d, len(d.keys()), len(d.values()), len(d.items()), "a" in d.keys(), 9 in d.values(), ("a", 9) in d.items(), "nope" in d.keys())
+counts: defaultdict[str, int] = defaultdict(int)
+counts["q"] += 5
+d.update(counts)
+print(d["q"])
+empty: dict[str, int] = {}
+try:
+    empty.popitem()
+except KeyError as e:
+    print("KeyError:", e)
+while d:
+    k, v = d.popitem()
+    if k == "a":
+        print("last", k, v)
+print(dict.fromkeys(["a", "b"], 0), dict.fromkeys("ab", 1.5), dict.fromkeys(range(3), "x"), dict.fromkeys((1, 2), True))
+slots: dict[str, int | None] = dict.fromkeys(["x", "y"])
+shared = dict.fromkeys(["p", "q"], [0])
+shared["p"].append(1)
+print(slots, shared)
+
+s = {1, 2, 3}
+t = {2, 3, 4}
+print(s.isdisjoint(t), s.isdisjoint({9}), s.isdisjoint([7, 8]), s.symmetric_difference(t), s.symmetric_difference([3, 5]), s ^ t)
+print(s <= t, s < t, s >= t, s > t, {1} <= s, {1} < s, s <= s, s < s, s >= {1, 2}, s > {1, 2}, s > s, s == {3, 2, 1})
+print(s.union(t, [9]), s.union(), s.union([3], (4,), {5}), s.intersection(t, [3]), s.intersection(), s.difference([1], {2}), s.difference())
+print(s.issubset([1, 2, 3, 4]), s.issubset({1}), s.issuperset([1]), s.issuperset((1, 9)), s.issubset(range(10)), s)
+s.update(t)
+s.update([7, 8], (9,))
+s.update()
+print(s)
+s.intersection_update([1, 2, 7, 9], {1, 7, 9})
+print(sorted(s))
+s.difference_update([1], [100])
+print(sorted(s))
+s.symmetric_difference_update([7, 5])
+print(sorted(s))
+s.update(s)
+s.intersection_update(s)
+print(sorted(s))
+s.difference_update(s)
+print(s, len(s))
+one = {5}
+print(one.pop(), one, len(one))
+try:
+    one.pop()
+except KeyError as e:
+    print("KeyError:", e)
+words = {"pear", "fig"}
+words.update(["kiwi"], {"fig"})
+print(sorted(words), words.issuperset(["fig"]), words >= {"fig"}, words.isdisjoint(["plum"]))
+fl = {1.5, 2.5}
+fl.update([0.5], (3.5,))
+print(sorted(fl), sorted(fl.union([4.5])), fl.isdisjoint([2]), fl.issuperset([1.5]))
+
+pair = (1, 2, 1)
+mixed = (1, "a", 2.0, "a")
+print(pair.count(1), pair.index(2), pair.count(5), mixed.count("a"), mixed.index("a"), mixed.count(2), mixed.index(2.0), (1, 2).index(1))
+try:
+    print(pair.index(3))
+except ValueError as e:
+    print("ValueError:", e)
+dq = deque([1, 2], maxlen=3)
+print(dq.maxlen, deque([1]).maxlen, dq)

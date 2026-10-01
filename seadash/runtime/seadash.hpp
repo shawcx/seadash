@@ -6,6 +6,7 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <coroutine>
 #include <charconv>
 #include <cmath>
@@ -942,6 +943,18 @@ public:
         }
     }
 
+    // d.popitem(): removes and returns the last item added.
+    std::tuple<K, V> popitem() const {
+        Data& D = data();
+        for (std::size_t i = D.items.size(); i-- > 0;) {
+            if (!D.alive[i]) continue;
+            std::tuple<K, V> out(D.items[i].first, D.items[i].second);
+            erase(std::get<0>(out));
+            return out;
+        }
+        raise("KeyError", "'popitem(): dictionary is empty'");
+    }
+
     // Iteration skips deleted entries; yields (key, value) pairs in insertion order.
     struct const_iterator {
         const Data* d;
@@ -1512,18 +1525,46 @@ inline std::int64_t to_int(double x) {
     if (std::isnan(x) || std::isinf(x)) raise("ValueError", "cannot convert float " + float_repr(x) + " to integer");
     return static_cast<std::int64_t>(x);
 }
-inline std::int64_t to_int(const std::string& s) {
-    std::string cleaned;
-    for (char c : strip_view(s))
-        if (c != '_') cleaned += c;
-    std::string_view v = cleaned;
-    if (!v.empty() && v[0] == '+') v.remove_prefix(1);
-    std::int64_t out = 0;
-    auto res = std::from_chars(v.data(), v.data() + v.size(), out);
-    if (v.empty() || res.ec != std::errc{} || res.ptr != v.data() + v.size())
-        raise("ValueError", "invalid literal for int() with base 10: " + repr_str(s));
-    return out;
+// int(s, base), by Python's rules: a sign, then with base 16, 8 or 2 an optional 0x, 0o or 0b,
+// then digits with single underscores between them. Base 0 reads the base from the prefix,
+// as in source code (so "017" is an error).
+inline std::int64_t to_int(const std::string& s, std::int64_t base) {
+    if (base != 0 && (base < 2 || base > 36)) raise("ValueError", "int() base must be >= 2 and <= 36, or 0");
+    auto bad = [&] { raise("ValueError", "invalid literal for int() with base " + std::to_string(base) + ": " + repr_str(s)); };
+    std::string_view v = strip_view(s);
+    bool negative = !v.empty() && v[0] == '-';
+    if (!v.empty() && (v[0] == '+' || v[0] == '-')) v.remove_prefix(1);
+    auto prefixed = [&](char letter) { return v.size() >= 2 && v[0] == '0' && (v[1] | 0x20) == letter; };
+    std::uint64_t b = static_cast<std::uint64_t>(base);
+    bool only_zero = false;  // base 0 and a leading 0 with no prefix: "0" and "00" are fine, "017" isn't
+    if (base == 0) {
+        b = prefixed('x') ? 16 : prefixed('o') ? 8 : prefixed('b') ? 2 : 10;
+        only_zero = b == 10 && !v.empty() && v[0] == '0';
+    }
+    if ((b == 16 && prefixed('x')) || (b == 8 && prefixed('o')) || (b == 2 && prefixed('b'))) {
+        v.remove_prefix(2);
+        if (!v.empty() && v[0] == '_') v.remove_prefix(1);  // 0x_ff
+    }
+    if (v.empty() || v.front() == '_' || v.back() == '_') bad();
+    std::uint64_t magnitude = 0;
+    bool overflow = false;
+    char previous = 0;
+    for (char c : v) {
+        if (c == '_') {
+            if (previous == '_') bad();
+        } else {
+            std::uint64_t digit = c >= '0' && c <= '9' ? c - '0' : (c | 0x20) >= 'a' && (c | 0x20) <= 'z' ? (c | 0x20) - 'a' + 10 : 99;
+            if (digit >= b) bad();
+            overflow = overflow || __builtin_mul_overflow(magnitude, b, &magnitude) || __builtin_add_overflow(magnitude, digit, &magnitude);
+        }
+        previous = c;
+    }
+    if (only_zero && (magnitude != 0 || overflow)) bad();
+    const std::uint64_t limit = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + (negative ? 1 : 0);
+    if (overflow || magnitude > limit) raise("OverflowError", "int() result doesn't fit in 64 bits: " + repr_str(s));
+    return negative ? static_cast<std::int64_t>(0 - magnitude) : static_cast<std::int64_t>(magnitude);
 }
+inline std::int64_t to_int(const std::string& s) { return to_int(s, 10); }
 inline std::int64_t to_int() { return 0; }
 
 inline double to_float(double x) { return x; }
@@ -1550,6 +1591,7 @@ inline std::int64_t floordiv(std::int64_t a, std::int64_t b) {
     if ((a % b != 0) && ((a < 0) != (b < 0))) --q;
     return q;
 }
+// (The floor of the quotient: 1.0 // 0.1 is 10.0. Python works from the remainder and gives 9.0.)
 inline double floordiv(double a, double b) {
     if (b == 0) raise("ZeroDivisionError", "float floor division by zero");
     return std::floor(a / b);
@@ -1565,6 +1607,13 @@ inline double mod(double a, double b) {
     double r = std::fmod(a, b);
     if (r != 0 && ((r < 0) != (b < 0))) r += b;
     return r;
+}
+inline std::tuple<std::int64_t, std::int64_t> divmod(std::int64_t a, std::int64_t b) {
+    return {floordiv(a, b), mod(a, b)};
+}
+inline std::tuple<double, double> divmod(double a, double b) {
+    if (b == 0) raise("ZeroDivisionError", "float divmod()");
+    return {floordiv(a, b), mod(a, b)};
 }
 inline double truediv(double a, double b) {
     if (b == 0) raise("ZeroDivisionError", "division by zero");
@@ -1608,7 +1657,125 @@ inline double round(double x, std::int64_t digits) {
     double scale = std::pow(10.0, static_cast<double>(-digits));
     return std::nearbyint(x / scale) * scale;
 }
-inline double round(std::int64_t x, std::int64_t digits) { return round(static_cast<double>(x), digits); }
+inline std::int64_t round(std::int64_t x, std::int64_t digits) {  // round(1250, -2) is 1200: half to even
+    if (digits >= 0) return x;
+    if (digits < -18) return 0;
+    std::int64_t unit = 1;
+    for (std::int64_t i = 0; i < -digits; ++i) unit *= 10;
+    std::int64_t q = floordiv(x, unit), r = mod(x, unit);
+    if (r > unit - r || (r == unit - r && (q & 1))) ++q;
+    return q * unit;
+}
+
+// bin(), oct(), hex(): the sign, the prefix, then the digits.
+inline std::string int_digits(std::int64_t x, int base, const char* prefix) {
+    char buf[72];
+    std::uint64_t magnitude = x < 0 ? 0 - static_cast<std::uint64_t>(x) : static_cast<std::uint64_t>(x);
+    auto end = std::to_chars(buf, buf + sizeof buf, magnitude, base).ptr;
+    return std::string(x < 0 ? "-" : "") + prefix + std::string(buf, end);
+}
+inline std::string bin(std::int64_t x) { return int_digits(x, 2, "0b"); }
+inline std::string oct(std::int64_t x) { return int_digits(x, 8, "0o"); }
+inline std::string hex(std::int64_t x) { return int_digits(x, 16, "0x"); }
+
+// ---- methods of int and float ----
+
+inline std::int64_t int_bit_length(std::int64_t x) {
+    return std::bit_width(x < 0 ? 0 - static_cast<std::uint64_t>(x) : static_cast<std::uint64_t>(x));
+}
+inline std::int64_t int_bit_count(std::int64_t x) {
+    return std::popcount(x < 0 ? 0 - static_cast<std::uint64_t>(x) : static_cast<std::uint64_t>(x));
+}
+inline bool int_is_integer(std::int64_t) { return true; }
+inline std::tuple<std::int64_t, std::int64_t> int_as_integer_ratio(std::int64_t x) { return {x, 1}; }
+inline bool little_endian(const std::string& byteorder) {
+    if (byteorder != "little" && byteorder != "big") raise("ValueError", "byteorder must be either 'little' or 'big'");
+    return byteorder == "little";
+}
+inline bytes int_to_bytes(std::int64_t x, std::int64_t length, const std::string& byteorder, bool is_signed) {
+    bool little = little_endian(byteorder);
+    if (length < 0) raise("ValueError", "length argument must be non-negative");
+    if (x < 0 && !is_signed) raise("OverflowError", "can't convert negative int to unsigned");
+    if (length < 8) {  // (8 bytes hold any int)
+        int bits = static_cast<int>(length) * 8;
+        bool fits = bits == 0 ? x == 0 || (is_signed && x == -1)  // (CPython lets -1 through)
+                  : is_signed ? x >= -(std::int64_t(1) << (bits - 1)) && x < (std::int64_t(1) << (bits - 1))
+                              : x < (std::int64_t(1) << bits);
+        if (!fits) raise("OverflowError", "int too big to convert");
+    }
+    std::string out(static_cast<std::size_t>(length), x < 0 ? '\xff' : '\0');
+    auto value = static_cast<std::uint64_t>(x);
+    for (std::size_t i = 0; i < out.size() && i < 8; ++i, value >>= 8)
+        out[little ? i : out.size() - 1 - i] = static_cast<char>(value & 0xff);
+    return bytes(std::move(out));
+}
+inline std::int64_t int_from_bytes(const bytes& b, const std::string& byteorder, bool is_signed) {
+    std::string data = b.data;
+    if (little_endian(byteorder)) std::reverse(data.begin(), data.end());  // now the most significant byte is first
+    bool negative = is_signed && !data.empty() && (data[0] & 0x80);
+    char pad = negative ? '\xff' : '\0';
+    std::size_t skip = 0;
+    while (data.size() - skip > 8 && data[skip] == pad) ++skip;
+    std::uint64_t value = negative ? ~std::uint64_t(0) : 0;
+    for (std::size_t i = skip; i < data.size(); ++i) value = (value << 8) | static_cast<unsigned char>(data[i]);
+    if (data.size() - skip > 8 || negative != (static_cast<std::int64_t>(value) < 0))
+        raise("OverflowError", "int.from_bytes() result doesn't fit in 64 bits");
+    return static_cast<std::int64_t>(value);
+}
+
+inline bool float_is_integer(double x) { return std::isfinite(x) && std::floor(x) == x; }
+inline std::string float_hex(double x) {  // 0x1.8000000000000p+1, as CPython writes it
+    if (std::isnan(x)) return "nan";
+    if (std::isinf(x)) return x < 0 ? "-inf" : "inf";
+    std::string sign = std::signbit(x) ? "-" : "";
+    if (x == 0) return sign + "0x0.0p+0";
+    int e = 0;
+    double m = std::frexp(std::fabs(x), &e);
+    int shift = 1 - std::max(std::numeric_limits<double>::min_exponent - e, 0);
+    m = std::ldexp(m, shift);
+    e -= shift;
+    static const char* digits = "0123456789abcdef";
+    std::string out = sign + "0x";
+    out += digits[static_cast<int>(m)];
+    m -= static_cast<int>(m);
+    out += '.';
+    for (int i = 0; i < 13; ++i) {
+        m *= 16.0;
+        out += digits[static_cast<int>(m)];
+        m -= static_cast<int>(m);
+    }
+    return out + "p" + (e < 0 ? "-" : "+") + std::to_string(e < 0 ? -e : e);
+}
+inline double float_fromhex(const std::string& s) {
+    auto bad = [] { raise("ValueError", "invalid hexadecimal floating-point string"); };
+    std::string_view v = strip_view(s);
+    bool negative = !v.empty() && v[0] == '-';
+    if (!v.empty() && (v[0] == '+' || v[0] == '-')) v.remove_prefix(1);
+    std::string lower;
+    for (char c : v) lower += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    if (lower == "inf" || lower == "infinity") return negative ? -HUGE_VAL : HUGE_VAL;
+    if (lower == "nan") return std::numeric_limits<double>::quiet_NaN();
+    std::string_view t = lower;
+    if (t.starts_with("0x")) t.remove_prefix(2);
+    auto is_hex = [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); };
+    std::size_t i = 0, digits = 0;
+    for (; i < t.size() && is_hex(t[i]); ++i) ++digits;
+    if (i < t.size() && t[i] == '.')
+        for (++i; i < t.size() && is_hex(t[i]); ++i) ++digits;
+    if (digits == 0) bad();
+    if (i < t.size() && t[i] == 'p') {
+        ++i;
+        if (i < t.size() && (t[i] == '+' || t[i] == '-')) ++i;
+        std::size_t start = i;
+        while (i < t.size() && t[i] >= '0' && t[i] <= '9') ++i;
+        if (i == start) bad();
+    }
+    if (i != t.size()) bad();
+    std::string text = "0x" + std::string(t);
+    double value = std::strtod(text.c_str(), nullptr);
+    if (std::isinf(value)) raise("OverflowError", "hexadecimal value too large to represent as a float");
+    return negative ? -value : value;
+}
 
 // ============================================================================
 // Indexing and slicing
@@ -1711,7 +1878,17 @@ struct range {
         if (step_ > 0 ? (x < start_ || x >= stop_) : (x > start_ || x <= stop_)) return false;
         return (x - start_) % step_ == 0;
     }
+    std::size_t size() const {  // len(range(...))
+        if (step_ > 0) return stop_ > start_ ? static_cast<std::size_t>((stop_ - start_ + step_ - 1) / step_) : 0;
+        return start_ > stop_ ? static_cast<std::size_t>((start_ - stop_ - step_ - 1) / -step_) : 0;
+    }
 };
+// reversed(range(...)) is the range counted the other way: nothing is stored.
+inline range reversed(range r) {
+    auto n = static_cast<std::int64_t>(r.size());
+    if (n == 0) return range(0, 0, 1);
+    return range(r.start_ + (n - 1) * r.step_, r.start_ - r.step_, -r.step_);
+}
 
 inline std::vector<std::string> chars(const std::string& s) {
     std::vector<std::string> out;
@@ -1854,7 +2031,7 @@ void list_sort_by(const list<T>& v, F&& key, bool reverse = false) {
 template <class It, class F>
 auto extreme_by(It&& it, F&& key, bool want_max, const char* name) {
     auto values = to_list(std::forward<It>(it));
-    if (values.empty()) raise("ValueError", std::string(name) + "() arg is an empty sequence");
+    if (values.empty()) raise("ValueError", std::string(name) + "() iterable argument is empty");
     std::size_t best = 0;
     auto best_key = key(values[0]);
     for (std::size_t i = 1; i < values.size(); ++i) {
@@ -1874,6 +2051,17 @@ template <class It, class F>
 auto max_by(It&& it, F&& key) {
     return extreme_by(std::forward<It>(it), key, true, "max");
 }
+// min(xs, key=f, default=d) and max(...): the default if there are no items.
+template <class R, class It, class F>
+R min_by_or(It&& it, F&& key, R fallback) {
+    auto values = to_list(std::forward<It>(it));
+    return values.empty() ? fallback : R(extreme_by(values, key, false, "min"));
+}
+template <class R, class It, class F>
+R max_by_or(It&& it, F&& key, R fallback) {
+    auto values = to_list(std::forward<It>(it));
+    return values.empty() ? fallback : R(extreme_by(values, key, true, "max"));
+}
 
 // Lazy map/filter/enumerate/zip: generators over their arguments (taken by value, so
 // they outlive the call; a generator argument is shared, so it's consumed as they go).
@@ -1891,7 +2079,7 @@ Generator<std::tuple<std::int64_t, T>> enumerate_lazy(It items, std::int64_t sta
     for (auto&& x : iter(items)) co_yield std::tuple<std::int64_t, T>(start++, T(x));
 }
 template <class R, std::size_t... I, class... Its>
-Generator<R> zip_impl(std::index_sequence<I...>, Its... its) {
+Generator<R> zip_impl(std::index_sequence<I...>, bool strict, Its... its) {
     std::tuple<decltype(iter(std::declval<Its&>()))...> sources(iter(its)...);
     auto at = std::make_tuple(std::get<I>(sources).begin()...);
     auto end = std::make_tuple(std::get<I>(sources).end()...);
@@ -1899,10 +2087,40 @@ Generator<R> zip_impl(std::index_sequence<I...>, Its... its) {
         co_yield R(*std::get<I>(at)...);
         (++std::get<I>(at), ...);
     }
+    if (strict) {  // zip(..., strict=True): they must all have ended together
+        bool more[] = {(std::get<I>(at) != std::get<I>(end))...};
+        std::size_t stopped = 0;
+        while (more[stopped]) ++stopped;
+        auto before = [](std::size_t i) { return i == 1 ? std::string("argument 1") : "arguments 1-" + std::to_string(i); };
+        if (stopped > 0)
+            raise("ValueError", "zip() argument " + std::to_string(stopped + 1) + " is shorter than " + before(stopped));
+        for (std::size_t i = 1; i < sizeof...(Its); ++i)
+            if (more[i]) raise("ValueError", "zip() argument " + std::to_string(i + 1) + " is longer than " + before(i));
+    }
 }
 template <class R, class... Its>
 Generator<R> zip_lazy(Its... its) {
-    return zip_impl<R>(std::index_sequence_for<Its...>{}, std::move(its)...);
+    return zip_impl<R>(std::index_sequence_for<Its...>{}, false, std::move(its)...);
+}
+template <class R, class... Its>
+Generator<R> zip_strict(bool strict, Its... its) {
+    return zip_impl<R>(std::index_sequence_for<Its...>{}, strict, std::move(its)...);
+}
+// map(f, xs, ys...): f of an item from each, until the shortest runs out.
+template <class R, class F, std::size_t... I, class... Its>
+Generator<R> map_impl(std::index_sequence<I...>, F f, Its... its) {
+    std::tuple<decltype(iter(std::declval<Its&>()))...> sources(iter(its)...);
+    auto at = std::make_tuple(std::get<I>(sources).begin()...);
+    auto end = std::make_tuple(std::get<I>(sources).end()...);
+    while (((std::get<I>(at) != std::get<I>(end)) && ...)) {
+        co_yield R(f(*std::get<I>(at)...));
+        (++std::get<I>(at), ...);
+    }
+}
+template <class R, class F, class It, class It2, class... Its>
+Generator<R> map_lazy(F f, It first, It2 second, Its... rest) {
+    return map_impl<R>(std::index_sequence_for<It, It2, Its...>{}, std::move(f), std::move(first), std::move(second),
+                       std::move(rest)...);
 }
 template <class T, class X>
 bool contains(const Generator<T>& g, const X& x) {  // `x in gen` reads until it finds x, like Python
@@ -1997,14 +2215,24 @@ vtuple<T> slice(const vtuple<T>& t, opt_int lo, opt_int hi, opt_int step) {
 template <class It>
 auto min_of(It&& it) {
     auto values = to_list(std::forward<It>(it));
-    if (values.empty()) raise("ValueError", "min() arg is an empty sequence");
+    if (values.empty()) raise("ValueError", "min() iterable argument is empty");
     return *std::min_element(values.begin(), values.end());
 }
 template <class It>
 auto max_of(It&& it) {
     auto values = to_list(std::forward<It>(it));
-    if (values.empty()) raise("ValueError", "max() arg is an empty sequence");
+    if (values.empty()) raise("ValueError", "max() iterable argument is empty");
     return *std::max_element(values.begin(), values.end());
+}
+template <class R, class It>
+R min_of_or(It&& it, R fallback) {  // min(xs, default=d)
+    auto values = to_list(std::forward<It>(it));
+    return values.empty() ? fallback : R(*std::min_element(values.begin(), values.end()));
+}
+template <class R, class It>
+R max_of_or(It&& it, R fallback) {
+    auto values = to_list(std::forward<It>(it));
+    return values.empty() ? fallback : R(*std::max_element(values.begin(), values.end()));
 }
 
 template <class It>
@@ -2126,6 +2354,93 @@ set<T> set_xor(const set<T>& a, const set<T>& b) {
     for (const auto& x : b)
         if (!a.contains(x)) out.insert(x);
     return out;
+}
+
+// The set methods take any iterables of items, not only sets: s.union([1, 2], other).
+template <class T, class It>
+set<T> as_set(const It& items) {
+    if constexpr (std::is_same_v<It, set<T>>) {
+        return items;
+    } else {
+        set<T> out;
+        for (auto&& x : iter(items)) out.insert(T(x));
+        return out;
+    }
+}
+template <class T, class... Others>
+set<T> set_union(const set<T>& s, const Others&... others) {
+    set<T> out = s.copy();
+    auto add = [&](const set<T>& o) { out.insert(o.begin(), o.end()); };
+    (add(as_set<T>(others)), ...);
+    (void)add;
+    return out;
+}
+template <class T, class... Others>
+set<T> set_intersection(const set<T>& s, const Others&... others) {
+    set<T> out = s.copy();
+    ((out = set_and(out, as_set<T>(others))), ...);
+    return out;
+}
+template <class T, class... Others>
+set<T> set_difference(const set<T>& s, const Others&... others) {
+    set<T> out = s.copy();
+    ((out = set_sub(out, as_set<T>(others))), ...);
+    return out;
+}
+template <class T, class Other>
+set<T> set_symmetric_difference(const set<T>& s, const Other& other) {
+    return set_xor(s, as_set<T>(other));
+}
+// The _update methods change the set itself (through a new set, in case it's also an argument).
+template <class T, class... Others>
+void set_update(const set<T>& s, const Others&... others) {
+    s.std_set() = set_union(s, others...).std_set();
+}
+template <class T, class... Others>
+void set_intersection_update(const set<T>& s, const Others&... others) {
+    s.std_set() = set_intersection(s, others...).std_set();
+}
+template <class T, class... Others>
+void set_difference_update(const set<T>& s, const Others&... others) {
+    s.std_set() = set_difference(s, others...).std_set();
+}
+template <class T, class Other>
+void set_symmetric_difference_update(const set<T>& s, const Other& other) {
+    s.std_set() = set_symmetric_difference(s, other).std_set();
+}
+template <class T, class Other>
+bool set_isdisjoint(const set<T>& s, const Other& other) {
+    for (auto&& x : iter(other))
+        if (s.contains(T(x))) return false;
+    return true;
+}
+template <class T>
+T set_pop(const set<T>& s) {  // (the first item, in the order the set prints)
+    if (s.empty()) raise("KeyError", "'pop from an empty set'");
+    T out = *s.begin();
+    s.erase(out);
+    return out;
+}
+
+// t.count(x) and t.index(x) on a tuple, whose items may have different types.
+template <class A, class B>
+bool same_value(const A& a, const B& b) {
+    if constexpr (requires { a == b; }) {
+        return a == b;
+    } else {
+        return false;
+    }
+}
+template <class... Ts, class X>
+std::int64_t tuple_count(const std::tuple<Ts...>& t, const X& x) {
+    return std::apply([&](const auto&... e) { return (std::int64_t(0) + ... + (same_value(e, x) ? 1 : 0)); }, t);
+}
+template <class... Ts, class X>
+std::int64_t tuple_find(const std::tuple<Ts...>& t, const X& x) {
+    std::int64_t at = -1, i = 0;
+    std::apply([&](const auto&... e) { ((at < 0 && same_value(e, x) ? at = i : 0, ++i), ...); }, t);
+    if (at < 0) raise("ValueError", "tuple.index(x): x not in tuple");
+    return at;
 }
 
 // ============================================================================
@@ -2795,20 +3110,65 @@ inline void check_encoding(const std::string& encoding) {
         raise("LookupError", "unknown encoding: " + encoding + " (seadash supports utf-8 and ascii)");
 }
 
+// The codecs of s.encode() and b.decode(), by any of Python's names for them.
+enum class Codec { utf8, ascii, latin1 };
+inline Codec text_codec(const std::string& encoding) {
+    std::string e;
+    for (char c : str_lower(encoding)) e += c == '-' || c == ' ' ? '_' : c;
+    if (e == "utf_8" || e == "utf8" || e == "u8" || e == "utf") return Codec::utf8;
+    if (e == "ascii" || e == "us_ascii" || e == "646") return Codec::ascii;
+    if (e == "latin_1" || e == "latin1" || e == "iso_8859_1" || e == "iso8859_1" || e == "l1" || e == "cp819" || e == "8859")
+        return Codec::latin1;
+    raise("LookupError", "unknown encoding: " + encoding + " (seadash supports utf-8, ascii and latin-1)");
+}
+
 inline bytes str_encode(const std::string& s, const std::string& encoding = "utf-8") {
-    check_encoding(encoding);
-    if (str_lower(encoding) == "ascii")
-        for (std::size_t i = 0; i < s.size(); ++i)
-            if (static_cast<unsigned char>(s[i]) >= 0x80)
-                raise("UnicodeError", "'ascii' codec can't encode character in position " + std::to_string(i));
-    return bytes(s);  // str is already UTF-8
+    Codec codec = text_codec(encoding);
+    if (codec == Codec::utf8) return bytes(s);  // str is already UTF-8
+    std::uint32_t limit = codec == Codec::ascii ? 0x80 : 0x100;
+    auto decode = [&](std::size_t i, std::size_t& width) {  // the character starting at byte i
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        width = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+        std::uint32_t cp = width == 1 ? c : c & (0xFF >> (width + 1));
+        for (std::size_t k = 1; k < width && i + k < s.size(); ++k) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        return cp;
+    };
+    std::string out;
+    std::size_t position = 0, width = 0;  // the position in characters, as Python counts
+    for (std::size_t i = 0; i < s.size(); i += width, ++position) {
+        std::uint32_t cp = decode(i, width);
+        if (cp < limit) {
+            out += static_cast<char>(cp);
+            continue;
+        }
+        std::size_t last = position, w = 0;  // the error names the whole run of characters that don't fit
+        for (std::size_t j = i + width; j < s.size() && decode(j, w) >= limit; j += w) ++last;
+        std::string which = last == position
+            ? "character " + ascii(repr_str(s.substr(i, width))) + " in position " + std::to_string(position)
+            : "characters in position " + std::to_string(position) + "-" + std::to_string(last);
+        raise("UnicodeEncodeError", std::string("'") + (codec == Codec::ascii ? "ascii" : "latin-1") + "' codec can't encode " +
+                                        which + ": ordinal not in range(" + std::to_string(limit) + ")");
+    }
+    return bytes(std::move(out));
 }
 
 // Validates UTF-8 (strings in seadash are always valid UTF-8 text).
 inline std::string bytes_decode(const bytes& b, const std::string& encoding = "utf-8") {
-    check_encoding(encoding);
-    bool ascii = str_lower(encoding) == "ascii";
+    Codec codec = text_codec(encoding);
+    bool ascii = codec == Codec::ascii;
     const std::string& s = b.data;
+    if (codec == Codec::latin1) {  // every byte is the character with that number
+        std::string out;
+        for (unsigned char c : s) {
+            if (c < 0x80) {
+                out += static_cast<char>(c);
+            } else {
+                out += static_cast<char>(0xC0 | (c >> 6));
+                out += static_cast<char>(0x80 | (c & 0x3F));
+            }
+        }
+        return out;
+    }
     auto fail = [&](std::size_t i, const char* why) {
         char buf[160];
         std::snprintf(buf, sizeof buf, "'%s' codec can't decode byte 0x%02x in position %zu: %s",
@@ -3366,6 +3726,36 @@ struct FileBase {
         fp = nullptr;
     }
     void flush() { std::fflush(handle()); }
+    // f.closed, f.name, f.mode
+    bool is_closed() const { return !fp; }
+    std::string get_name() const { return path; }
+    std::string get_mode() const { return mode; }
+    std::FILE* open_handle() const {
+        if (!fp) raise("ValueError", "I/O operation on closed file");
+        return fp;
+    }
+    bool can_write() const { return mode.find_first_of("wax+") != std::string::npos; }
+    bool readable() const { return open_handle() && mode.find_first_of("r+") != std::string::npos; }
+    bool writable() const { return open_handle() && can_write(); }
+    bool seekable() const { return ::lseek((fileno)(open_handle()), 0, SEEK_CUR) != -1; }
+    bool isatty() const { return ::isatty((fileno)(open_handle())) == 1; }
+    std::int64_t tell() {
+        off_t at = ::ftello(handle());
+        if (at < 0) raise_os(errno, std::nullopt);
+        return at;
+    }
+    std::int64_t seek_raw(std::int64_t offset, std::int64_t whence) {
+        if (::fseeko(handle(), offset, static_cast<int>(whence)) != 0) raise_os(errno, std::nullopt);
+        return tell();
+    }
+    std::int64_t truncate(std::optional<std::int64_t> size = std::nullopt) {  // (the position stays where it was)
+        std::FILE* f = handle();
+        if (!can_write()) raise("OSError", "truncate");  // (Python's io.UnsupportedOperation says just this)
+        std::int64_t n = size ? *size : tell();
+        std::fflush(f);
+        if (n < 0 || ::ftruncate((fileno)(f), n) != 0) raise_os(n < 0 ? EINVAL : errno, std::nullopt);
+        return n;
+    }
     // f.fileno(). ((fileno) calls the function: on macOS `fileno` is also a macro.)
     std::int64_t fileno_() const { return (fileno)(handle()); }
 };
@@ -3448,6 +3838,16 @@ struct TextFile : FileBase {
     void writelines(It&& lines) {
         for (auto&& line : iter(std::forward<It>(lines))) write_raw(line);
     }
+    // A text file only seeks to a position tell() gave, or to its start or end, like Python's.
+    std::int64_t seek(std::int64_t offset, std::int64_t whence = 0) {
+        handle();
+        if (whence < 0 || whence > 2)
+            raise("ValueError", "invalid whence (" + std::to_string(whence) + ", should be 0, 1 or 2)");
+        if (whence != 0 && offset != 0)
+            raise("OSError", std::string("can't do nonzero ") + (whence == 1 ? "cur" : "end") + "-relative seeks");
+        if (offset < 0) raise("ValueError", "negative seek position " + std::to_string(offset));
+        return seek_raw(offset, whence);
+    }
     std::string sd_repr() const { return "<TextIO name=" + repr_str(path) + " mode=" + repr_str(mode) + ">"; }
 };
 
@@ -3461,6 +3861,11 @@ struct BinaryFile : FileBase {
         return out;
     }
     std::int64_t write(const bytes& b) { return write_raw(b.data); }
+    std::int64_t seek(std::int64_t offset, std::int64_t whence = 0) {
+        handle();
+        if (whence < 0 || whence > 2) raise("ValueError", "whence value " + std::to_string(whence) + " unsupported");
+        return seek_raw(offset, whence);
+    }
     template <class It>
     void writelines(It&& lines) {
         for (auto&& line : iter(std::forward<It>(lines))) write_raw(line.data);
@@ -3510,6 +3915,7 @@ inline std::FILE* open_file(const std::string& path, const std::string& mode) {
         std::fclose(f);
         raise_os(EISDIR, path);
     }
+    if (mode.find('a') != std::string::npos) ::fseeko(f, 0, SEEK_END);  // an appending file starts at its end, like Python's
     return f;
 }
 
@@ -3663,19 +4069,52 @@ V& dict_setdefault(dict<K, V>& d, const std::type_identity_t<K>& k, const std::t
     return d.at(k);
 }
 template <class K, class V>
-void dict_update(dict<K, V>& d, const dict<K, V>& other) {
+void dict_update(const dict<K, V>& d, const dict<K, V>& other) {
+    if (d.is(other)) return;
     for (const auto& [k, v] : other) d[k] = v;
+}
+template <class K, class V, class It>
+    requires(!is_dict_like<It>::value)
+void dict_update(const dict<K, V>& d, const It& pairs) {  // d.update([(k, v), ...])
+    for (auto&& [k, v] : iter(pairs)) d[K(k)] = V(v);
+}
+template <class K, class V>
+dict<K, V> dict_or(const dict<K, V>& a, const dict<K, V>& b) {  // a | b
+    dict<K, V> out = a.copy();
+    dict_update(out, b);
+    return out;
+}
+template <class K, class V>
+std::tuple<K, V> dict_popitem(const dict<K, V>& d) {
+    return d.popitem();
+}
+template <class K, class V, class It>
+dict<K, V> dict_fromkeys(const It& keys, const std::type_identity_t<V>& value) {
+    dict<K, V> out;
+    for (auto&& k : iter(keys)) out[K(k)] = value;
+    return out;
 }
 
 template <class T>
 void set_remove(const set<T>& s, const std::type_identity_t<T>& x) {
     if (!s.erase(x)) raise("KeyError", repr(x));
 }
-template <class T>
-bool set_issubset(const set<T>& a, const set<T>& b) {
+template <class T, class Other>
+bool set_issubset(const set<T>& a, const Other& other) {
+    set<T> b = as_set<T>(other);
     for (const auto& x : a)
         if (!b.contains(x)) return false;
     return true;
+}
+template <class T, class Other>
+bool set_issuperset(const set<T>& a, const Other& other) {
+    for (auto&& x : iter(other))
+        if (!a.contains(T(x))) return false;
+    return true;
+}
+template <class T>
+bool set_proper_subset(const set<T>& a, const set<T>& b) {  // a < b
+    return a.size() < b.size() && set_issubset(a, b);
 }
 
 // ============================================================================

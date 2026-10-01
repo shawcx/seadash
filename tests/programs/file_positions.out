@@ -1,0 +1,26 @@
+False True w False True True False 0 12 12
+5 12 0 5 5
+OSError: can't do nonzero cur-relative seeks
+OSError: can't do nonzero end-relative seeks
+ValueError: negative seek position -1
+ValueError: invalid whence (5, should be 0, 1 or 2)
+True True w
+ValueError: I/O operation on closed file.
+ValueError: I/O operation on closed file.
+ValueError: I/O operation on closed file
+he 2 llo 5 1 ello 5 5 5 r True False
+rb+ True True 2 b'll' 4 4 3 3 3 10 10 100 100 b''
+OSError: [Errno 22] Invalid argument
+ValueError: whence value 5 unsupported
+OSError: [Errno 22] Invalid argument
+OSError: [Errno 22] Invalid argument
+b'hel\x00\x00\x00\x00\x00\x00\x00' False True True
+OSError: truncate
+ab 10 False True
+a+ 10 True True '' 0 hel
+w+ True True 3 0 abc
+r+ True True 2 ab 2
+<stdout> w <stderr> <stdin> r False True False
+4 4 0 4 0 5 5
+[2, 1, 0] [1, 4, 7, 10] [9, 6, 3, 0] [] [10, 6, 2] 3000000003
+2 1 0 [9, 4, 1] [0, 1, 2] 3 True

@@ -41,7 +41,8 @@ from .types import (
 
 MUTATING_METHODS = frozenset(
     "append insert pop remove extend sort reverse clear update setdefault add discard "
-    "appendleft popleft extendleft rotate subtract".split()
+    "appendleft popleft extendleft rotate subtract popitem intersection_update difference_update "
+    "symmetric_difference_update".split()
 )
 
 # Built-in functions that only read their arguments (or copy them): passing a list to
@@ -58,7 +59,7 @@ ITEM_BUILTINS = frozenset("sorted list set dict tuple min max enumerate zip map 
 # Others (d.get(k, xs), xs.append(ys)...) may hand it back or keep it.
 READING_METHODS = frozenset(
     "put put_nowait submit map set count index union intersection difference symmetric_difference "
-    "issubset issuperset isdisjoint".split()
+    "issubset issuperset isdisjoint update intersection_update difference_update symmetric_difference_update".split()
 )
 
 
