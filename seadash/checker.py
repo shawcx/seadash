@@ -40,7 +40,7 @@ from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
-    SYNC_ARITY, ClassAttr, ClassRefType, CmpKeyType, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
+    SYNC_ARITY, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
@@ -628,8 +628,65 @@ class Checker:
             if owner is not None and threads.is_synchronized(owner):
                 raise self.error("a Synchronized class's methods can't be generators (the lock can't be held across a yield)", node)
             info.generator = True
+        if any(self.classify_decorator(d)[0] == "contextmanager" for d in node.decorators):
+            self.check_context_generator(node, info)
         node.sym = info
         return info
+
+    def check_context_generator(self, node: A.FunctionDef, info: FuncInfo) -> None:
+        """@contextlib.contextmanager: a generator whose one `yield` gives the value for `with ... as`.
+        Its call returns a ContextManager[T]; an exception in the with block is raised at the yield."""
+        usage = f"`with {node.name}(...) as x:`"
+        if len(node.decorators) > 1:
+            raise self.error("@contextmanager can't be combined with other decorators yet", node.decorators[0])
+        if not info.generator:
+            raise self.error(
+                f"'{node.name}' is a @contextmanager function, so it must `yield` (once) the value {usage} gives: "
+                f"the code before the yield runs when the with block starts, the code after it when the block ends",
+                node,
+            )
+        ContextYields(self).block(node.body, 0)
+        info.ret = ContextManagerType(info.ret.elem)
+        info.context_manager = True
+        info.cm_suppresses = self.yield_may_be_caught(node.body, False)
+
+    def yield_may_be_caught(self, body: list[A.Stmt], caught: bool) -> bool:
+        """Could an exception raised at a yield in `body` be caught there (so a @contextmanager
+        function swallows it)? Inside a try with an `except` that doesn't end in `raise`, or
+        inside a `with` whose context manager may swallow it."""
+        for s in body:
+            match s:
+                case A.Yield():
+                    if caught:
+                        return True
+                case A.Try(body=b, handlers=handlers, orelse=orelse, finalbody=fin):
+                    catches = caught or any(not (h.body and isinstance(h.body[-1], A.Raise)) for h in handlers)
+                    if self.yield_may_be_caught(b, catches) or any(
+                            self.yield_may_be_caught(x, caught) for x in [orelse, fin, *(h.body for h in handlers)]):
+                        return True
+                case A.With(items=items, body=b):
+                    if self.yield_may_be_caught(b, caught or not all(self.never_swallows(i.context) for i in items)):
+                        return True
+                case A.If(body=b, orelse=orelse) | A.For(body=b, orelse=orelse) | A.While(body=b, orelse=orelse):
+                    if self.yield_may_be_caught(b, caught) or self.yield_may_be_caught(orelse, caught):
+                        return True
+                case A.Match(cases=cases):
+                    if any(self.yield_may_be_caught(c.body, caught) for c in cases):
+                        return True
+        return False
+
+    def never_swallows(self, context: A.Expr) -> bool:
+        """A with item that certainly lets exceptions through, judged from its syntax (function
+        bodies aren't checked yet): open(), nullcontext(), closing(), or a @contextmanager
+        function (defined earlier) that doesn't catch them."""
+        if not isinstance(context, A.Call):
+            return False
+        f = context.func
+        name = f.id if isinstance(f, A.Name) else f.attr if isinstance(f, A.Attribute) else None
+        if name in ("open", "nullcontext", "closing"):
+            return True
+        info = self.functions.get(name) if isinstance(f, A.Name) else None
+        return isinstance(info, FuncInfo) and info.context_manager and not info.cm_suppresses
 
     def check_param_defaults(self, info: FuncInfo) -> None:
         for p in info.params:
@@ -1070,6 +1127,10 @@ class Checker:
             ):
                 raise self.error(f"write Iterator[T] (or Generator[T, None, None]: send() isn't supported)", node)
             return GeneratorType(self.resolve_type(args[0]))
+        if name.rpartition(".")[2] in ("ContextManager", "AbstractContextManager"):  # contextlib's (not classes)
+            if len(args) != 1:
+                raise self.error(f"write {name}[T], with the type `with ... as x:` gives", node)
+            return ContextManagerType(self.resolve_type(args[0]))
         if name == "Optional" and len(args) == 1:  # typing.Optional[T] is T?
             inner = self.resolve_type(args[0])
             return inner if isinstance(inner, OptionalType) else OptionalType(inner)
@@ -1422,6 +1483,12 @@ class Checker:
         if not info.generator:  # a nested def or lambda
             raise self.error("only top-level functions and methods can be generators (for now)", stmt)
         elem = info.ret.elem
+        if self.handler_depth or self.finally_loops:  # (C++ can't suspend a coroutine in a catch block or a lambda)
+            where = "an 'except'" if self.handler_depth else "a 'finally'"
+            raise self.error(f"a generator can't yield inside {where} block yet; set a flag there and yield after "
+                             f"the try statement", stmt)
+        if from_ and info.context_manager:
+            raise self.error("a @contextmanager function yields once: `yield from` isn't supported there", stmt)
         if from_:
             got = self.loop_element(value, self.check_expr(value, ListType(elem)))
             if not assignable(got, elem):
@@ -1534,6 +1601,9 @@ class Checker:
             can_suppress = can_suppress or info.suppresses
             if item.target is not None:
                 if info.enter_type == NONE:
+                    if info.kind == "contextlib":
+                        raise self.error(f"this {t} gives None (a bare `yield`, or nothing to enter), so there's "
+                                         f"nothing to bind with 'as'", item.target)
                     raise self.error("__enter__ doesn't return anything, so there's nothing to bind with 'as'", item.target)
                 self.assign(item.target, info.enter_type, item.context)
         for item in stmt.items:
@@ -1573,6 +1643,10 @@ class Checker:
                     )
                 if not self.state.dead:
                     self.state.names[item.target.id] = MaybeUnbound()  # gone once the lock is released
+        for item in stmt.items:
+            if item.sym.kind == "exitstack":
+                item.sym.suppresses = self.exit_stack_may_swallow(item, stmt.body)
+        can_suppress = any(item.sym.suppresses for item in stmt.items)
         if can_suppress:
             raised = merge(snapshots)
             raised.dead = False
@@ -1605,6 +1679,10 @@ class Checker:
             m = describe_short(node)
             raise self.error(f"say which: `with {m}.read() as data:` (many readers at once) or "
                              f"`with {m}.write() as data:` (one writer)", node)
+        if isinstance(t, ContextManagerType):  # contextlib's: a @contextmanager function's call, suppress()...
+            return WithInfo("contextlib", t.elem, None, self.may_swallow(node))
+        if t == EXIT_STACK:  # `with ExitStack() as stack:` unwinds what was pushed onto it
+            return WithInfo("exitstack", t, None, True)
         if isinstance(t, StructType):
             enter = t.find_method("__enter__")
             exit_ = t.find_method("__exit__")
@@ -1630,6 +1708,46 @@ class Checker:
         raise self.error(
             f"{t} can't be used in a 'with' statement (it needs __enter__ and __exit__ methods)", node
         )
+
+    def exit_stack_may_swallow(self, item: A.WithItem, body: list[A.Stmt]) -> bool:
+        """`with ExitStack() as stack:` swallows an exception only if something entered onto it
+        does. Known when the block only uses `stack` for enter_context(), callback(), close()
+        and pop_all() (checked by now); otherwise assume it can."""
+        ctx = item.context
+        name = ctx.func.id if isinstance(ctx, A.Call) and isinstance(ctx.func, A.Name) else \
+            ctx.func.attr if isinstance(ctx, A.Call) and isinstance(ctx.func, A.Attribute) else None
+        if name != "ExitStack":
+            return True
+        if item.target is None:
+            return False
+        if not isinstance(item.target, A.Name):
+            return True
+        var = item.target.sym
+        uses = sum(1 for n in flow.walk(body) if isinstance(n, A.Name) and n.sym is var)
+        expected = 0
+        for n in flow.walk(body):
+            if not (isinstance(n, A.Call) and isinstance(n.func, A.Attribute) and isinstance(n.func.value, A.Name)
+                    and n.func.value.sym is var):
+                continue
+            if n.func.attr == "enter_context":
+                if n.with_info.suppresses:
+                    return True
+                expected += 1
+            elif n.func.attr in ("callback", "close", "pop_all"):
+                expected += 1
+        return uses != expected
+
+    def may_swallow(self, node: A.Expr) -> bool:
+        """Can this contextlib context manager swallow an exception from the with block?
+        Known for a direct call (nullcontext() and closing() never do, a @contextmanager
+        function does if it catches what's raised at its yield); otherwise assume it can."""
+        if isinstance(node, A.Call):
+            if getattr(node, "never_suppresses", False):
+                return False
+            target = node.sym.target if isinstance(node.sym, CallTarget) else None
+            if isinstance(target, FuncInfo) and target.context_manager:
+                return target.cm_suppresses
+        return True
 
     def check_handler_types(self, handler: A.ExceptHandler) -> StructType:
         """The classes an `except` clause catches; returns the type bound by `as e`."""
@@ -4035,3 +4153,59 @@ def has_yield(body: list[A.Stmt]) -> bool:
             if has_yield(handler.body):
                 return True
     return False
+
+
+class ContextYields:
+    """A @contextmanager function must yield exactly once: the with block runs at the yield, and
+    when it ends the generator must finish. Flags a yield that runs after another one on every
+    path (Python's "generator didn't stop"); yields in different branches are fine. States: 0
+    (no yield yet on some path), 1 (a yield on every path), None (the path has ended)."""
+
+    def __init__(self, checker: "Checker"):
+        self.checker = checker
+
+    @staticmethod
+    def lo(*states: int | None) -> int | None:
+        live = [s for s in states if s is not None]
+        return min(live) if live else None
+
+    def block(self, stmts: list[A.Stmt], state: int | None) -> int | None:
+        for s in stmts:
+            if state is None:
+                return None
+            state = self.stmt(s, state)
+        return state
+
+    def stmt(self, s: A.Stmt, state: int) -> int | None:
+        match s:
+            case A.Yield(from_=from_):
+                if from_:
+                    raise self.checker.error("a @contextmanager function yields once: `yield from` isn't supported there", s)
+                if state == 1:
+                    raise self.checker.error(
+                        "this yield always runs after another one, but a @contextmanager function must yield exactly "
+                        "once (a second yield is Python's \"generator didn't stop\" error)", s,
+                    )
+                return 1
+            case A.Return() | A.Raise() | A.Break() | A.Continue():
+                return None
+            case A.If(body=body, orelse=orelse):
+                return self.lo(self.block(body, state), self.block(orelse, state))
+            case A.For(body=body, orelse=orelse) | A.While(body=body, orelse=orelse):
+                self.block(body, state)  # (may run any number of times, so nothing is certain after it)
+                self.block(orelse, state)
+                return state
+            case A.With(body=body):
+                return self.lo(state, self.block(body, state))
+            case A.Match(cases=cases):
+                return self.lo(state, *(self.block(c.body, state) for c in cases))
+            case A.Try(body=body, handlers=handlers, orelse=orelse, finalbody=finalbody):
+                after = self.lo(self.block(body + orelse, state), *(self.block(h.body, state) for h in handlers))
+                if finalbody:
+                    fin = self.block(finalbody, state)
+                    if fin is None:
+                        return None
+                    if fin == 1 and after is not None:
+                        after = 1
+                return after
+        return state

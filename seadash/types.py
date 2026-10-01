@@ -91,6 +91,9 @@ URL_PARTS = BuiltinClass("urllib.parse.ParseResult", "sd::urlparse::Parts", VALU
 TEMPDIR = BuiltinClass("TemporaryDirectory", "sd::tempfile::TemporaryDirectory")  # removed when done
 NORMAL_DIST = BuiltinClass("NormalDist", "sd::statistics::NormalDist", IMMUTABLE)  # statistics
 LINEAR_REGRESSION = BuiltinClass("LinearRegression", "sd::statistics::LinearRegression", IMMUTABLE)
+EXIT_STACK = BuiltinClass(  # contextlib.ExitStack: copies share the stack of exits
+    "ExitStack", "sd::contextlib::ExitStack",
+    unsendable="an ExitStack (the exits it holds belong to this thread's code)")
 
 DATE = BuiltinClass("date", "sd::datetime::date", IMMUTABLE)  # the datetime module's value types
 TIME = BuiltinClass("time", "sd::datetime::time", IMMUTABLE)
@@ -232,6 +235,18 @@ class GeneratorType(Type):
 
     def __str__(self) -> str:
         return f"Iterator[{self.elem}]"
+
+
+@dataclass(frozen=True)
+class ContextManagerType(Type):
+    """What contextlib makes: a @contextmanager function's result, nullcontext(), closing(),
+    suppress(). A `with` statement's `as` target gets `elem` (None: nothing to bind). Copies
+    share it, like Python's objects."""
+
+    elem: Type
+
+    def __str__(self) -> str:
+        return f"ContextManager[{self.elem}]"
 
 
 @dataclass(frozen=True)
@@ -434,6 +449,10 @@ class FuncInfo:
     kind: str = "method"
     cached: bool = False  # @functools.cache
     generator: bool = False  # has `yield`: returns an Iterator[T] that runs the body on demand
+    # @contextlib.contextmanager: a generator returning a ContextManager[T] (see check_context_generator);
+    # cm_suppresses: an exception thrown in at its yield may be caught (and so swallowed)
+    context_manager: bool = False
+    cm_suppresses: bool = False
     lazy: bool = False  # @functools.cached_property: a getter whose value is kept after the first time
 
     def __str__(self) -> str:

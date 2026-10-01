@@ -1,0 +1,326 @@
+# contextlib: @contextmanager, suppress, closing, nullcontext, ExitStack
+from contextlib import ExitStack, closing, contextmanager, nullcontext, suppress
+from typing import Iterator
+
+log: list[str] = []
+
+
+@contextmanager
+def tag(name: str) -> Iterator[str]:
+    log.append(f"<{name}>")
+    try:
+        yield name.upper()
+    finally:
+        log.append(f"</{name}>")
+
+
+@contextmanager
+def forgiving(name: str) -> Iterator[list[str]]:
+    seen: list[str] = []
+    try:
+        yield seen
+    except ValueError as e:
+        seen.append(f"{name} caught {e}")
+    else:
+        seen.append(f"{name} ok")
+
+
+@contextmanager
+def transaction(steps: list[str]) -> Iterator[None]:
+    steps.append("begin")
+    try:
+        yield
+    except Exception:
+        steps.append("rollback")
+        raise
+    steps.append("commit")
+
+
+@contextmanager
+def translated() -> Iterator[int]:
+    try:
+        yield 42
+    except KeyError as e:
+        raise LookupError("translated")
+
+
+@contextmanager
+def maybe_value(give: bool) -> Iterator[int]:
+    if give:
+        yield 1
+        return
+    yield 2
+
+
+@contextmanager
+def no_yield(skip: bool) -> Iterator[int]:
+    if skip:
+        return
+    yield 0
+
+
+@contextmanager
+def keeps_going(n: int) -> Iterator[int]:
+    for i in range(n):
+        try:
+            yield i
+        except ValueError:
+            pass
+
+
+# The basics: the yielded value, and the code after the yield running on the way out.
+with tag("a") as a:
+    log.append(a)
+print(log)
+
+# Nesting, and several items in one with.
+log.clear()
+with tag("outer") as o, tag("inner") as i:
+    log.append(o + i)
+print(log)
+
+# An exception in the block is raised at the yield: finally runs, and it propagates.
+log.clear()
+try:
+    with tag("b"):
+        raise KeyError("missing")
+except KeyError as e:
+    print("propagated:", repr(e), log)
+
+# The generator can catch it, which swallows it.
+with forgiving("f") as seen:
+    raise ValueError("bad value")
+print(seen)
+with forgiving("g") as seen:
+    pass
+print(seen)
+try:
+    with forgiving("h") as seen:
+        raise TypeError("wrong type")
+except TypeError as e:
+    print("not caught:", e, seen)
+
+# ...or re-raise it after cleaning up.
+steps: list[str] = []
+with transaction(steps):
+    steps.append("work")
+try:
+    with transaction(steps):
+        raise RuntimeError("failed")
+except RuntimeError as e:
+    print("re-raised:", e)
+print(steps)
+
+# ...or raise a different exception.
+try:
+    with translated() as n:
+        print("n =", n)
+        raise KeyError("k")
+except LookupError as e:
+    print("LookupError:", e)
+
+# return, break and continue leave the block normally.
+def first_long(words: list[str]) -> str:
+    with tag("search"):
+        for w in words:
+            if len(w) > 3:
+                return w
+    return ""
+
+
+log.clear()
+print(first_long(["a", "abcd", "xy"]), log)
+log.clear()
+for k in range(4):
+    with tag(f"loop{k}"):
+        if k == 1:
+            continue
+        if k == 2:
+            break
+print(log)
+
+# Yields in different branches are fine.
+with maybe_value(True) as v1, maybe_value(False) as v2:
+    print("values", v1, v2)
+
+# Python's errors for a generator that doesn't yield, or yields again.
+try:
+    with no_yield(True):
+        print("not reached")
+except RuntimeError as e:
+    print("RuntimeError:", e)
+with no_yield(False) as zero:
+    print("zero =", zero)
+try:
+    with keeps_going(3) as i:
+        print("i =", i)
+except RuntimeError as e:
+    print("RuntimeError:", e)
+try:
+    with keeps_going(3) as i:
+        raise ValueError("again")
+except RuntimeError as e:
+    print("RuntimeError:", e)
+
+# A context manager is an object: it can be made first, but only entered once.
+cm = tag("once")
+with cm as name:
+    print("entered", name)
+try:
+    with cm:
+        pass
+except AttributeError as e:
+    print("AttributeError:", e)
+
+
+# suppress: the block stops at the exception, which is swallowed if it's one of those classes.
+def parse(text: str) -> int:
+    result = -1
+    with suppress(ValueError):
+        result = int(text)
+    return result
+
+
+print(parse("12"), parse("twelve"))
+d = {"a": 1}
+with suppress(KeyError, IndexError):
+    print(d["b"])
+with suppress(LookupError):  # (a base class catches its subclasses)
+    print([1, 2][5])
+try:
+    with suppress(KeyError):
+        raise ValueError("not suppressed")
+except ValueError as e:
+    print("ValueError:", e)
+try:
+    with suppress():
+        raise ValueError("suppress() suppresses nothing")
+except ValueError as e:
+    print("ValueError:", e)
+
+
+# closing: calls close() at the end.
+class Resource:
+    name: str
+    closed: bool
+
+    def __init__(self, name: str):
+        self.name = name
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+        print("closing", self.name)
+
+
+r = Resource("db")
+with closing(r) as res:
+    print("using", res.name, res.closed)
+print("closed:", r.closed)
+try:
+    with closing(Resource("tmp")):
+        raise ValueError("oops")
+except ValueError as e:
+    print("ValueError:", e)
+
+# nullcontext: a stand-in that does nothing.
+with nullcontext(5) as five:
+    print("five =", five)
+with nullcontext():
+    print("nothing to enter")
+items = [1, 2]
+with nullcontext(items) as same:
+    same.append(3)
+print(items)
+
+
+def maybe_closing(r: Resource, close: bool) -> None:
+    with closing(r) if close else nullcontext(r) as x:
+        print("got", x.name)
+
+
+maybe_closing(Resource("x"), True)
+maybe_closing(Resource("y"), False)
+
+# ExitStack: exits run in reverse order, each seeing the exception still in flight.
+log.clear()
+with ExitStack() as stack:
+    names = [stack.enter_context(tag(n)) for n in ["one", "two"]]
+    stack.callback(lambda: log.append("callback"))
+    seen = stack.enter_context(forgiving("stack"))
+    log.append(",".join(names))
+    raise ValueError("inside the stack")
+print(log, seen)
+
+log.clear()
+try:
+    with ExitStack() as stack:
+        stack.enter_context(tag("x"))
+        stack.callback(lambda: print("callback ran"))
+        raise KeyError("not swallowed")
+except KeyError as e:
+    print("KeyError:", repr(e), log)
+
+
+def report(what: str, n: int) -> None:
+    print("report", what, n)
+
+
+# pop_all moves the exits to a new stack; close runs them.
+log.clear()
+stack = ExitStack()
+stack.enter_context(tag("kept"))
+returned = stack.callback(report, "moved", 1)
+later = stack.pop_all()
+stack.close()
+print("after closing the first:", log)
+returned("direct", 2)
+later.close()
+print("after close:", log)
+later.close()  # (nothing left to run)
+
+# An exit that raises replaces the exception for the exits after it.
+try:
+    with ExitStack() as stack:
+        stack.enter_context(suppress(LookupError))
+        stack.enter_context(translated())
+        raise KeyError("first")
+    print("swallowed by suppress")
+except LookupError as e:
+    print("not reached", e)
+
+steps.clear()
+with ExitStack() as outer:
+    inner = outer.enter_context(ExitStack())
+    inner.enter_context(transaction(steps))
+    outer.callback(lambda: steps.append("outer callback"))
+print(steps)
+
+
+# @contextmanager on a method.
+class Indenter:
+    level: int
+
+    def __init__(self):
+        self.level = 0
+
+    @contextmanager
+    def indented(self) -> Iterator[int]:
+        self.level += 1
+        try:
+            yield self.level
+        finally:
+            self.level -= 1
+
+    def say(self, text: str) -> None:
+        print("  " * self.level + text)
+
+
+ind = Indenter()
+ind.say("top")
+with ind.indented():
+    ind.say("one")
+    with ind.indented() as depth:
+        ind.say(f"two ({depth})")
+    ind.say("one again")
+ind.say("top again")

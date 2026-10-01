@@ -1,0 +1,7 @@
+['enter a', 'enter swallow', 'enter b', 'ab1', 'counter exit after 1', 'watch: None', 'exit b', "swallow saw ValueError('boom')", 'exit a']
+KeyError: KeyError('k')
+['enter swallow', "watch: KeyError('k')", "swallow saw KeyError('k')"]
+['enter swallow', 'watch: None', 'swallow: no exception']
+False
+['step verbose', 'body True', 'step verbose done', 'body False']
+['step one', 'step two', 'step two done', 'step one done']

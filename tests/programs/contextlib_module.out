@@ -1,0 +1,48 @@
+['<a>', 'A', '</a>']
+['<outer>', '<inner>', 'OUTERINNER', '</inner>', '</outer>']
+propagated: KeyError('missing') ['<b>', '</b>']
+['f caught bad value']
+['g ok']
+not caught: wrong type []
+re-raised: failed
+['begin', 'work', 'commit', 'begin', 'rollback']
+n = 42
+LookupError: translated
+abcd ['<search>', '</search>']
+['<loop0>', '</loop0>', '<loop1>', '</loop1>', '<loop2>', '</loop2>']
+values 1 2
+RuntimeError: generator didn't yield
+zero = 0
+i = 0
+RuntimeError: generator didn't stop
+RuntimeError: generator didn't stop after throw()
+entered ONCE
+AttributeError: '_GeneratorContextManager' object has no attribute 'args'
+12 -1
+ValueError: not suppressed
+ValueError: suppress() suppresses nothing
+using db False
+closing db
+closed: True
+closing tmp
+ValueError: oops
+five = 5
+nothing to enter
+[1, 2, 3]
+got x
+closing x
+got y
+['<one>', '<two>', 'ONE,TWO', 'callback', '</two>', '</one>'] ['stack caught inside the stack']
+callback ran
+KeyError: KeyError('not swallowed') ['<x>', '</x>']
+after closing the first: ['<kept>']
+report direct 2
+report moved 1
+after close: ['<kept>', '</kept>']
+swallowed by suppress
+['begin', 'outer callback', 'commit']
+top
+  one
+    two (2)
+  one again
+top again

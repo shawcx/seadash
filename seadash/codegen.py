@@ -42,7 +42,7 @@ from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
     BuiltinClass, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION,
-    PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType,
+    PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
@@ -277,6 +277,8 @@ class CodeGen:
                 return f"sd::vtuple<{self.cpp_type(elem)}>"
             case GeneratorType(elem):
                 return f"sd::Generator<{self.cpp_type(elem)}>"
+            case ContextManagerType(elem):
+                return f"sd::contextlib::ContextManager<{self.cpp_type(elem)}>"
             case ProcessType(kind):
                 return f"sd::subprocess::{kind}"
             case PatternType():
@@ -842,7 +844,8 @@ class CodeGen:
                 arg = f"sd::value_copy({arg})"
             if var.captured:
                 self.line(f"std::shared_ptr<{t}> {ident(var.cpp_name)} = std::make_shared<{t}>({arg});")
-            elif (var.name in modified and not by_value(var.type)) or synchronized_copy(fn, var.type):
+            elif not fn.generator and ((var.name in modified and not by_value(var.type)) or synchronized_copy(fn, var.type)):
+                # (a generator's parameters are already its own: see params())
                 self.line(f"{t} {ident(var.cpp_name)} = {arg};")
 
     # =========================================================================
@@ -1004,6 +1007,11 @@ class CodeGen:
 
     def yield_stmt(self, value: A.Expr | None, from_: bool) -> None:
         elem = self.func.ret.elem
+        if self.func.context_manager and elem == NONE:  # (a @contextmanager's bare `yield`)
+            if value is not None:
+                self.line(f"{self.expr(value)};")
+            self.line("co_yield std::monostate{};")
+            return
         if from_:
             v = self.fresh("y")
             source = element_type(value.ty) if not hasattr(value, "tuple_elem") else value.tuple_elem
@@ -1082,6 +1090,10 @@ class CodeGen:
         self.open("")
         self.line(f"auto {ctx} = {self.expr(item.context)};")
         exit_param = None
+        if info.kind in ("contextlib", "exitstack"):
+            self.contextlib_with(item, ctx, items[1:], body)
+            self.close()
+            return
         if info.kind == "file":
             enter, exit_call = ctx, f"{ctx}->close()"
         elif info.kind == "socket":
@@ -1140,6 +1152,87 @@ class CodeGen:
         self.line("throw;")
         self.close()
         self.close()
+
+    def contextlib_with(self, item: A.WithItem, ctx: str, rest: list[A.WithItem], body: list[A.Stmt]) -> None:
+        """contextlib's context managers and ExitStack: sd_exit(exception) runs the exit (it
+        may swallow the exception, or raise another)."""
+        info = item.sym
+        enter = ctx if info.kind == "exitstack" else f"{ctx}.enter()"
+        if item.target is not None:
+            self.assign(item.target, enter, info.enter_type)
+        elif info.kind != "exitstack":
+            self.line(f"{enter};")
+        guard = self.fresh("with")
+        self.line(f"sd::Finally {guard}([&] {{ {ctx}.sd_exit(nullptr); }});")
+        self.open("try")
+        self.with_stmt(rest, body)
+        self.depth -= 1
+        self.line("} catch (...) {")
+        self.depth += 1
+        self.line(f"{guard}.disarm();")
+        if info.suppresses:
+            self.line(f"if (!{ctx}.sd_exit(std::current_exception())) throw;  // (true: swallowed)")
+        else:
+            self.line(f"{ctx}.sd_exit(std::current_exception());")
+            self.line("throw;")
+        self.close()
+
+    def enter_context(self, stack: str, e: A.Call) -> str:
+        """stack.enter_context(cm): enter it now, and push its exit (taking the exception in
+        flight, returning true to swallow it) onto the stack."""
+        info = e.with_info
+        arg = e.args[0]
+        if info.kind in ("contextlib", "exitstack"):
+            return f"sd::contextlib::enter_context({stack}, {self.expr(arg)})"
+        t = arg.ty
+        c, ex = "sd_c", "sd_e"
+        make = self.expr(arg)
+        if isinstance(t, StructType) and t.kind != "class":  # a @value class: entered and exited in one place
+            make = f"std::make_shared<{class_name(t)}>({make})"
+        exits = {
+            "file": f"{c}->close();", "socket": f"{c}.close();", "process": f"{c}.sd_exit();",
+            "tempdir": f"{c}.cleanup();", "executor": f"{c}.shutdown(true, false);", "response": f"{c}.close();",
+            "connection": f"{c}.sd_exit({ex} != nullptr);", "server": f"{c}.server_close();",
+        }
+        if info.kind in exits:
+            enter = f"{c}.name()" if info.kind == "tempdir" else c
+            exit_code = f"{exits[info.kind]} return false;"
+        else:  # a class with __enter__ and __exit__
+            enter = f"{c}->{ident('__enter__')}()"
+            exit_fn = f"{c}->{ident('__exit__')}"
+            if info.exit.params:
+                opt = info.exit.params[0].type
+                passed = (f"[&] {{ auto sd_x = sd::contextlib::thrown_as<{class_name(opt.inner)}>({ex}); "
+                          f"return sd_x ? {self.cpp_type(opt)}(sd_x) : {self.cpp_type(opt)}(); }}()")
+                exit_code = (f"bool sd_r = {exit_fn}({passed}); return {ex} && sd_r;" if info.suppresses
+                             else f"{exit_fn}({passed}); return false;")
+            else:
+                exit_code = f"{exit_fn}(); return false;"
+        push = f"{stack}.push_exit([{c}]([[maybe_unused]] std::exception_ptr {ex}) mutable -> bool {{ {exit_code} }});"
+        if info.enter_type == NONE:
+            return f"[&] {{ auto {c} = {make}; {enter}; {push} }}()"
+        return f"[&] {{ auto {c} = {make}; auto sd_v = {enter}; {push} return sd_v; }}()"
+
+    def contextlib_call(self, name: str, e: A.Call) -> str:
+        if name == "nullcontext":
+            node = e.args[0] if e.args else self.keyword(e, "enter_result")
+            if e.ty.elem == NONE:
+                if node is None or isinstance(node, A.NoneLit):
+                    return "sd::contextlib::nullcontext()"
+                return f"(static_cast<void>({self.expr(node)}), sd::contextlib::nullcontext())"
+            return f"sd::contextlib::nullcontext<{self.cpp_type(e.ty.elem)}>({self.expr_as(node, e.ty.elem)})"
+        if name == "closing":
+            t = e.ty.elem
+            arrow = "->" if isinstance(t, FileType) or (isinstance(t, StructType) and t.kind == "class") else "."
+            close = "close" if not isinstance(t, StructType) else fn_name(t.find_method("close"))
+            return (f"sd::contextlib::closing<{self.cpp_type(t)}>({self.expr(e.args[0])}, "
+                    f"[](auto& sd_x) {{ sd_x{arrow}{close}(); }})")
+        if name == "suppress":
+            test = " || ".join(f"sd::isinstance<{class_name(c)}>(sd_t)" for c in e.suppressed) or "false"
+            return f"sd::contextlib::suppress([](const sd::Thrown& {'sd_t' if e.suppressed else ''}) {{ return {test}; }})"
+        if name == "ExitStack":
+            return "sd::contextlib::ExitStack()"
+        raise NotImplementedError(f"codegen for contextlib.{name}()")
 
     def try_except(self, s: A.Try) -> None:
         if not s.handlers:
@@ -2873,6 +2966,12 @@ class CodeGen:
                 body_code = f"std::optional<sd::bytes>({self.expr(body)})"
             headers = self.expr(args["headers"]) if "headers" in args else "sd::dict<std::string, std::string>{}"
             return f"{r}.request({self.expr(args['method'])}, {self.expr(args['url'])}, {body_code}, {headers})"
+        if recv_type == EXIT_STACK and name == "enter_context":
+            return self.enter_context(r, e)
+        if recv_type == EXIT_STACK and name == "callback":
+            fn = e.ty
+            given = [self.expr_as(a, p) for a, p in zip(e.args[1:], fn.params)]
+            return f"{r}.callback({', '.join([f'{self.cpp_type(fn)}({self.expr(e.args[0])})', *given])})"
         if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType, BuiltinClass, HTTPServerType)):
             handler = builtins.method_for(recv_type, name)
             codes = []
@@ -3068,6 +3167,8 @@ class CodeGen:
                     f"{self.expr(when) if when is not None else chr(34) + 'ALL_COMPLETED' + chr(34) + 's'})")
         if mod == "functools" and name == "partial":
             return self.partial_code(e)
+        if mod == "contextlib":
+            return self.contextlib_call(name, e)
         if mod == "functools" and name == "reduce":
             items = self.expr(e.args[1])
             init = [self.expr_as(e.args[2], e.ty)] if len(e.args) == 3 else []

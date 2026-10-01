@@ -1,0 +1,118 @@
+# contextlib with seadash's own context manager protocol: __exit__(self) or
+# __exit__(self, exc: Exception?) -> bool (not Python's three-argument __exit__),
+# so this file is seadash-only.
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from seadash import value
+from typing import Iterator
+import os
+import tempfile
+
+log: list[str] = []
+
+
+class Named:
+    name: str
+
+    def __enter__(self) -> str:
+        log.append(f"enter {self.name}")
+        return self.name
+
+    def __exit__(self):
+        log.append(f"exit {self.name}")
+
+
+class Swallow:
+    kind: str
+
+    def __enter__(self):
+        log.append("enter swallow")
+
+    def __exit__(self, exc: Exception?) -> bool:
+        if exc is None:
+            log.append("swallow: no exception")
+            return False
+        log.append(f"swallow saw {exc!r}")
+        return self.kind in repr(exc)
+
+
+class Watch:
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc: KeyError?):
+        log.append("watch: " + ("None" if exc is None else repr(exc)))
+
+
+@value
+class Counter:
+    entered: int
+
+    def __enter__(self) -> int:
+        self.entered += 1
+        return self.entered
+
+    def __exit__(self):
+        log.append(f"counter exit after {self.entered}")
+
+
+@contextmanager
+def step(name: str) -> Iterator[None]:
+    log.append(f"step {name}")
+    yield
+    log.append(f"step {name} done")
+
+
+with ExitStack() as stack:
+    a = stack.enter_context(Named("a"))
+    stack.enter_context(Swallow("boom"))
+    b = stack.enter_context(Named("b"))
+    stack.enter_context(Watch())
+    n = stack.enter_context(Counter(0))
+    log.append(f"{a}{b}{n}")
+    raise ValueError("boom")
+print(log)
+
+log.clear()
+try:
+    with ExitStack() as stack:
+        stack.enter_context(Swallow("other"))
+        stack.enter_context(Watch())
+        raise KeyError("k")
+except KeyError as e:
+    print("KeyError:", repr(e))
+print(log)
+
+log.clear()
+with ExitStack() as stack:
+    stack.enter_context(Swallow("x"))
+    stack.enter_context(Watch())
+print(log)
+
+# Built-in context managers on a stack: files are closed, directories removed.
+with ExitStack() as stack:
+    tmp = stack.enter_context(tempfile.TemporaryDirectory())
+    path = os.path.join(tmp, "f.txt")
+    f = stack.enter_context(open(path, "w"))
+    f.write("hello")
+print(os.path.exists(tmp))
+
+
+# Context managers as values, with contextlib's types.
+def pick(verbose: bool) -> AbstractContextManager[None]:
+    if verbose:
+        return step("verbose")
+    return nullcontext()
+
+
+log.clear()
+for verbose in [True, False]:
+    with pick(verbose):
+        log.append(f"body {verbose}")
+print(log)
+
+log.clear()
+managers = [step("one"), step("two")]
+with ExitStack() as stack:
+    for m in managers:
+        stack.enter_context(m)
+print(log)

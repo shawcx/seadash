@@ -2355,3 +2355,72 @@ def test_copy_types():
               "e: D | None = None\n"
               "d = copy.copy(e)\n")
     assert {"a: C", "b: B", "c: dict[str, list[tuple[int, str]]]", "d: B?"} <= set(variables(info))
+
+
+CONTEXTLIB = ("from contextlib import contextmanager, suppress, closing, nullcontext, ExitStack\n"
+              "from typing import Iterator\nimport threading\n")
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("@contextmanager\ndef f() -> Iterator[int]:\n    return iter([1])\n",
+     "'f' is a @contextmanager function, so it must `yield` (once) the value `with f(...) as x:` gives: the code "
+     "before the yield runs when the with block starts, the code after it when the block ends"),
+    ("@contextmanager\ndef f() -> Iterator[int]:\n    yield 1\n    yield 2\n",
+     "this yield always runs after another one, but a @contextmanager function must yield exactly once (a second "
+     "yield is Python's \"generator didn't stop\" error)"),
+    ("@contextmanager\ndef f(a: bool) -> Iterator[int]:\n    if a:\n        yield 1\n    else:\n        yield 2\n"
+     "    try:\n        pass\n    finally:\n        print()\n    yield 3\n",
+     "this yield always runs after another one, but a @contextmanager function must yield exactly once (a second "
+     "yield is Python's \"generator didn't stop\" error)"),
+    ("@contextmanager\ndef f() -> Iterator[int]:\n    yield from [1]\n",
+     "a @contextmanager function yields once: `yield from` isn't supported there"),
+    ("from functools import cache\n@contextmanager\n@cache\ndef f() -> Iterator[int]:\n    yield 1\n",
+     "@contextmanager can't be combined with other decorators yet"),
+    ("@contextmanager\ndef f() -> int:\n    yield 1\n",
+     "'f' is a generator (it has 'yield'), so its return type is Iterator[T]: write `-> Iterator[int]` (with the "
+     "type it yields)"),
+    ("@contextmanager\ndef f() -> Iterator[None]:\n    yield\nwith f() as x:\n    pass\n",
+     "this ContextManager[None] gives None (a bare `yield`, or nothing to enter), so there's nothing to bind with 'as'"),
+    ("@contextmanager\ndef f() -> Iterator[int]:\n    try:\n        pass\n    except ValueError:\n        yield 1\n",
+     "a generator can't yield inside an 'except' block yet; set a flag there and yield after the try statement"),
+    ("def g() -> Iterator[int]:\n    try:\n        pass\n    finally:\n        yield 1\n",
+     "a generator can't yield inside a 'finally' block yet; set a flag there and yield after the try statement"),
+    ("with suppress(ValueError, 3):\n    pass\n",
+     "suppress() takes exception classes, like suppress(FileNotFoundError, KeyError)"),
+    ("with suppress(exc=ValueError):\n    pass\n", "suppress() takes exception classes, not keyword arguments"),
+    ("with closing(3):\n    pass\n", "closing() needs something with a close() method (taking no arguments), not int"),
+    ("s = ExitStack()\ns.enter_context(3)\n",
+     "int can't be used in a 'with' statement (it needs __enter__ and __exit__ methods)"),
+    ("s = ExitStack()\ns.enter_context(threading.Lock())\n",
+     "enter_context() can't hold Lock (a lock is held by a with statement's block)"),
+    ("def g(a: int) -> None:\n    pass\ns = ExitStack()\ns.callback(g)\n",
+     "callback(): the function takes 1 argument, but 0 are given"),
+    ("def g(a: int) -> None:\n    pass\ns = ExitStack()\ns.callback(g, 'x')\n",
+     "callback(): this argument must be int, not str"),
+    ("s = ExitStack()\ns.callback(3)\n", "callback() needs a function to call, not int"),
+    # suppress() may swallow the exception, so the code after the with block can be reached
+    ("def g() -> int:\n    with suppress(ValueError):\n        return int('x')\n",
+     "function 'g' can reach its end without returning a value (it's declared to return int)"),
+    ("@contextmanager\ndef f() -> Iterator[None]:\n    try:\n        yield\n    except ValueError:\n        pass\n"
+     "def g() -> int:\n    with f():\n        return 1\n",
+     "function 'g' can reach its end without returning a value (it's declared to return int)"),
+    ("def g() -> int:\n    with ExitStack() as s:\n        s.enter_context(suppress(KeyError))\n        return 1\n",
+     "function 'g' can reach its end without returning a value (it's declared to return int)"),
+    ("def h(s: ExitStack) -> None:\n    pass\ndef g() -> int:\n    with ExitStack() as s:\n        h(s)\n        return 1\n",
+     "function 'g' can reach its end without returning a value (it's declared to return int)"),
+])
+def test_contextlib_errors(src, msg):
+    assert err(CONTEXTLIB + src).message == msg
+
+
+def test_contextlib_types():
+    info = ok(CONTEXTLIB + "@contextmanager\ndef f(n: int) -> Iterator[str]:\n    try:\n        yield str(n)\n"
+              "    except ValueError:\n        raise\n    finally:\n        print('done')\n"
+              "def g() -> int:\n    with f(1) as s, nullcontext(2) as n, closing(open('x')):\n        return len(s) + n\n"
+              "cm = f(2)\nwith cm as text:\n    pass\nstack = ExitStack()\nfirst = stack.enter_context(f(3))\n"
+              "file = stack.enter_context(open('x'))\nkeep = stack.callback(lambda: print('bye'))\n"
+              "nothing = nullcontext()\n"
+              "def k() -> int:\n    with ExitStack() as s:\n        s.enter_context(f(1))\n"
+              "        s.callback(lambda: print('x'))\n        s.pop_all().close()\n        return 1\n")
+    assert {"cm: ContextManager[str]", "text: str", "stack: ExitStack", "first: str", "file: TextIO",
+            "keep: () -> None", "nothing: ContextManager[None]"} <= set(variables(info))
