@@ -1,0 +1,64 @@
+import html
+
+# escape
+print(html.escape("<a href=\"x\">Tom & Jerry's</a>"))
+print(html.escape("<a href=\"x\">Tom & Jerry's</a>", quote=False))
+print(html.escape("<a href=\"x\">Tom & Jerry's</a>", False))
+print(html.escape(""))
+print(html.escape("no specials here"))
+print(html.escape("café → <naïve> & 日本"))
+print(html.escape("&amp;"))
+
+# escape and unescape round-trip
+for s in ["", "plain", "<b>\"bold\" & 'quoted'</b>", "&&&<<>>", "ünïcödé & ☃"]:
+    print(repr(html.unescape(html.escape(s))), html.unescape(html.escape(s)) == s)
+
+# named references
+print(repr(html.unescape("&lt;p&gt;Tom &amp; Jerry&lt;/p&gt;")))
+print(repr(html.unescape("&quot;quoted&quot; &apos;single&apos;")))
+print(repr(html.unescape("&copy; 2024 &mdash; &euro;5 &hearts;|")))
+print(html.unescape("&nbsp;&AElig;&Aacute;&zwnj;&zwj;&NotEqualTilde;&nvlt;&fjlig;").encode())
+print(repr(html.unescape("&CounterClockwiseContourIntegral;")))
+print(html.unescape("&bne; &acE; &ThickSpace; &Afr; &bopf;").encode())
+
+# without the semicolon: legacy names, and the longest prefix that is a name
+print(repr(html.unescape("&amp &lt &gt &copy &eacute")))
+print(repr(html.unescape("&notit; &notin; &ampxyz &ltfoo; &copyright")))
+print(repr(html.unescape("&alpha &alpha; &alphax; &Alpha;")))
+print(repr(html.unescape("&amp;amp; &amp;lt;")))
+
+# not references
+print(repr(html.unescape("& &; &# &#; &#x; &#xg; &foo; &foo &unknownentity; a&b")))
+print(repr(html.unescape("&&amp; &#&#65; &&&")))
+print(repr(html.unescape("&\tamp; &\namp; & amp; &<amp;")))
+print(repr(html.unescape("&café; &é; &amé")))
+print(repr(html.unescape("&" + "a" * 31 + "; &" + "a" * 32 + "; &" + "a" * 33 + ";")))
+print(repr(html.unescape("&amp" + "x" * 40 + ";")))
+print(repr(html.unescape("&" + "é" * 33 + ";")))
+
+# numeric references
+print(repr(html.unescape("&#65;&#66&#x43;&#X44;&#x45&#0000070;&#x00047;")))
+print(repr(html.unescape("&#x1F600; &#128512; &#x263a; &#9731;")))
+print(repr(html.unescape("&#0; &#x0; &#13; &#xd;")))
+# (non-printable characters as UTF-8 bytes: seadash's repr doesn't escape them)
+print(html.unescape("&#128;&#129;&#130;&#131;&#132;&#133;&#134;&#135;").encode())
+print(html.unescape("&#136;&#137;&#138;&#139;&#140;&#141;&#142;&#143;").encode())
+print(html.unescape("&#144;&#145;&#146;&#147;&#148;&#149;&#150;&#151;").encode())
+print(html.unescape("&#152;&#153;&#154;&#155;&#156;&#157;&#158;&#159;&#160;").encode())
+print(html.unescape("&#xD800; &#xdfff; &#55295; &#57344; &#x110000; &#x10FFFF; &#x10FFFD;").encode())
+print(repr(html.unescape("&#99999999999999999999999999999999999; &#xFFFFFFFFFFFFFFFFFFFFFFFF;")))
+print(repr(html.unescape("[&#1;&#8;&#9;&#10;&#11;&#12;&#14;&#31;&#32;&#127;]")))
+print(repr(html.unescape("[&#xFDD0;&#xFDEF;&#xFDF0;&#xFFFE;&#xFFFF;&#x1FFFE;&#x10FFFE;&#xFFFD;]")))
+print(repr(html.unescape("&#65abc &#x41xyz &#x41;; &#65;;")))
+print(repr(html.unescape("&#" + "0" * 4296 + "65;")))
+
+try:
+    html.unescape("&#" + "1" * 4301 + ";")
+except ValueError as e:
+    print("ValueError:", e)
+
+# a mix
+text = "<p class=\"intro\">Fish &amp; chips &mdash; &pound;5 &#x2014; caf&eacute;</p>"
+print(html.unescape(text))
+print(html.escape(html.unescape(text)))
+print(len(html.unescape("&#x1F600;&eacute;&amp;").encode()))

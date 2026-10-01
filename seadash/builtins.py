@@ -3315,6 +3315,15 @@ MODULES["shlex"] = module_with_params(runtime_module(
 ))
 
 
+# ---- html -----------------------------------------------------------------------------
+
+MODULES["html"] = module_with_params(runtime_module(
+    "html", "modules/html.hpp",
+    escape=(signature(STR, ("s", STR), ("quote", BOOL, "true")), "sd::html::escape"),
+    unescape=(signature(STR, ("s", STR)), "sd::html::unescape"),
+))
+
+
 # ---- hashlib, hmac ------------------------------------------------------------------------
 
 HASH_NAMES = ("md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3_224", "sha3_256", "sha3_384", "sha3_512",

@@ -223,6 +223,7 @@ def work():
 | `gzip`, `bz2`, `lzma` | `compress`, `decompress` (Python's exact output and errors) and `open`, which gives the same file objects as `open()`, as do `GzipFile`/`BZ2File`/`LZMAFile`; the incremental `BZ2Compressor`/`BZ2Decompressor` and `LZMACompressor`/`LZMADecompressor` (with `max_length`, `eof`, `needs_input`, `unused_data`); `lzma` does the xz and .lzma formats with presets and integrity checks (not yet: `fileobj=`, `FORMAT_RAW` and filter chains) |
 | `errno`, `stat` | the error numbers and `errorcode` (and `OSError` carries `errno`, `strerror` and `filename`); the `st_mode` bits, `S_ISDIR`..., `S_IMODE`, `S_IFMT`, `filemode` |
 | `shlex` | `split`, `quote`, `join` (POSIX mode) |
+| `html` | `escape` and `unescape`, with the full HTML5 named-reference table and Python's handling of numeric and semicolon-less references (not yet: `html.entities`, `html.parser`) |
 | `uuid` | `UUID` values (ordered, hashable), `uuid1`/`uuid3`/`uuid4`/`uuid5`, the namespaces; not yet: `u.int` (128 bits) and `getnode()` |
 | `json` | typed: `json.loads` straight into your dataclasses, lists and dicts; `json.Value` for dynamic JSON |
 | `sqlite3` | `connect`, `Connection` and `Cursor` with `execute`/`executemany`/`executescript`, `?` and `:name` parameters, `commit`/`rollback`/`with conn:`, `rowcount`, `lastrowid`, `description`, and Python's exception classes and messages; rows are typed like `json.loads` (`rows: list[tuple[int, str]] = cur.fetchall()`). Not yet: `row_factory`/`sqlite3.Row`, `create_function`, iterating a cursor directly |

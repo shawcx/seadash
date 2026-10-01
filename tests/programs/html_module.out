@@ -1,0 +1,46 @@
+&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&#x27;s&lt;/a&gt;
+&lt;a href="x"&gt;Tom &amp; Jerry's&lt;/a&gt;
+&lt;a href="x"&gt;Tom &amp; Jerry's&lt;/a&gt;
+
+no specials here
+café → &lt;naïve&gt; &amp; 日本
+&amp;amp;
+'' True
+'plain' True
+'<b>"bold" & \'quoted\'</b>' True
+'&&&<<>>' True
+'ünïcödé & ☃' True
+'<p>Tom & Jerry</p>'
+'"quoted" \'single\''
+'© 2024 — €5 ♥|'
+b'\xc2\xa0\xc3\x86\xc3\x81\xe2\x80\x8c\xe2\x80\x8d\xe2\x89\x82\xcc\xb8<\xe2\x83\x92fj'
+'∳'
+b'=\xe2\x83\xa5 \xe2\x88\xbe\xcc\xb3 \xe2\x81\x9f\xe2\x80\x8a \xf0\x9d\x94\x84 \xf0\x9d\x95\x93'
+'& < > © é'
+'¬it; ∉ &xyz <foo; ©right'
+'&alpha α &alphax; Α'
+'&amp; &lt;'
+'& &; &# &#; &#x; &#xg; &foo; &foo &unknownentity; a&b'
+'&& &#A &&&'
+'&\tamp; &\namp; & amp; &<amp;'
+'&café; &é; &amé'
+'&aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; &aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; &aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;'
+'&xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx;'
+'&ééééééééééééééééééééééééééééééééé;'
+'ABCDEFG'
+'😀 😀 ☺ ☃'
+'� � \r \r'
+b'\xe2\x82\xac\xc2\x81\xe2\x80\x9a\xc6\x92\xe2\x80\x9e\xe2\x80\xa6\xe2\x80\xa0\xe2\x80\xa1'
+b'\xcb\x86\xe2\x80\xb0\xc5\xa0\xe2\x80\xb9\xc5\x92\xc2\x8d\xc5\xbd\xc2\x8f'
+b'\xc2\x90\xe2\x80\x98\xe2\x80\x99\xe2\x80\x9c\xe2\x80\x9d\xe2\x80\xa2\xe2\x80\x93\xe2\x80\x94'
+b'\xcb\x9c\xe2\x84\xa2\xc5\xa1\xe2\x80\xba\xc5\x93\xc2\x9d\xc5\xbe\xc5\xb8\xc2\xa0'
+b'\xef\xbf\xbd \xef\xbf\xbd \xed\x9f\xbf \xee\x80\x80 \xef\xbf\xbd  \xf4\x8f\xbf\xbd'
+'� �'
+'[\t\n\x0c ]'
+'[ﷰ�]'
+'Aabc Axyz A; A;'
+'A'
+ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 4301 digits; use sys.set_int_max_str_digits() to increase the limit
+<p class="intro">Fish & chips — £5 — café</p>
+&lt;p class=&quot;intro&quot;&gt;Fish &amp; chips — £5 — café&lt;/p&gt;
+7
