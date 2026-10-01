@@ -67,3 +67,8 @@ dynamic = "(" + "b" + ")+"
 d = re.search(dynamic, "abbc")
 if d:
     print(d.group(0), d.group(1), len(d.groups()))
+
+# In a class, [ is a literal, and [:x:], [.x.] and [=x=] aren't POSIX syntax as in some engines
+for pat, text in [("[::]+", "a::b"), ("[.a.]+", "x.a.y"), ("[=a=]+", "b=a=c"), ("[^:x]+", ":ab:"),
+                  ("[a[:alpha:]]+", "[:alpha:]zz"), ("[]a]+", "]a]b"), ("x[:]", "x:")]:
+    print(repr(pat), re.findall(pat, text))

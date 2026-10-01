@@ -26,3 +26,10 @@ A:1 B:2
 error: bad escape \q at position 0
 IndexError: no such group
 bb b 1
+'[::]+' ['::']
+'[.a.]+' ['.a.']
+'[=a=]+' ['=a=']
+'[^:x]+' ['ab']
+'[a[:alpha:]]+' [':]']
+'[]a]+' [']a]']
+'x[:]' ['x:']

@@ -32,38 +32,13 @@ inline std::string replace_all(std::string s, std::string_view from, std::string
     return s;
 }
 
-// The class body of a translated `[...]` for PCRE2: Python's re reads `[` inside a
-// class as a literal, PCRE2 as the start of `[:alpha:]`, so it's escaped here, as is
-// a leading `:`, `.` or `=` (PCRE2 rejects `[:x:]` and `[.x.]` as a whole class).
-// Every backslash in `stuff` starts an escape pair already.
-inline std::string pcre_class(const std::string& stuff) {
-    std::string out;
-    for (std::size_t i = 0; i < stuff.size(); ++i) {
-        bool first = i == 0 || (i == 1 && stuff[0] == '^');
-        if (first && (stuff[i] == ':' || stuff[i] == '.' || stuff[i] == '=')) {
-            out += '\\';
-            out += stuff[i];
-        } else if (stuff[i] == '\\' && i + 1 < stuff.size()) {
-            out += stuff[i];
-            out += stuff[++i];
-        } else if (stuff[i] == '[') {
-            out += "\\[";
-        } else {
-            out += stuff[i];
-        }
-    }
-    return out;
-}
-
 struct Translated {
     std::vector<std::string> parts;
     std::vector<std::size_t> stars;  // indexes of the `*` parts
 };
 
-// A port of Python's fnmatch._translate: each pattern piece as a regex piece. `pcre`
-// spells classes for PCRE2 (see pcre_class) instead of exactly as Python writes them.
-inline Translated translate_parts(const std::string& pat, const std::string& star, const std::string& question_mark,
-                                  bool pcre) {
+// A port of Python's fnmatch._translate: each pattern piece as a regex piece.
+inline Translated translate_parts(const std::string& pat, const std::string& star, const std::string& question_mark) {
     Translated t;
     auto& res = t.parts;
     std::size_t i = 0, n = pat.size();
@@ -140,7 +115,7 @@ inline Translated translate_parts(const std::string& pat, const std::string& sta
                 } else if (stuff[0] == '^' || stuff[0] == '[') {
                     stuff = "\\" + stuff;
                 }
-                res.push_back("[" + (pcre ? pcre_class(stuff) : stuff) + "]");
+                res.push_back("[" + stuff + "]");
             }
         } else {
             std::size_t next = advance(pat, i, 1);
@@ -178,7 +153,7 @@ inline re::Pattern compiled(const std::string& pat) {
         std::lock_guard lk(mu);
         if (auto it = cache.find(pat); it != cache.end()) return it->second;
     }
-    re::Pattern p(join_parts(translate_parts(pat, ".*", ".", true)));
+    re::Pattern p(join_parts(translate_parts(pat, ".*", ".")));
     std::lock_guard lk(mu);
     if (cache.size() >= 32768) cache.clear();
     cache.emplace(pat, p);
@@ -192,7 +167,7 @@ inline bool matches(const re::Pattern& p, const std::string& name) {
 }  // namespace detail
 
 inline std::string translate(const std::string& pat) {
-    return detail::join_parts(detail::translate_parts(pat, ".*", ".", false));
+    return detail::join_parts(detail::translate_parts(pat, ".*", "."));
 }
 
 inline bool fnmatchcase(const std::string& name, const std::string& pat) {

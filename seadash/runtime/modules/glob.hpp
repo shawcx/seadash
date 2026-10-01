@@ -231,7 +231,7 @@ inline std::string translate(const std::string& pat, bool recursive, bool includ
         } else {
             if (!part.empty()) {
                 if (!include_hidden && (part[0] == '*' || part[0] == '?')) res += "(?!\\.)";
-                for (auto& piece : fnmatch::detail::translate_parts(part, not_sep + "*", not_sep, false).parts) res += piece;
+                for (auto& piece : fnmatch::detail::translate_parts(part, not_sep + "*", not_sep).parts) res += piece;
             }
             if (idx < last) res += any_sep;
         }

@@ -24,7 +24,8 @@ inline constexpr std::int64_t IGNORECASE = 2, MULTILINE = 8, DOTALL = 16, UNICOD
                               ASCII = 256;
 
 // Python syntax that PCRE2 spells differently: \Z (end of string) is PCRE2's \z,
-// and {,n} means {0,n}.
+// and {,n} means {0,n}. In a class, [ is a literal in Python, while PCRE2 would read
+// [:alpha:], [.a.] and [=a=] (and a class starting [:...:]) as POSIX syntax.
 inline std::string translate(const std::string& p) {
     std::string out;
     bool in_class = false;
@@ -35,12 +36,13 @@ inline std::string translate(const std::string& p) {
             ++i;
         } else if (in_class) {
             if (c == ']') in_class = false;
-            out += c;
+            out += c == '[' ? "\\[" : std::string(1, c);
         } else if (c == '[') {
             in_class = true;
             out += c;
             if (i + 1 < p.size() && p[i + 1] == '^') out += p[++i];
             if (i + 1 < p.size() && p[i + 1] == ']') out += p[++i];  // `[]a]`: a literal ]
+            else if (i + 1 < p.size() && (p[i + 1] == ':' || p[i + 1] == '.' || p[i + 1] == '=')) out += "\\" + std::string(1, p[++i]);
         } else if (c == '{' && i + 1 < p.size() && p[i + 1] == ',') {
             std::size_t j = i + 2;
             while (j < p.size() && std::isdigit(static_cast<unsigned char>(p[j]))) ++j;
