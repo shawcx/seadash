@@ -203,7 +203,8 @@ A `Mutex` owns what it's given: `shared = Mutex(data)` moves `data` in, and usin
 afterwards is an error. A list the sender never uses again
 is moved rather than copied, and inside `with ThreadPoolExecutor() as pool:` a task that only
 reads a list shares it rather than copying it, when nothing can change it until the task ends. A thread that changes its copy and never uses it is an error
-(the change would be lost). Threads may read module globals that nothing changes; changing
+(the change would be lost). Threads may read module globals that nothing changes once they've started (module code
+before a thread starts may still build them); changing
 a list through another name, or passing it to a function that could change it, counts:
 
 ```python

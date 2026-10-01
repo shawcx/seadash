@@ -528,19 +528,32 @@ class Program:
     units: list  # (A.Module, ModuleInfo, module name)
 
     def __post_init__(self) -> None:
-        bodies = []
+        # Module code that runs before a thread starts may build its globals freely: only what
+        # happens from a module's first spawn on (and anything in a function) counts as a change.
+        self.top: dict[str, list[A.Stmt]] = {}  # per module, its top-level code
+        self.first_spawn: dict[str, int] = {}  # the index in it of the first statement that starts a thread
+        self.function_bodies: list[A.Stmt] = []
         for module, info, name in self.units:
-            spawn_seen = False
             spawn_calls = {id(call) for call, _, _ in info.spawns}  # Thread(...), executor.submit/map, callbacks
             top = [s for s in module.body if not isinstance(s, (A.FunctionDef, A.ClassDef, A.Import, A.ImportFrom))]
-            for stmt in top:
-                # Module code that runs before any thread starts may build its globals freely.
-                spawn_seen = spawn_seen or any(id(n) in spawn_calls for n in walk(stmt))
-                if spawn_seen:
-                    bodies.append(stmt)
+            self.top[name] = top
+            self.first_spawn[name] = next(
+                (i for i, stmt in enumerate(top) if any(id(n) in spawn_calls for n in walk(stmt))), len(top))
             for fn in self.all_functions(info):
-                bodies.extend(fn.node.body)
-        self.global_assigned, self.global_modified = changes(bodies)
+                self.function_bodies.extend(fn.node.body)
+        self._changes: dict[tuple[str, int], tuple[dict[int, int], dict[int, Loc]]] = {}
+
+    def changes_from(self, module: str, start: int) -> tuple[dict[int, int], dict[int, Loc]]:
+        """Globals assigned and modified once a thread started at top-level statement `start`
+        of `module` may be running (every module's code from its first spawn on, that module's
+        from `start` on, and functions)."""
+        key = (module, start)
+        if key not in self._changes:
+            bodies = list(self.function_bodies)
+            for name, top in self.top.items():
+                bodies.extend(top[max(start, self.first_spawn[name]) if name == module else self.first_spawn[name]:])
+            self._changes[key] = changes(bodies)
+        return self._changes[key]
 
     @staticmethod
     def all_functions(info) -> list[FuncInfo]:
@@ -647,6 +660,14 @@ class Spawn:
 
     def fail(self, message: str, node: A.Node) -> ThreadSafetyError:
         return ThreadSafetyError(message, node.loc, self.module)
+
+    def start_index(self) -> int:
+        """The top-level statement of the module that starts this thread: what the module does
+        before it happens before the thread runs. (0 when a function starts it, from anywhere.)"""
+        for i, stmt in enumerate(self.program.top.get(self.module, [])):
+            if any(n is self.call for n in walk(stmt)):
+                return i
+        return 0
 
     def check(self) -> None:
         args = self.extra["args"]
@@ -941,8 +962,9 @@ class Spawn:
         if shareable(var.type):
             return
         reason = unsendable(var.type)
-        loc = self.program.global_modified.get(id(var))
-        reassigned = self.program.global_assigned.get(id(var), 0) > 0
+        assigned, modified = self.program.changes_from(self.module, self.start_index())
+        loc = modified.get(id(var))
+        reassigned = assigned.get(id(var), 0) > 0
         if reason is None and loc is None and not reassigned:
             return  # a value nothing changes once threads can run: reading it is fine
         why = reason or (f"it's modified (line {loc.line})" if loc else "it's reassigned")

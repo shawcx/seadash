@@ -169,6 +169,16 @@ SAFE = {
                 snapshot = [list(r) for r in rows]
         threading.Thread(target=work).start()
     """,
+    "globals made before the thread that reads them starts": """
+        first = threading.Thread(target=print)
+        first.start()
+        when = 3
+        items = [1]
+        items.append(2)
+        def work():
+            print(when, len(items))
+        threading.Thread(target=work).start()
+    """,
 }
 
 
@@ -348,7 +358,14 @@ UNSAFE = [
             for row in GRID:
                 row.append(0)
         threading.Thread(target=work).start()
-     """, "thread code uses the module-level 'GRID' (list[list[int]]), but it's modified"),
+     """, "thread code uses the module-level 'GRID' (list[list[int]]), but it's modified"),    ("""
+        items = [1]
+        def work():
+            print(len(items))
+        threading.Thread(target=print).start()
+        threading.Thread(target=work).start()
+        items.append(2)
+     """, "thread code uses the module-level 'items' (list[int]), but it's modified (line 10)"),
 ]
 
 
