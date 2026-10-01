@@ -1261,7 +1261,7 @@ class CodeGen:
             self.line(f"}} catch (const sd::Thrown& {caught}) {{")
             self.depth += 1
             self.line(f"{guard}.disarm();")
-            passed = f"{self.cpp_type(exit_param)}(std::dynamic_pointer_cast<{exc_class}>({caught}.exc))"
+            passed = f"sd::thrown_if<{exc_class}>({caught})"
             if info.suppresses:
                 self.line(f"if (!{exit_fn}({passed})) throw;  // __exit__ returned True: swallow it")
             else:

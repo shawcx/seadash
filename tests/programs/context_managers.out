@@ -5,3 +5,6 @@ propagated: real problem ['please ignore this', 'real problem']
 normal exit: 2
 ['enter loop1', 'exit loop1', 'enter loop2', 'exit loop2']
 exit ran before the handler: exit failing
+exit sees KeyError('k')
+exit sees None
+got through: ValueError('v')

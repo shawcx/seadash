@@ -128,6 +128,12 @@ template <class E>
 bool isinstance(const Thrown& t) {
     return dynamic_cast<const E*>(t.exc.get()) != nullptr;
 }
+// The exception as an `__exit__(self, exc: E?)` parameter: None unless it's an E.
+template <class E>
+std::optional<std::shared_ptr<E>> thrown_if(const Thrown& t) {
+    if (auto e = std::dynamic_pointer_cast<E>(t.exc)) return e;
+    return std::nullopt;
+}
 
 template <class E>
 [[noreturn]] void raise(const std::string& msg) {

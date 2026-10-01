@@ -61,3 +61,22 @@ try:
         raise KeyError("boom")
 except KeyError:
     print("exit ran before the handler:", log[-1])
+
+
+class OnlyKeys:  # __exit__ sees a KeyError, and None for anything else
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc: KeyError?) -> bool:
+        print("exit sees", "None" if exc is None else repr(exc))
+        return exc is not None
+
+
+for raise_key in [True, False]:
+    try:
+        with OnlyKeys():
+            if raise_key:
+                raise KeyError("k")
+            raise ValueError("v")
+    except ValueError as e:
+        print("got through:", repr(e))
