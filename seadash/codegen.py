@@ -1638,6 +1638,14 @@ class CodeGen:
                 if isinstance(target.value.ty, StructType) and target.value.ty.kind == "struct" and holds_references(target.ty):
                     value = f"sd::value_copy({value})"  # a struct is a value all the way down
                 self.line(f"{self.attribute(target)} = {value};")
+            case A.Index(container, index) if isinstance(index, A.Slice):  # xs[a:b:c] = items
+                tmp = self.fresh("items")
+                self.open("")
+                self.line(f"auto {tmp} = {code};")  # (the value first, as Python does)
+                parts = ", ".join("std::nullopt" if p is None else self.expr_as(p, OptionalType(INT))
+                                  for p in (index.lower, index.upper, index.step))
+                self.line(f"sd::set_slice({self.expr(container)}, {parts}, {tmp});")
+                self.close()
             case A.Index(container, index):
                 c = self.expr(container)
                 if target.dunder is not None:  # obj[k] = v -> obj.__setitem__(k, v)

@@ -4126,6 +4126,31 @@ void del_slice(const list<T>& v, opt_int lo, opt_int hi, opt_int step) {
     }
     vec.resize(out);
 }
+// xs[lo:hi:step] = items: a plain slice is replaced (it may grow or shrink); an extended
+// one (a step other than 1) needs exactly as many items as it covers.
+template <class T, class It>
+void set_slice(const list<T>& v, opt_int lo, opt_int hi, opt_int step, It&& items) {
+    std::vector<T> src;  // (first, so `xs[:] = xs` and generators reading xs are fine)
+    if constexpr (is_tuple<std::remove_cvref_t<It>>::value) {
+        std::apply([&](const auto&... x) { (src.push_back(static_cast<T>(x)), ...); }, items);
+    } else {
+        for (auto&& x : iter(items)) src.push_back(static_cast<T>(x));
+    }
+    auto b = slice_bounds(static_cast<std::int64_t>(v.size()), lo, hi, step);
+    auto& vec = v.vec();
+    if (b.step == 1) {
+        auto first = vec.begin() + b.start;
+        vec.erase(first, vec.begin() + std::max(b.start, b.stop));
+        vec.insert(vec.begin() + b.start, std::make_move_iterator(src.begin()), std::make_move_iterator(src.end()));
+        return;
+    }
+    std::int64_t n = b.count();
+    if (static_cast<std::int64_t>(src.size()) != n) {
+        raise("ValueError", "attempt to assign sequence of size " + std::to_string(src.size()) +
+                                " to extended slice of size " + std::to_string(n));
+    }
+    for (std::int64_t k = 0; k < n; ++k) vec[static_cast<std::size_t>(b.start + k * b.step)] = std::move(src[static_cast<std::size_t>(k)]);
+}
 template <class K, class V>
 void del_item(dict<K, V>& d, const std::type_identity_t<K>& k) {
     d.at(k);  // (KeyError if it's missing)

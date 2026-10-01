@@ -1458,9 +1458,14 @@ class Checker:
                 if isinstance(owner, StructType) and (f := owner.find_field(attr)):
                     return f.type
             case A.Index(value):
-                match self.peek_type(value):
+                owner = self.peek_type(value)
+                if owner is None and isinstance(value, A.Attribute):  # self.items[1:3] = []
+                    owner = self.check_expr(value)
+                match owner:
                     case DictType(_, val):
                         return val
+                    case ListType(elem) if isinstance(target.index, A.Slice):  # xs[1:3] = [...]
+                        return ListType(elem)
                     case ListType(elem):
                         return elem
         return None
@@ -1488,6 +1493,9 @@ class Checker:
     def check_aug_assign(self, stmt: A.AugAssign, target: A.Expr, op: str, value: A.Expr) -> None:
         # `x += v` is checked as `x = x + v`, so for plain names it may rebind
         # (`n = 1; n += 0.5` makes n a float), like Python.
+        if isinstance(target, A.Index) and isinstance(target.index, A.Slice):
+            raise self.error(f"augmented assignment to a slice isn't supported; write it out: "
+                             f"`xs[a:b] = xs[a:b] {op} ...`", target)
         current = self.check_expr(target)
         read_sym = target.sym
         if isinstance(target, A.Attribute) and isinstance(read_sym, tuple) and read_sym[0] in ("enum_attr", "enum_member"):
@@ -1569,11 +1577,23 @@ class Checker:
                 if isinstance(ct, StructType):
                     raise self.error(f"{ct.name} doesn't support item assignment (define __setitem__)", target)
                 match ct:
+                    case ListType(elem) if isinstance(index, A.Slice):  # xs[a:b:c] = any iterable of items
+                        for part in (index.lower, index.upper, index.step):
+                            if part is not None:
+                                self.expect_type(part, INT, "slice index")
+                        items = element_type(t)
+                        if items is None:
+                            raise self.error(f"can only assign an iterable to a slice, not {t}", value)
+                        if not assignable(items, elem):
+                            raise self.error(f"can't store items of type {items} in a {ct}", value)
+                        index.ty = ct
+                        target.ty = ct
+                        return
                     case ListType(elem):
-                        if isinstance(index, A.Slice):
-                            raise self.error("assigning to a slice is not supported yet", index)
                         self.expect_type(index, INT, "list index")
                         slot = elem
+                    case DequeType() | DictType() if isinstance(index, A.Slice):
+                        raise self.error(f"can't assign to a slice of a {ct}, only of a list", target)
                     case DequeType(elem):
                         self.expect_type(index, INT, "deque index")
                         slot = elem

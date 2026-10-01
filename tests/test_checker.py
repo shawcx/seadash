@@ -2540,3 +2540,25 @@ def test_del_errors(src, msg):
 
 def test_del_then_rebind():
     assert variables(ok("xs = [1, 2]\ndel xs\nxs = 'now a str'\nprint(xs)\n")) == ["xs: list[int]", "xs_1: str"]
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("xs = [1, 2]\nxs[0:1] = 5\n", "can only assign an iterable to a slice, not int"),
+    ("xs = [1, 2]\nxs[0:1] = ['a']\n", "can't store items of type str in a list[int]"),
+    ("xs = [1]\nxs['a':] = [2]\n", "slice index must be int, not str"),
+    ("s = 'ab'\ns[0:1] = 'x'\n", "str can't be changed in place (it's immutable)"),
+    ("from collections import deque\nq = deque([1])\nq[0:1] = [2]\n", "can't assign to a slice of a deque[int], only of a list"),
+    ("xs = [1, 2]\nxs[0:1] += [3]\n",
+     "augmented assignment to a slice isn't supported; write it out: `xs[a:b] = xs[a:b] + ...`"),
+])
+def test_slice_assignment_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_slice_assignment_of_an_empty_list_to_a_field():
+    ok("""
+    class Bag:
+        items: list[int]
+        def clear_middle(self):
+            self.items[1:-1] = []
+    """)

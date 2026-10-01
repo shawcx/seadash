@@ -1,0 +1,62 @@
+# Assigning to a slice: a plain slice is replaced by any iterable (growing or shrinking the
+# list); an extended slice needs exactly as many items as it covers.
+from dataclasses import dataclass, field
+
+
+xs = [0, 1, 2, 3, 4]
+xs[1:3] = [9, 9, 9]
+print(xs)
+xs[1:4] = []
+print(xs)
+xs[1:1] = (5, 6)
+print(xs)
+xs[10:20] = [7]
+print(xs)
+xs[3:1] = [8]  # (an empty slice: inserted where it starts)
+print(xs)
+xs[:] = xs  # (the same list: copied first)
+print(xs)
+xs[:] = (x * 10 for x in xs)
+print(xs)
+xs[-2:] = range(3)
+print(xs)
+
+ys = list(range(8))
+ys[::2] = [10, 20, 30, 40]
+print(ys)
+ys[::-3] = [-1, -2, -3]
+print(ys)
+for bad in ([1, 2], [1, 2, 3, 4, 5]):
+    try:
+        ys[::2] = bad
+    except ValueError as e:
+        print("ValueError:", e)
+try:
+    ys[::0] = []
+except ValueError as e:
+    print("ValueError:", e)
+
+letters = ["a", "b", "c"]
+letters[0:1] = "xyz"
+print(letters)
+floats = [0.5, 1.5]
+floats[1:] = [2.5, 3.5]
+print(floats)
+grid = [[0], [1], [2]]
+row = [7]
+grid[0:1] = [row, row]
+row.append(8)  # (the same list twice, as in Python)
+print(grid)
+
+
+@dataclass
+class Bag:
+    items: list[int] = field(default_factory=list)
+
+    def replace_middle(self, new: list[int]) -> None:
+        self.items[1:-1] = new
+
+
+b = Bag([1, 2, 3, 4])
+b.replace_middle([0])
+print(b)

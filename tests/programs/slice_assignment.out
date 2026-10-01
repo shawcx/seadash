@@ -1,0 +1,17 @@
+[0, 9, 9, 9, 3, 4]
+[0, 3, 4]
+[0, 5, 6, 3, 4]
+[0, 5, 6, 3, 4, 7]
+[0, 5, 6, 8, 3, 4, 7]
+[0, 5, 6, 8, 3, 4, 7]
+[0, 50, 60, 80, 30, 40, 70]
+[0, 50, 60, 80, 30, 0, 1, 2]
+[10, 1, 20, 3, 30, 5, 40, 7]
+[10, -3, 20, 3, -2, 5, 40, -1]
+ValueError: attempt to assign sequence of size 2 to extended slice of size 4
+ValueError: attempt to assign sequence of size 5 to extended slice of size 4
+ValueError: slice step cannot be zero
+['x', 'y', 'z', 'b', 'c']
+[0.5, 2.5, 3.5]
+[[7, 8], [7, 8], [1], [2]]
+Bag(items=[1, 0, 4])
