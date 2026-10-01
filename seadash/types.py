@@ -243,6 +243,16 @@ class VarTupleType(Type):
 
 
 @dataclass(frozen=True)
+class CmpKeyType(Type):
+    """What functools.cmp_to_key(cmp) makes of a value: a key that orders by cmp."""
+
+    elem: Type
+
+    def __str__(self) -> str:
+        return "functools.KeyWrapper"
+
+
+@dataclass(frozen=True)
 class HTTPServerType(Type):
     """http.server.HTTPServer / ThreadingHTTPServer, with the handler class it serves, so the
     thread checker knows what code its threads run (None: a server from elsewhere, as in an
@@ -422,6 +432,7 @@ class FuncInfo:
     kind: str = "method"
     cached: bool = False  # @functools.cache
     generator: bool = False  # has `yield`: returns an Iterator[T] that runs the body on demand
+    lazy: bool = False  # @functools.cached_property: a getter whose value is kept after the first time
 
     def __str__(self) -> str:
         params = ", ".join(f"*{p.name}: {p.type.elem}" if p.star else f"{p.name}: {p.type}" for p in self.params)

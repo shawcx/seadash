@@ -1,0 +1,15 @@
+6 0 5
+120 xyz
+[2, 4] 5 2.0
+TypeError: reduce() of empty iterable with no initial value
+[1, 2, 3] ['ccc', 'bb', 'a']
+3 ccc
+['fig', 'pear', 'kiwi', 'apple'] [1.5, 2.5]
+[4, 5, 6] True False
+True True False False True True 2 10
+True True False True False [Score(points=3), Score(points=5)]
+computing
+12.0 12.0
+computing
+1.5 3.0
+HELLO ANN!

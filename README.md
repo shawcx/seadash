@@ -255,7 +255,7 @@ def work():
 | `datetime`, `zoneinfo` | `date`, `time`, `datetime`, `timedelta`, `timezone`, and named zones like `ZoneInfo("Europe/Paris")` (daylight saving time included): arithmetic, `strftime`/`strptime`, `isoformat`/`fromisoformat`, `now()`/`today()`, time zone conversion |
 | `email.utils` | the RFC 2822 dates of HTTP and mail headers: `formatdate` (`usegmt=`, `localtime=`), `format_datetime`, `parsedate_to_datetime` (Python's forgiving parser and its errors), `parsedate_tz`, `parsedate`; not yet the address functions (`parseaddr`, `formataddr`...) or `mktime_tz` |
 | `argparse` | `ArgumentParser` with Python's help and errors, and subcommands; the parsed arguments are typed from `add_argument()` (`args.count` is an `int`, a misspelled `args.cuont` is a compile error, and inside `if args.command == "add":` the add subcommand's arguments have their real types) |
-| `dataclasses`, `functools` | `@dataclass` (with `frozen=True`, checked when compiling), `field()`, `replace()`, `@cache`, `@lru_cache` |
+| `dataclasses`, `functools` | `@dataclass` (with `frozen=True`, checked when compiling), `field()`, `replace()`; `@cache`, `@lru_cache`, `reduce`, `cmp_to_key`, `@total_ordering`, `@cached_property`, `@wraps` |
 | `typing` | `Callable`, `Optional`, `Iterator`... (so the same code also runs under Python) |
 
 

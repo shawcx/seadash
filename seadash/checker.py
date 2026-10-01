@@ -40,7 +40,7 @@ from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
-    SYNC_ARITY, ClassAttr, ClassRefType, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
+    SYNC_ARITY, ClassAttr, ClassRefType, CmpKeyType, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
@@ -525,8 +525,16 @@ class Checker:
         for name, ca in st.class_attrs.items():
             if st.find_method(name) is not None:
                 raise self.error(f"'{name}' is both a class attribute and a method of {st.name}", ca.loc)
-        for d in st.node.decorators:
-            self.apply_dataclass(st, d)
+        for d in reversed(st.node.decorators):  # (the one nearest the class applies first, as in Python)
+            kind = self.classify_decorator(d)[0]
+            if kind == "dataclass":
+                self.apply_dataclass(st, d)
+            elif kind == "total_ordering":
+                self.apply_total_ordering(st, d)
+        if any(t.frozen for t in st.ancestors()):
+            for m in st.methods.values():
+                if m.lazy:
+                    raise self.error("@cached_property can't be used in a frozen class (it stores the value it computes)", m.node)
         self.check_dunder_signatures(st)
         if st.init is not None and st.init.ret != NONE:
             raise self.error("__init__ must not return a value", st.init.node)
@@ -729,8 +737,8 @@ class Checker:
         any other class is a shared reference."""
         kinds = [self.classify_decorator(d)[0] for d in node.decorators]
         for kind, d in zip(kinds, node.decorators):
-            if kind not in ("dataclass", "value"):
-                raise self.error("only @dataclass and @value can decorate a class (for now)", d)
+            if kind not in ("dataclass", "value", "total_ordering"):
+                raise self.error("only @dataclass, @value and @functools.total_ordering can decorate a class (for now)", d)
         node.kind = "struct" if "value" in kinds else "class"
 
     def declare_generic(self, node: A.FunctionDef | A.ClassDef) -> None:
@@ -965,6 +973,13 @@ class Checker:
             raise self.error("nested functions can't be generators yet; move it to the top level", node)
         if node.type_params:
             raise self.error("generic functions are not supported yet", node)
+        for d in node.decorators:  # (only @functools.wraps(f), which copies f's name and docstring: nothing to do)
+            if self.classify_decorator(d)[0] != "wraps":
+                raise self.error("decorators on nested functions aren't supported yet (except @functools.wraps)", d)
+            if not (isinstance(d, A.Call) and len(d.args) == 1 and not d.keywords):
+                raise self.error("@wraps takes the function being wrapped: @wraps(f)", d)
+            if not isinstance(self.check_expr(d.args[0]), FuncType):
+                raise self.error(f"@wraps takes the function being wrapped, not {d.args[0].ty}", d.args[0])
         info = self.resolve_signature(node, owner=None)
         for p in info.params:
             if p.default is not None:
@@ -1254,6 +1269,12 @@ class Checker:
                 owner = self.check_expr(obj)
                 if not isinstance(owner, StructType):
                     raise self.error(f"can't set attribute '{attr}' on {owner}", target)
+                if (getter := owner.find_method(attr)) and getter.lazy:  # obj.cached = v: replaces the kept value
+                    if not assignable(t, getter.ret):
+                        raise self.error(f"cached property '{attr}' is {getter.ret}, can't assign {t}", value)
+                    target.sym = ("cached_set", getter)
+                    target.ty = getter.ret
+                    return
                 if (getter := owner.find_method(attr)) and getter.kind == "getter":  # obj.area = v
                     setter = self.property_setter(owner, attr, target)
                     if not assignable(t, setter.params[0].type):
@@ -2620,7 +2641,7 @@ class Checker:
         if op in ("<", ">", "<=", ">="):
             ordered = (is_numeric(lt) and is_numeric(rt)) or (
                 lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T)
-                              or isinstance(lt, (TupleType, ListType, VarTupleType, SetType)))  # (sets: subset and superset)
+                              or isinstance(lt, (TupleType, ListType, VarTupleType, SetType, CmpKeyType)))  # (sets: subset and superset)
             )
             if not ordered:
                 owner = lt if isinstance(lt, StructType) else rt
@@ -3340,10 +3361,10 @@ class Checker:
         if len(node.decorators) > 1:
             raise self.error("a method can have one decorator (for now)", node.decorators[1])
         kind = self.classify_decorator(node.decorators[0])[0] if node.decorators else "method"
-        if kind in ("cache", "lru_cache", "user", "dataclass"):
+        if kind in ("cache", "lru_cache", "user", "dataclass", "total_ordering", "wraps"):
             raise self.error(
-                "methods only support @staticmethod, @classmethod, @property and @<name>.setter (for now)",
-                node.decorators[0],
+                "methods only support @staticmethod, @classmethod, @property, @<name>.setter and "
+                "@functools.cached_property (for now)", node.decorators[0],
             )
         if kind == "setter":
             getter = st.methods.get(name)
@@ -3358,12 +3379,16 @@ class Checker:
             return
         if name in st.methods or name in st.fields:
             raise self.error(f"'{name}' is already defined in {st.name}", node)
-        mapped = {"staticmethod": "static", "classmethod": "classmethod", "property": "getter"}.get(kind, "method")
+        mapped = {"staticmethod": "static", "classmethod": "classmethod", "property": "getter",
+                  "cached_property": "getter"}.get(kind, "method")
         info = self.resolve_signature(node, owner=st, kind=mapped)
         if mapped == "getter":
+            what = "@cached_property" if kind == "cached_property" else "@property"
             if info.params or info.ret == NONE:
-                raise self.error("a @property takes only self and returns a value", node)
+                raise self.error(f"a {what} takes only self and returns a value", node)
             info.cpp_name = f"sd_get_{name}"
+            if kind == "cached_property":  # (computed by sd_compute_<name>, kept in sd_cache_<name>)
+                info.lazy, info.cpp_name = True, f"sd_compute_{name}"
         st.methods[name] = info
 
     def property_setter(self, owner: StructType, attr: str, node: A.Node) -> FuncInfo:
@@ -3423,6 +3448,38 @@ class Checker:
             return A.Call(kw["default_factory"], [], loc=default.loc)
         return kw.get("default")
 
+    def apply_total_ordering(self, st: StructType, d: A.Expr) -> None:
+        """@functools.total_ordering: the comparisons a class doesn't define, from the one it does
+        (Python's choice of which, and its formulas)."""
+        derive = {
+            "__lt__": {"__gt__": "not r and self != other", "__le__": "r or self == other", "__ge__": "not r"},
+            "__le__": {"__ge__": "not r or self == other", "__lt__": "r and self != other", "__gt__": "not r"},
+            "__gt__": {"__lt__": "not r and self != other", "__ge__": "r or self == other", "__le__": "not r"},
+            "__ge__": {"__le__": "not r or self == other", "__gt__": "r and self != other", "__lt__": "not r"},
+        }
+        roots = [name for name in derive if st.find_method(name) is not None]
+        if not roots:
+            raise self.error("must define at least one ordering operation: < > <= >=", d)
+        root = max(roots)  # (as Python picks: __lt__ first, then __le__, __gt__, __ge__)
+        method = st.find_method(root)
+        if len(method.params) != 1 or method.ret != BOOL:
+            raise self.error(f"@total_ordering needs {root}(self, other) -> bool", method.node)
+        op = {"__lt__": "<", "__le__": "<=", "__gt__": ">", "__ge__": ">="}[root]
+        methods = [f"def {name}(self, other: {method.params[0].type}) -> bool:\n    r = self {op} other\n    return {expr}"
+                   for name, expr in derive[root].items() if name not in roots]
+        self.synthesize_methods(st, methods, d)
+
+    def synthesize_methods(self, st: StructType, methods: list[str], d: A.Expr) -> None:
+        """Add methods written as source (by @dataclass, @total_ordering) to a class."""
+        if not methods:
+            return
+        source = "class Synthesized:\n" + "\n".join(textwrap.indent(m, "    ") for m in methods) + "\n"
+        for fn in parse(source).body[0].body:
+            for n in walk(fn):
+                n.loc = d.loc  # errors in generated methods point at the decorator
+            st.node.body.append(fn)
+            st.methods[fn.name] = self.resolve_signature(fn, owner=st)
+
     def apply_dataclass(self, st: StructType, d: A.Expr) -> None:
         """@dataclass(eq=True, order=False, frozen=False, unsafe_hash=False): generate the
         methods Python's dataclass would, as ordinary dunders."""
@@ -3460,14 +3517,7 @@ class Checker:
         hashable = all(is_hashable(f.type) for f in st.all_fields().values())  # (a list field: like Python, it can't be hashed)
         if (options["unsafe_hash"] or (options["eq"] and options["frozen"])) and "__hash__" not in st.methods and hashable:
             methods.append(f"def __hash__(self) -> int:\n    return hash({mine})")
-        if not methods:
-            return
-        source = "class Synthesized:\n" + "\n".join(textwrap.indent(m, "    ") for m in methods) + "\n"
-        for fn in parse(source).body[0].body:
-            for n in walk(fn):
-                n.loc = d.loc  # errors in generated methods point at the @dataclass line
-            st.node.body.append(fn)
-            st.methods[fn.name] = self.resolve_signature(fn, owner=st)
+        self.synthesize_methods(st, methods, d)
 
     def check_isinstance(self, e: A.Call) -> Type:
         """isinstance(x, Dog) or isinstance(x, (Dog, Cat)), for class hierarchies."""

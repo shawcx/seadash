@@ -1316,7 +1316,7 @@ def test_decorator_errors():
         "@staticmethod only makes sense on a method inside a class"
     )
     assert err("def d(c: int) -> int:\n    return c\n@d\nclass P:\n    x: int\n").message == (
-        "only @dataclass and @value can decorate a class (for now)"
+        "only @dataclass, @value and @functools.total_ordering can decorate a class (for now)"
     )
     assert err(
         "class P:\n    x: int\n    @property\n    def y(self):\n        pass\n"
@@ -2156,3 +2156,30 @@ def test_star_args_errors(src, msg):
     with pytest.raises(CompileError) as info:  # (some are found by the parser)
         ok(src)
     assert info.value.message == msg
+
+
+FUNCTOOLS = "from functools import reduce, cmp_to_key, total_ordering, cached_property, wraps\nfrom dataclasses import dataclass\n"
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("x = reduce(lambda a, b: a + b, [1, 2], initial=0)\n", "reduce() takes no keyword arguments"),
+    ("x = reduce(lambda a, b: a / b, [1, 2])\n",
+     "reduce()'s function returns float, but the running value is int: give it an initial value (e.g. reduce(f, items, 0.0))"),
+    ("x = sorted([1, 2], key=cmp_to_key(lambda a, b: 'x'))\n",
+     "cmp_to_key()'s function must return a number (negative, zero or positive), not str"),
+    ("def f(a: int, b: str) -> int:\n    return 0\nk = cmp_to_key(f)\n",
+     "cmp_to_key() needs a function comparing two values of one type, like (int, int) -> int, not (int, str) -> int"),
+    ("@total_ordering\nclass A:\n    n: int\n", "must define at least one ordering operation: < > <= >="),
+    ("@total_ordering\nclass A:\n    n: int\n    def __lt__(self, other: 'A') -> int:\n        return 0\n",
+     "@total_ordering needs __lt__(self, other) -> bool"),
+    ("class A:\n    @cached_property\n    def p(self, x: int) -> int:\n        return x\n",
+     "a @cached_property takes only self and returns a value"),
+    ("@dataclass(frozen=True)\nclass A:\n    n: int\n    @cached_property\n    def p(self) -> int:\n        return 1\n",
+     "@cached_property can't be used in a frozen class (it stores the value it computes)"),
+    ("def d(f: Callable[[int], int]) -> Callable[[int], int]:\n    @wraps\n    def g(x: int) -> int:\n        return x\n"
+     "    return g\n", "@wraps takes the function being wrapped: @wraps(f)"),
+    ("def d(f: Callable[[int], int]) -> Callable[[int], int]:\n    @print\n    def g(x: int) -> int:\n        return x\n"
+     "    return g\n", "decorators on nested functions aren't supported yet (except @functools.wraps)"),
+])
+def test_functools_errors(src, msg):
+    assert err(FUNCTOOLS + src).message == msg

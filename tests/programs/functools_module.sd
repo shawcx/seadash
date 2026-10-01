@@ -1,0 +1,96 @@
+# functools: reduce, cmp_to_key, total_ordering, cached_property, wraps.
+from dataclasses import dataclass
+from functools import cached_property, cmp_to_key, reduce, total_ordering, wraps
+from typing import Callable
+import functools
+
+
+def compare(a: int, b: int) -> int:
+    return -1 if a < b else 1 if a > b else 0
+
+
+def by_length_desc(a: str, b: str) -> int:
+    return len(b) - len(a)
+
+
+nothing: list[int] = []
+print(reduce(lambda a, b: a + b, [1, 2, 3]), reduce(lambda a, b: a + b, nothing, 0), reduce(lambda a, b: a + b, [5]))
+print(reduce(lambda a, b: a * b, range(1, 6), 1), functools.reduce(lambda a, b: a + b, ["x", "y", "z"]))
+doubled: list[int] = reduce(lambda acc, x: acc + [x * 2], [1, 2], [])
+print(doubled, reduce(lambda acc, w: acc + len(w), ["ab", "cde"], 0), reduce(lambda a, b: a / b, [8.0, 2, 2]))
+try:
+    print(reduce(lambda a, b: a + b, nothing))
+except TypeError as e:
+    print("TypeError:", e)
+print(sorted([3, 1, 2], key=cmp_to_key(compare)), sorted(["bb", "a", "ccc"], key=cmp_to_key(by_length_desc)))
+print(max([3, 1, 2], key=cmp_to_key(compare)), min(["bb", "a", "ccc"], key=cmp_to_key(by_length_desc)))
+words = ["pear", "fig", "apple", "kiwi"]
+words.sort(key=cmp_to_key(lambda a, b: len(a) - len(b)))
+print(words, sorted([2.5, 1.5], key=cmp_to_key(lambda a, b: b - a), reverse=True))
+key = cmp_to_key(compare)
+print(sorted([5, 4, 6], key=key), key(1) < key(2), key(2) < key(1))
+
+
+@total_ordering
+class Version:
+    major: int
+    minor: int
+
+    def __init__(self, major: int, minor: int):
+        self.major = major
+        self.minor = minor
+
+    def __eq__(self, other: "Version") -> bool:
+        return (self.major, self.minor) == (other.major, other.minor)
+
+    def __lt__(self, other: "Version") -> bool:
+        return (self.major, self.minor) < (other.major, other.minor)
+
+
+@functools.total_ordering
+@dataclass
+class Score:
+    points: int
+
+    def __gt__(self, other: "Score") -> bool:
+        return self.points > other.points
+
+
+a, b = Version(1, 2), Version(1, 10)
+print(a < b, a <= b, a > b, a >= b, b >= b, a == Version(1, 2), sorted([b, a])[0].minor, max(a, b).minor)
+s, t = Score(3), Score(5)
+print(s < t, s <= t, s >= t, t >= Score(5), s > t, sorted([t, s]))
+
+
+class Circle:
+    computed = 0
+    radius: float
+
+    def __init__(self, radius: float):
+        self.radius = radius
+
+    @cached_property
+    def area(self) -> float:
+        print("computing")
+        return 3.0 * self.radius * self.radius
+
+
+c = Circle(2.0)
+print(c.area, c.area)
+c.area = 1.5
+print(c.area, Circle(1.0).area)
+
+
+def shout(f: Callable[[str], str]) -> Callable[[str], str]:
+    @wraps(f)
+    def inner(text: str) -> str:
+        return f(text).upper() + "!"
+    return inner
+
+
+@shout
+def greet(name: str) -> str:
+    return "hello " + name
+
+
+print(greet("ann"))

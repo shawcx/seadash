@@ -2044,6 +2044,36 @@ void list_sort_by(const list<T>& v, F&& key, bool reverse = false) {
     sort_by_key(v.vec(), key, reverse);
 }
 
+// functools.reduce(f, items[, initial]): f(f(f(initial, x0), x1), x2)...
+template <class A, class F, class It>
+A reduce(F f, It&& items) {
+    std::optional<A> acc;
+    for (auto&& x : iter(std::forward<It>(items))) acc = acc ? A(f(std::move(*acc), x)) : A(x);
+    if (!acc) raise("TypeError", "reduce() of empty iterable with no initial value");
+    return std::move(*acc);
+}
+template <class A, class F, class It>
+A reduce(F f, It&& items, A acc) {
+    for (auto&& x : iter(std::forward<It>(items))) acc = A(f(std::move(acc), x));
+    return acc;
+}
+
+// functools.cmp_to_key(cmp): keys that sort by what cmp(a, b) says (negative: a first).
+template <class T>
+struct CmpKey {
+    T value;
+    std::shared_ptr<std::function<double(const T&, const T&)>> cmp;
+    bool operator<(const CmpKey& o) const { return (*cmp)(value, o.value) < 0; }
+    bool operator==(const CmpKey& o) const { return (*cmp)(value, o.value) == 0; }
+    std::string sd_repr() const { return "<functools.KeyWrapper object>"; }
+};
+template <class T, class F>
+std::function<CmpKey<T>(const T&)> cmp_to_key(F cmp) {
+    auto shared = std::make_shared<std::function<double(const T&, const T&)>>(
+        [cmp = std::move(cmp)](const T& a, const T& b) mutable { return static_cast<double>(cmp(a, b)); });
+    return [shared](const T& x) { return CmpKey<T>{x, shared}; };
+}
+
 template <class It, class F>
 auto extreme_by(It&& it, F&& key, bool want_max, const char* name) {
     auto values = to_list(std::forward<It>(it));

@@ -42,7 +42,7 @@ from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
     BuiltinClass, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION,
-    PARSER, ParserType, SubParsersType, HTTPServerType,
+    PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
@@ -252,6 +252,8 @@ class CodeGen:
                 return t.cpp
             case HTTPServerType():
                 return "sd::httpserver::HTTPServer"
+            case CmpKeyType(elem):
+                return f"sd::CmpKey<{self.cpp_type(elem)}>"
             case StructFormatType():
                 return "sd::structmod::Struct"
             case FutureType(elem):
@@ -451,6 +453,7 @@ class CodeGen:
         self.line("std::string sd_repr() const;")
         self.protocol_members(st, name)
         self.class_attr_members(st)
+        self.lazy_members(st)
         if st.kind == "struct":
             if st.find_method("__eq__"):
                 self.line(f"bool operator==(const {name}& o) const {{ return const_cast<{name}*>(this)->sd_op_eq(o); }}")
@@ -519,6 +522,7 @@ class CodeGen:
         self.line(f'{virtual}std::string sd_class_name() const{override} {{ return {cpp_string(st.origin or st.name)}; }}')
         self.protocol_members(st, name)
         self.class_attr_members(st)
+        self.lazy_members(st)
         self.handler_dispatch(st)
         if self.json_hooks(st):
             virtual = "" if st.base and self.json_hooks(st.base) else "virtual "
@@ -1364,6 +1368,11 @@ class CodeGen:
             case A.Name():
                 var: Var = target.sym
                 self.line(f"{self.var_ref(var)} = {self.coerce(code, ty, var.type)};")
+            case A.Attribute() if isinstance(target.sym, tuple) and target.sym[0] == "cached_set":
+                getter: FuncInfo = target.sym[1]  # obj.cached = v replaces the kept value
+                prefix = self.self_prefix(target.value.sym.type) if is_self(target.value) else (
+                    f"{self.expr(target.value)}{'->' if getter.owner.kind == 'class' else '.'}")
+                self.line(f"{prefix}sd_cache_{getter.name} = {self.coerce(code, ty, getter.ret)};")
             case A.Attribute() if isinstance(target.sym, tuple) and target.sym[0] == "property_set":
                 setter: FuncInfo = target.sym[1]
                 self.line(f"{self.member(target.value, setter)}({self.coerce(code, ty, setter.params[0].type)});")
@@ -1689,6 +1698,25 @@ class CodeGen:
         arrow = "->" if m.owner.kind == "class" else "."
         return f"{self.expr(obj)}{arrow}{fn_name(m)}"
 
+    def getter(self, obj: A.Expr, getter: FuncInfo) -> str:
+        """`obj.area` -> obj.sd_get_area, ready to be called (a cached_property's keeps its value)."""
+        if not getter.lazy:
+            return self.member(obj, getter)
+        if is_self(obj):
+            return f"{self.self_prefix(obj.sym.type)}sd_get_{getter.name}"
+        return f"{self.expr(obj)}{'->' if getter.owner.kind == 'class' else '.'}sd_get_{getter.name}"
+
+    def lazy_members(self, st: StructType) -> None:
+        """@cached_property: the kept value, and a getter that computes it the first time."""
+        for m in st.methods.values():
+            if not m.lazy:
+                continue
+            t = self.cpp_type(m.ret)
+            lock = "std::lock_guard<std::recursive_mutex> sd_lock(this->sd_mutex); " if is_synchronized(st) else ""
+            self.line(f"std::optional<{t}> sd_cache_{m.name};")
+            self.line(f"{t} sd_get_{m.name}() {{ {lock}if (!sd_cache_{m.name}) sd_cache_{m.name} = {fn_name(m)}(); "
+                      f"return *sd_cache_{m.name}; }}")
+
     def bound_method(self, obj: A.Expr, m: FuncInfo) -> str:
         """`counter.tick` as a value: a lambda holding (a copy of / reference to) the object."""
         names = [self.fresh("p") for _ in m.params]
@@ -1755,7 +1783,7 @@ class CodeGen:
                 return f"{obj}.get<{self.cpp_type(e.ty)}>({cpp_string(e.sym[1])})"
             return f"{obj}.{e.sym[1]}()"  # m.string(), pattern.groups()
         if isinstance(e.sym, tuple) and e.sym[0] == "property":  # obj.area -> obj.sd_get_area()
-            return f"{self.member(e.value, e.sym[1])}()"
+            return f"{self.getter(e.value, e.sym[1])}()"
         if isinstance(e.sym, FuncInfo):
             if e.sym.owner is None:  # textutil.shout: a module's function, as a value
                 return qualified(fn_name(e.sym), e.sym.module)
@@ -2936,6 +2964,12 @@ class CodeGen:
             when = e.args[2] if len(e.args) > 2 else self.keyword(e, "return_when")
             return (f"sd::futures::wait<{elem}>({self.expr(e.args[0])}, {timeout}, "
                     f"{self.expr(when) if when is not None else chr(34) + 'ALL_COMPLETED' + chr(34) + 's'})")
+        if mod == "functools" and name == "reduce":
+            items = self.expr(e.args[1])
+            init = [self.expr_as(e.args[2], e.ty)] if len(e.args) == 3 else []
+            return f"sd::reduce<{self.cpp_type(e.ty)}>({', '.join([self.expr(e.args[0]), items, *init])})"
+        if mod == "functools" and name == "cmp_to_key":
+            return f"sd::cmp_to_key<{self.cpp_type(e.ty.params[0])}>({self.expr(e.args[0])})"
         if mod == "http.server" and name in ("HTTPServer", "ThreadingHTTPServer"):
             args = e.http_args
             st: StructType = args["RequestHandlerClass"].sym  # made for each connection, from its fields' defaults

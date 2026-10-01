@@ -24,7 +24,7 @@ from .types import (
     SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
-    ClassAttr, ClassRefType, FuncInfo, HTTPServerType, Param, Var,
+    ClassAttr, ClassRefType, CmpKeyType, FuncInfo, HTTPServerType, Param, Var,
     assignable, element_type, is_hashable, is_numeric, join,
 )
 
@@ -205,7 +205,7 @@ def sized(t: Type) -> bool:
 
 
 def ordered(t: Type) -> bool:
-    return t in (INT, FLOAT, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T) or isinstance(t, (TupleType, ListType, VarTupleType)) or bool(user_dunder(t, "__lt__"))
+    return t in (INT, FLOAT, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T) or isinstance(t, (TupleType, ListType, VarTupleType, CmpKeyType)) or bool(user_dunder(t, "__lt__"))
 
 
 def bytes_like(t: Type) -> bool:
@@ -4521,7 +4521,48 @@ MODULES["seadash"] = Module("seadash", {
     **{kind: SyncTypeDef(kind) for kind in ("Atomic", "Mutex", "RWMutex")},  # thread-safe sharing
     "Synchronized": SYNCHRONIZED,
 })  # (no header of its own: its thread types need threading's, but @value needs nothing)
+def functools_reduce(ctx: CallContext) -> Type:
+    """reduce(f, items[, initial]): the running value starts as initial (or the first item)
+    and becomes f(running, item) for each item."""
+    if ctx.call.keywords:
+        raise ctx.error("reduce() takes no keyword arguments", ctx.call.keywords[0])
+    n = ctx.arity(2, 3)
+    elem = ctx.iterable(1)
+    acc = ctx.arg(2, ctx.expected) if n == 3 else elem
+    result = ctx.function(ctx.args[0], (acc, elem), "function")
+    if not assignable(result, acc):
+        start = "an initial value" if n == 2 else "an initial value of that type"
+        raise ctx.error(f"reduce()'s function returns {result}, but the running value is {acc}: give it {start} "
+                        f"(e.g. reduce(f, items, 0.0))", ctx.args[0])
+    return acc
+
+
+def functools_cmp_to_key(ctx: CallContext) -> Type:
+    """cmp_to_key(cmp): a key function for sorted/min/max/list.sort from an old-style
+    comparison, cmp(a, b) < 0 when a comes first."""
+    ctx.arity(1)
+    expected = ctx.expected
+    if isinstance(expected, FuncType) and len(expected.params) == 1:
+        elem = expected.params[0]
+    else:
+        t = ctx.arg(0)
+        if not (isinstance(t, FuncType) and len(t.params) == 2 and t.params[0] == t.params[1]):
+            raise ctx.error(f"cmp_to_key() needs a function comparing two values of one type, like (int, int) -> int, "
+                            f"not {t}", ctx.args[0])
+        elem = t.params[0]
+    result = ctx.function(ctx.args[0], (elem, elem), "function")
+    if not is_numeric(result) and result != BOOL:
+        raise ctx.error(f"cmp_to_key()'s function must return a number (negative, zero or positive), not {result}",
+                        ctx.args[0])
+    return FuncType((elem,), CmpKeyType(elem))
+
+
 MODULES["functools"] = Module("functools", {
     "cache": DecoratorName("cache"),
     "lru_cache": DecoratorName("lru_cache"),
+    "total_ordering": DecoratorName("total_ordering"),
+    "cached_property": DecoratorName("cached_property"),
+    "wraps": DecoratorName("wraps"),
+    "reduce": Function("reduce", functools_reduce),
+    "cmp_to_key": Function("cmp_to_key", functools_cmp_to_key),
 })
