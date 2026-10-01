@@ -430,6 +430,7 @@ class Param:
     default: object | None  # ast.Expr
     loc: Loc
     star: bool = False  # `*args: T`: type is tuple[T, ...], filled from the remaining positional arguments
+    kind: str = "normal"  # or "posonly" (before `/`), "kwonly" (after `*` or `*args`): by name only
 
 
 @dataclass(eq=False)

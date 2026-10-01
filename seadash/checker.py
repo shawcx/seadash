@@ -744,7 +744,7 @@ class Checker:
                     f"parameter '{p.name}' needs a type annotation, e.g. `{example}`", p
                 )
             t = self.resolve_type(p.annotation)
-            resolved.append(Param(p.name, VarTupleType(t) if p.star else t, p.default, p.loc, p.star))
+            resolved.append(Param(p.name, VarTupleType(t) if p.star else t, p.default, p.loc, p.star, p.kind))
         ret = self.resolve_type(node.returns) if node.returns else NONE
         info = FuncInfo(node.name, resolved, ret, node, owner, module=self.module_name, kind=kind)
         if has_yield(node.body):
@@ -4194,7 +4194,7 @@ class Checker:
         if len(stars) > 1 or k != len(e.args) - 1:
             raise self.error(f"only the last positional argument of {what} can be unpacked from a list "
                              f"(a tuple can be unpacked anywhere)", e.args[stars[-1] if len(stars) > 1 else k])
-        plain = [p for p in params if not p.star]
+        plain = [p for p in params if not p.star and p.kind != "kwonly"]
         if k >= len(plain):  # all of it goes to *args (match_args checks that there is one)
             return
         keywords = {kw.name for kw in e.keywords}
@@ -4213,13 +4213,16 @@ class Checker:
         e.spread_check = (source, len(filled), k, what, [p.name for p in filled])
 
     def match_args(self, e: A.Call, params: list[Param], what: str) -> list[A.Expr | None]:
-        """Match positional and keyword arguments to parameters; returns one slot per parameter.
-        A `*args` parameter's slot is a tuple of the remaining positional arguments."""
-        rest = None
+        """Match positional and keyword arguments to parameters; returns one slot per parameter,
+        in order. A `*args` parameter's slot is a tuple of the remaining positional arguments.
+        Parameters before `/` can't be passed by keyword, those after `*` or `*args` only can."""
         self.spread_list_argument(e, params, what)
-        if params and params[-1].star:
-            star, params = params[-1], params[:-1]
-            rest = A.TupleLit(list(e.args[len(params):]), loc=e.loc)
+        positional = [p for p in params if not p.star and p.kind != "kwonly"]
+        star = next((p for p in params if p.star), None)
+        slots: dict[str, A.Expr | None] = {p.name: None for p in params if not p.star}
+        rest = None
+        if star is not None:
+            rest = A.TupleLit(list(e.args[len(positional):]), loc=e.loc)
             rest.ty = star.type
             for arg in rest.elts:
                 if isinstance(arg, A.Starred):  # f(*xs) into *args: all of xs
@@ -4230,26 +4233,40 @@ class Checker:
                 t = self.check_expr(arg, star.type.elem)
                 if not assignable(t, star.type.elem):
                     raise self.error(f"*{star.name} of {what} takes {star.type.elem} arguments, not {t}", arg)
-            e = A.Call(e.func, e.args[:len(params)], e.keywords, loc=e.loc)
-        if len(e.args) > len(params):
+        elif len(e.args) > len(positional):
+            if len(positional) < len(params):  # (some are keyword-only: say so, as Python does)
+                raise self.error(f"{what} takes {plural(len(positional), 'positional argument')} but "
+                                 f"{len(e.args)} were given", e)
             raise self.error(f"{what} takes {plural(len(params), 'argument')} but {len(e.args)} were given", e)
-        slots: list[A.Expr | None] = list(e.args) + [None] * (len(params) - len(e.args))
-        index = {p.name: i for i, p in enumerate(params)}
+        for p, arg in zip(positional, e.args):
+            slots[p.name] = arg
+        by_name = {p.name: p for p in params if not p.star}
+        posonly = [kw.name for kw in e.keywords if kw.name in by_name and by_name[kw.name].kind == "posonly"]
+        if posonly:
+            raise self.error(f"{what} got some positional-only arguments passed as keyword arguments: "
+                             f"'{', '.join(posonly)}'", e)
         for kw in e.keywords:
-            if kw.name not in index:
+            if kw.name not in by_name:
                 raise self.error(f"{what} got an unexpected keyword argument '{kw.name}'", kw)
-            if slots[index[kw.name]] is not None:
+            if slots[kw.name] is not None:
                 raise self.error(f"{what} got multiple values for argument '{kw.name}'", kw)
-            slots[index[kw.name]] = kw.value
-        for p, arg in zip(params, slots):
+            slots[kw.name] = kw.value
+        out: list[A.Expr | None] = []
+        for p in params:
+            if p.star:
+                out.append(rest)
+                continue
+            arg = slots[p.name]
+            out.append(arg)
             if arg is None:
                 if p.default is None:
-                    raise self.error(f"{what} is missing argument '{p.name}'", e)
+                    kind = "keyword-only argument" if p.kind == "kwonly" else "argument"
+                    raise self.error(f"{what} is missing {kind} '{p.name}'", e)
                 continue
             t = self.check_expr(arg, p.type)
             if not assignable(t, p.type):
                 raise self.error(f"argument '{p.name}' of {what} must be {p.type}, not {t}", arg)
-        return slots if rest is None else [*slots, rest]
+        return out
 
 
 # ---- helpers ----------------------------------------------------------------

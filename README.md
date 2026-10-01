@@ -184,7 +184,7 @@ match shape:                         # a json.Value
 ```
 
 **Also supported:**
-- **Functions:** default and keyword arguments, `*args` (typed: `*args: str` is a `tuple[str, ...]`), generics (`def first[T](xs: list[T]) -> T | None`, `class Stack[T]:`), closures that share variables like Python's, lambdas, and functions as values.
+- **Functions:** default and keyword arguments, keyword-only and positional-only parameters (`def f(a, /, b, *, c)`), `*args` (typed: `*args: str` is a `tuple[str, ...]`), generics (`def first[T](xs: list[T]) -> T | None`, `class Stack[T]:`), closures that share variables like Python's, lambdas, and functions as values.
 - **Generators:** `yield` and `yield from` (in functions and methods, including `__iter__`), `next()`, and `iter()`; they're C++20 coroutines, so values are made on demand, even from infinite generators. Generator expressions, `map`, `filter`, `zip` and `enumerate` are lazy too.
 - **Statements:** `del` of names, items, slices (`del xs[::2]`) and keys, and a class's own `__delitem__`; assigning any iterable to a slice of a list (`xs[1:3] = ...`, `xs[::2] = ...`); unpacking any iterable, with a starred name for the rest (`key, value = line.split("=")`, `first, *rest = xs`, also in `for` loops), in displays (`[*xs, *ys]`, `(*pair, 1)`, `{*a, *b}`, `{**defaults, **chosen}`), and in calls (`f(*args)`, `print(*row, sep=", ")`).
 - **Error handling:** exceptions (`try`/`except`/`finally`/`raise`, custom exception classes), and `with` statements.
@@ -298,7 +298,7 @@ seadash borrows Python's syntax, not all of its semantics:
 - **Augmented assignment to a slice** (`xs[1:3] += ys`) isn't supported; write `xs[1:3] = xs[1:3] + ys`.
 - **`del`** works on names, items, slices and keys, as in Python, but a function can't `del` a global or `nonlocal` variable, nor one a nested function or lambda uses, and functions can't read a module-level name that's deleted. Reading a deleted name is a compile error rather than a `NameError`.
 - **No tracebacks.** An uncaught exception (or `logging.exception()`) shows the exception's type and message, but not the stack of calls that led to it.
-- **Not supported yet:** a few dynamic features, such as `type(x)`, `getattr`, `**kwargs`, keyword-only parameters, unions other than `T | None`, and multiple inheritance. The full list is in `docs/roadmap.md`.
+- **Not supported yet:** a few dynamic features, such as `type(x)`, `getattr`, `**kwargs`, unions other than `T | None`, and multiple inheritance. The full list is in `docs/roadmap.md`.
 
 ## How it works
 

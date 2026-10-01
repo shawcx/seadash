@@ -555,12 +555,34 @@ class Parser:
         return A.FunctionDef(name, params, returns, body, type_params, loc=loc)
 
     def parse_params(self) -> list[A.Param]:
+        """Parameters, with Python's markers: those before `/` are positional-only, those
+        after `*` or `*args` keyword-only."""
         params: list[A.Param] = []
         seen: set[str] = set()
+        keyword_only = False
+        bare_star = None  # a `*` that still needs a parameter after it
         while not self.at(")"):
-            if params and params[-1].star:
-                raise self.error("parameters after *args (keyword-only parameters) aren't supported yet", self.peek().loc)
+            if tok := self.accept("/"):
+                if keyword_only:
+                    raise self.error("/ must be ahead of *", tok.loc)
+                if not params or any(p.kind == "posonly" for p in params):
+                    raise self.error("at least one argument must precede /" if not params else "/ may appear only once", tok.loc)
+                for p in params:
+                    p.kind = "posonly"
+                if not self.accept(","):
+                    break
+                continue
+            if self.at("*") and (self.at(",", 1) or self.at(")", 1)):  # a bare `*`: keyword-only parameters follow
+                tok = self.next()
+                if keyword_only:
+                    raise self.error("* argument may appear only once", tok.loc)
+                keyword_only, bare_star = True, tok
+                if not self.accept(","):
+                    break
+                continue
             star = self.accept("*") is not None
+            if star and keyword_only:
+                raise self.error("* argument may appear only once", self.peek().loc)
             tok = self.expect_name("parameter name")
             if tok.value in seen:
                 raise self.error(f"duplicate parameter '{tok.value}'", tok.loc)
@@ -569,11 +591,17 @@ class Parser:
             if star and self.at("="):
                 raise self.error(f"*{tok.value} can't have a default value", self.peek().loc)
             default = self.parse_expr() if self.accept("=") else None
-            if default is None and not star and params and params[-1].default is not None:
+            positional = [p for p in params if p.kind != "kwonly" and not p.star]
+            if default is None and not star and not keyword_only and positional and positional[-1].default is not None:
                 raise self.error("parameter without a default follows parameter with a default", tok.loc)
-            params.append(A.Param(tok.value, annotation, default, star, loc=tok.loc))
+            params.append(A.Param(tok.value, annotation, default, star, "kwonly" if keyword_only and not star else "normal",
+                                  loc=tok.loc))
+            bare_star = None
+            keyword_only = keyword_only or star
             if not self.accept(","):
                 break
+        if bare_star is not None:
+            raise self.error("named arguments must follow bare *", bare_star.loc)
         return params
 
     def parse_type_params(self) -> list[str]:

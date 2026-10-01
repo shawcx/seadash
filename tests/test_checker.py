@@ -2203,7 +2203,7 @@ def test_class_attribute_errors(src, msg):
 
 @pytest.mark.parametrize("src,msg", [
     ("def f(*args):\n    pass\n", "parameter 'args' needs a type annotation, e.g. `*args: str`"),
-    ("def f(*args: int, x: int):\n    pass\n", "parameters after *args (keyword-only parameters) aren't supported yet"),
+    ("def f(*args: int, x: int):\n    pass\nf(1, 2)\n", "f() is missing keyword-only argument 'x'"),
     ("def f(*args: int = 1):\n    pass\n", "*args can't have a default value"),
     ("def f(*args: int):\n    pass\nf(1, 'a')\n", "*args of f() takes int arguments, not str"),
     ("def f(*args: int):\n    pass\nf(args=(1,))\n", "f() got an unexpected keyword argument 'args'"),
@@ -2595,3 +2595,16 @@ def test_starred_display_types():
 def test_unpacking_types():
     assert variables(ok("first, *rest = 'a b c'.split()\nx, *mid, y = (1, 2, 2.5, 'z')\n")) == [
         "first: str", "rest: list[str]", "x: int", "mid: list[float]", "y: str"]
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("def f(a: int, *, b: int = 2, c: int) -> int:\n    return a\nf(1, 2, 3)\n",
+     "f() takes 1 positional argument but 3 were given"),
+    ("def f(a: int, *, b: int = 2, c: int) -> int:\n    return a\nf(1)\n", "f() is missing keyword-only argument 'c'"),
+    ("def g(a: int, b: int, /, c: int) -> int:\n    return a\ng(1, b=2, c=3)\n",
+     "g() got some positional-only arguments passed as keyword arguments: 'b'"),
+    ("def g(a: int, b: int, /, c: int) -> int:\n    return a\ng(a=1, b=2, c=3)\n",
+     "g() got some positional-only arguments passed as keyword arguments: 'a, b'"),
+])
+def test_keyword_and_positional_only_errors(src, msg):
+    assert err(src).message == msg

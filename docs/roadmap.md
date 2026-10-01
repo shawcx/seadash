@@ -54,7 +54,7 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - Decorators on nested functions (other than `@functools.wraps`).
 - `contextlib`: `chdir`, `redirect_stdout`/`redirect_stderr`, `ContextDecorator`, `ExitStack.push`, async
   context managers. Generators can't `yield` in an `except`/`finally` block (C++ can't suspend there).
-- Functions: keyword-only and positional-only parameters (`*`, `/`), `**kwargs`, default
+- Functions: `**kwargs`, default
   values in nested functions and lambdas, and keywords or defaults when calling a function held in
   a variable.
 - No tracebacks for uncaught exceptions.

@@ -1,0 +1,34 @@
+# Keyword-only parameters (after * or *args) and positional-only ones (before /).
+from dataclasses import dataclass
+
+
+def join(*words: str, sep: str = " ", end: str = "") -> str:
+    return sep.join(words) + end
+
+
+def connect(host: str, *, port: int = 80, secure: bool) -> str:
+    return f"{'https' if secure else 'http'}://{host}:{port}"
+
+
+def clamp(value: float, /, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
+
+
+def scale(x: int, y: int, /, *, by: int) -> tuple[int, int]:
+    return x * by, y * by
+
+
+@dataclass
+class Canvas:
+    width: int
+
+    def draw(self, shape: str, /, *, color: str = "black", fill: bool = False) -> str:
+        return f"{shape} in {color}{' (filled)' if fill else ''} on {self.width}px"
+
+
+print(join("a", "b", "c"), join("a", "b", sep="-", end="!"))
+print(connect("example.com", secure=True), connect("localhost", port=8080, secure=False))
+print(clamp(1.5), clamp(-2.0, low=-1.0), clamp(0.5, 0.0, 0.25))
+print(scale(2, 3, by=10))
+print(Canvas(640).draw("circle"), Canvas(800).draw("square", fill=True, color="red"))
+print(join(*["x", "y"], sep="/"))

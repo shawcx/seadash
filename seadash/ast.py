@@ -539,6 +539,7 @@ class Param(Node):
     annotation: TypeExpr | None = None
     default: Expr | None = None
     star: bool = False  # `*args`: the rest of the positional arguments, as a tuple
+    kind: str = "normal"  # or "posonly" (before `/`), "kwonly" (after `*` or `*args`)
 
 
 @dataclass
