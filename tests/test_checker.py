@@ -1485,6 +1485,26 @@ def test_shutil_tempfile_types():
     )
 
 
+def test_mimetypes_types():
+    info = ok(
+        "import mimetypes\nfrom pathlib import Path\n"
+        "t, enc = mimetypes.guess_type('a.html')\ng = mimetypes.guess_type(Path('a.tgz'), strict=False)\n"
+        "e = mimetypes.guess_extension('text/html')\nexts = mimetypes.guess_all_extensions('text/html', False)\n"
+        "m = mimetypes.types_map\nmimetypes.add_type('text/x-sd', '.sd')\n"
+    )
+    assert {"t: str?", "enc: str?", "g: tuple[str?, str?]", "e: str?", "exts: list[str]",
+            "m: dict[str, str]"} <= set(variables(info))
+    assert err("import mimetypes\nmimetypes.guess_type(3)\n").message == (
+        "mimetypes.guess_type() argument 'url' must be a str or Path, not int"
+    )
+    assert err("import mimetypes\nmimetypes.guess_extension(b'text/html')\n").message == (
+        "mimetypes.guess_extension() argument 'type' must be str, not bytes"
+    )
+    assert err("import mimetypes\nmimetypes.add_type('text/x-sd')\n").message == (
+        "mimetypes.add_type() is missing argument 'ext'"
+    )
+
+
 def test_datetime_types():
     info = ok(
         "from datetime import date, datetime, timedelta, timezone\n"

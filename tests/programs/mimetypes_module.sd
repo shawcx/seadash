@@ -1,0 +1,65 @@
+import mimetypes
+from pathlib import Path
+
+# guess_type: the type from the extension (case-insensitive), the encoding (case-sensitive)
+for name in ["index.html", "INDEX.HTM", "style.css", "app.js", "data.json", "photo.JPG", "image.png",
+             "notes.txt", "song.mp3", "movie.mp4", "page.xhtml.unknown", "README", ".bashrc", "dir.d/file",
+             "archive.tar.gz", "archive.tgz", "archive.TGZ", "backup.tar.bz2", "x.tbz2", "x.txz", "logo.svgz",
+             "old.Z", "data.json.br", "file.xz", "file.gz", "a.", "a..txt", "..txt", "/srv/www/a.pdf",
+             "c:/files/report.csv", "x.midi", "x.pict", "x.PCT"]:
+    print(repr(name), mimetypes.guess_type(name), mimetypes.guess_type(name, strict=False))
+
+# URLs: the path is used (no query, fragment or ;params)
+for url in ["http://example.com/a/b.png?size=2#top", "https://example.com/a;b.html", "http://example.com/x;y/z.txt",
+            "ftp://host/pub/file.tar.gz", "file:///home/me/doc.pdf", "\t http://example.com/a.css",
+            "http://[::1]:8080/index.html", "http://[v1.fe]/a.gif", "weird+scheme://h/a.png", "foo;bar.txt",
+            "mailto:someone", "http://example.com"]:
+    print(repr(url), mimetypes.guess_type(url))
+
+# data: URLs
+for url in ["data:text/html;base64,PGI+aGk8L2I+", "data:,hello", "data:image/png,xyz", "DATA:Image/SVG+xml;charset=utf-8,<svg/>",
+            "data:charset=utf-8,x", "data:plain,x", "data:no-comma", "data:text/plain#frag,x", "data:a/b?q,x"]:
+    print(repr(url), mimetypes.guess_type(url))
+
+# Bad netlocs raise like urllib.parse.urlparse
+for url in ["http://[::1/a.txt", "http://x]/a.txt", "http://a[::1]/a.txt", "http://[::1]x/a.txt",
+            "http://[1.2.3.4]/a.txt", "http://[nonsense]/a.txt", "http://[vz.1]/a.txt"]:
+    try:
+        print(mimetypes.guess_type(url))
+    except ValueError as e:
+        print(repr(url), "ValueError:", e)
+
+# Paths
+print(mimetypes.guess_type(Path("site") / "index.html"))
+print(mimetypes.guess_type(Path("backup.tar.gz"), False))
+print(mimetypes.guess_type(url="a.py", strict=True))
+
+# Types to extensions
+for t in ["text/html", "TEXT/HTML", "image/jpeg", "image/jpg", "application/octet-stream", "text/x-python",
+          "audio/midi", "image/pict", "no/such-type", "application/x-tar"]:
+    print(t, mimetypes.guess_extension(t), mimetypes.guess_extension(t, strict=False))
+for t in ["image/jpg", "audio/midi", "image/pict", "text/xul", "no/such-type"]:
+    print(t, mimetypes.guess_all_extensions(t), mimetypes.guess_all_extensions(t, strict=False))
+
+# add_type
+mimetypes.add_type("application/x-seadash", ".sd")
+mimetypes.add_type("application/x-seadash", ".SDX")
+mimetypes.add_type("text/x-other", ".other", strict=False)
+mimetypes.add_type("text/x-other", ".other", strict=False)
+mimetypes.add_type("Text/Mixed", ".mixed")
+print(mimetypes.guess_type("prog.sd"), mimetypes.guess_type("prog.sdx"), mimetypes.guess_type("prog.SDX"))
+print(mimetypes.guess_all_extensions("application/x-seadash"), mimetypes.guess_extension("APPLICATION/X-SEADASH"))
+print(mimetypes.guess_type("x.other"), mimetypes.guess_type("x.other", strict=False))
+print(mimetypes.guess_all_extensions("text/x-other"), mimetypes.guess_all_extensions("text/x-other", strict=False))
+print(mimetypes.guess_type("a.mixed"), mimetypes.guess_extension("Text/Mixed"), mimetypes.guess_extension("text/mixed"))
+print(mimetypes.types_map[".sd"], mimetypes.common_types[".other"])
+
+# The tables are the module's dicts: changing one changes the guesses
+print(mimetypes.types_map[".html"], mimetypes.common_types[".jpg"], ".pict" in mimetypes.types_map)
+print(sorted(mimetypes.encodings_map.items()))
+print(sorted(mimetypes.suffix_map.items()))
+mimetypes.suffix_map[".tgx"] = ".tar.xz"
+mimetypes.encodings_map[".zst"] = "zstd"
+print(mimetypes.guess_type("a.tgx"), mimetypes.guess_type("a.tar.zst"))
+mimetypes.types_map[".md"] = "text/markdown"
+print(mimetypes.guess_type("README.md"), mimetypes.guess_type("README.MD"))

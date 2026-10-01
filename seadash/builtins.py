@@ -3315,6 +3315,25 @@ MODULES["shlex"] = module_with_params(runtime_module(
 ))
 
 
+# ---- mimetypes ------------------------------------------------------------------------
+# Python 3.12's built-in tables only: the system's mime.types files aren't read.
+
+MODULES["mimetypes"] = module_with_params(runtime_module(
+    "mimetypes", "modules/mimetypes.hpp",
+    guess_type=(signature(TupleType((OptionalType(STR), OptionalType(STR))), ("url", PATH_LIKE),
+                          ("strict", BOOL, "true")), "sd::mimetypes::guess_type"),
+    guess_extension=(signature(OptionalType(STR), ("type", STR), ("strict", BOOL, "true")),
+                     "sd::mimetypes::guess_extension"),
+    guess_all_extensions=(signature(ListType(STR), ("type", STR), ("strict", BOOL, "true")),
+                          "sd::mimetypes::guess_all_extensions"),
+    add_type=(signature(NONE, ("type", STR), ("ext", STR), ("strict", BOOL, "true")), "sd::mimetypes::add_type"),
+    types_map=(DictType(STR, STR), "sd::mimetypes::types_map()"),
+    common_types=(DictType(STR, STR), "sd::mimetypes::common_types()"),
+    encodings_map=(DictType(STR, STR), "sd::mimetypes::encodings_map()"),
+    suffix_map=(DictType(STR, STR), "sd::mimetypes::suffix_map()"),
+))
+
+
 # ---- html -----------------------------------------------------------------------------
 
 MODULES["html"] = module_with_params(runtime_module(

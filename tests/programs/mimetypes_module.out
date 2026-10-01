@@ -1,0 +1,90 @@
+'index.html' ('text/html', None) ('text/html', None)
+'INDEX.HTM' ('text/html', None) ('text/html', None)
+'style.css' ('text/css', None) ('text/css', None)
+'app.js' ('text/javascript', None) ('text/javascript', None)
+'data.json' ('application/json', None) ('application/json', None)
+'photo.JPG' ('image/jpeg', None) ('image/jpeg', None)
+'image.png' ('image/png', None) ('image/png', None)
+'notes.txt' ('text/plain', None) ('text/plain', None)
+'song.mp3' ('audio/mpeg', None) ('audio/mpeg', None)
+'movie.mp4' ('video/mp4', None) ('video/mp4', None)
+'page.xhtml.unknown' (None, None) (None, None)
+'README' (None, None) (None, None)
+'.bashrc' (None, None) (None, None)
+'dir.d/file' (None, None) (None, None)
+'archive.tar.gz' ('application/x-tar', 'gzip') ('application/x-tar', 'gzip')
+'archive.tgz' ('application/x-tar', 'gzip') ('application/x-tar', 'gzip')
+'archive.TGZ' ('application/x-tar', 'gzip') ('application/x-tar', 'gzip')
+'backup.tar.bz2' ('application/x-tar', 'bzip2') ('application/x-tar', 'bzip2')
+'x.tbz2' ('application/x-tar', 'bzip2') ('application/x-tar', 'bzip2')
+'x.txz' ('application/x-tar', 'xz') ('application/x-tar', 'xz')
+'logo.svgz' ('image/svg+xml', 'gzip') ('image/svg+xml', 'gzip')
+'old.Z' (None, 'compress') (None, 'compress')
+'data.json.br' ('application/json', 'br') ('application/json', 'br')
+'file.xz' (None, 'xz') (None, 'xz')
+'file.gz' (None, 'gzip') (None, 'gzip')
+'a.' (None, None) (None, None)
+'a..txt' ('text/plain', None) ('text/plain', None)
+'..txt' (None, None) (None, None)
+'/srv/www/a.pdf' ('application/pdf', None) ('application/pdf', None)
+'c:/files/report.csv' ('text/csv', None) ('text/csv', None)
+'x.midi' (None, None) ('audio/midi', None)
+'x.pict' (None, None) ('image/pict', None)
+'x.PCT' (None, None) ('image/pict', None)
+'http://example.com/a/b.png?size=2#top' ('image/png', None)
+'https://example.com/a;b.html' (None, None)
+'http://example.com/x;y/z.txt' ('text/plain', None)
+'ftp://host/pub/file.tar.gz' ('application/x-tar', 'gzip')
+'file:///home/me/doc.pdf' ('application/pdf', None)
+'\t http://example.com/a.css' ('text/css', None)
+'http://[::1]:8080/index.html' ('text/html', None)
+'http://[v1.fe]/a.gif' ('image/gif', None)
+'weird+scheme://h/a.png' ('image/png', None)
+'foo;bar.txt' ('text/plain', None)
+'mailto:someone' (None, None)
+'http://example.com' (None, None)
+'data:text/html;base64,PGI+aGk8L2I+' ('text/html', None)
+'data:,hello' ('text/plain', None)
+'data:image/png,xyz' ('image/png', None)
+'DATA:Image/SVG+xml;charset=utf-8,<svg/>' ('Image/SVG+xml', None)
+'data:charset=utf-8,x' ('text/plain', None)
+'data:plain,x' ('text/plain', None)
+'data:no-comma' (None, None)
+'data:text/plain#frag,x' (None, None)
+'data:a/b?q,x' (None, None)
+'http://[::1/a.txt' ValueError: Invalid IPv6 URL
+'http://x]/a.txt' ValueError: Invalid IPv6 URL
+'http://a[::1]/a.txt' ValueError: Invalid IPv6 URL
+'http://[::1]x/a.txt' ValueError: Invalid IPv6 URL
+'http://[1.2.3.4]/a.txt' ValueError: An IPv4 address cannot be in brackets
+'http://[nonsense]/a.txt' ValueError: 'nonsense' does not appear to be an IPv4 or IPv6 address
+'http://[vz.1]/a.txt' ValueError: IPvFuture address is invalid
+('text/html', None)
+('application/x-tar', 'gzip')
+('text/x-python', None)
+text/html .html .html
+TEXT/HTML .html .html
+image/jpeg .jpg .jpg
+image/jpg None .jpg
+application/octet-stream .bin .bin
+text/x-python .py .py
+audio/midi None .midi
+image/pict None .pict
+no/such-type None None
+application/x-tar .tar .tar
+image/jpg [] ['.jpg']
+audio/midi [] ['.midi', '.mid']
+image/pict [] ['.pict', '.pct', '.pic']
+text/xul [] ['.xul']
+no/such-type [] []
+('application/x-seadash', None) (None, None) (None, None)
+['.sd', '.SDX'] .sd
+(None, None) ('text/x-other', None)
+[] ['.other']
+('Text/Mixed', None) None None
+application/x-seadash text/x-other
+text/html image/jpg False
+[('.Z', 'compress'), ('.br', 'br'), ('.bz2', 'bzip2'), ('.gz', 'gzip'), ('.xz', 'xz')]
+[('.svgz', '.svg.gz'), ('.taz', '.tar.gz'), ('.tbz2', '.tar.bz2'), ('.tgz', '.tar.gz'), ('.txz', '.tar.xz'), ('.tz', '.tar.gz')]
+('application/x-tar', 'xz') ('application/x-tar', 'zstd')
+('text/markdown', None) ('text/markdown', None)
