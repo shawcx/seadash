@@ -2236,8 +2236,24 @@ struct vtuple {
     auto end() const { return items.end(); }
     std::size_t size() const { return items.size(); }
     bool empty() const { return items.empty(); }
-    auto operator<=>(const vtuple&) const = default;
-    bool operator==(const vtuple&) const = default;
+    // (Friends, as for list, so they're only made when used: a tuple of items without an
+    // order can exist; a defaulted <=> would need one as soon as the class does.)
+    friend bool operator==(const vtuple& a, const vtuple& b) { return a.items == b.items; }
+    friend auto operator<=>(const vtuple& a, const vtuple& b) { return a.items <=> b.items; }
+    // tuple(xs) == (1, 2): item by item, as Python compares tuples of different lengths.
+    template <class... U>
+    friend bool operator==(const vtuple& a, const std::tuple<U...>& b) {
+        if (a.size() != sizeof...(U)) return false;
+        return [&]<std::size_t... I>(std::index_sequence<I...>) {
+            return ((a.items[I] == std::get<I>(b)) && ...);
+        }(std::index_sequence_for<U...>{});
+    }
+    template <class... U>
+    friend auto operator<=>(const vtuple& a, const std::tuple<U...>& b) {
+        list<T> other;
+        std::apply([&](const auto&... x) { (other.push_back(x), ...); }, b);
+        return a.items <=> other;
+    }
     friend vtuple operator+(const vtuple& a, const vtuple& b) {
         vtuple out(a.items.copy());
         out.items.insert(out.items.end(), b.items.begin(), b.items.end());

@@ -226,6 +226,13 @@ def with_submodules(mods: list[builtins.Module]) -> list[builtins.Module]:
     return out
 
 
+def mixed_tuples(a: Type, b: Type) -> bool:
+    """tuple(xs) < (1, 2): a tuple[T, ...] and a tuple of Ts compare item by item."""
+    if isinstance(b, VarTupleType):
+        a, b = b, a
+    return isinstance(a, VarTupleType) and isinstance(b, TupleType) and all(t == a.elem for t in b.elts)
+
+
 class Checker:
     def imported_modules(self) -> list[builtins.Module]:
         """The modules whose headers and libraries the program needs. seadash's thread types
@@ -2919,7 +2926,7 @@ class Checker:
             ordered = (is_numeric(lt) and is_numeric(rt)) or (
                 lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T)
                               or isinstance(lt, (TupleType, ListType, VarTupleType, SetType, CmpKeyType)))  # (sets: subset and superset)
-            )
+            ) or mixed_tuples(lt, rt)
             if not ordered:
                 owner = lt if isinstance(lt, StructType) else rt
                 hint = self.dunder_hint(owner, COMPARE_DUNDERS[op][0])

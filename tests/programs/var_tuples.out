@@ -10,3 +10,5 @@ item 2
 ('/', 'usr', 'local', 'bin') b
 error: too many values to unpack (expected 2)
 error: tuple.index(x): x not in tuple
+True True True True True False True
+(P(x=1), P(x=2)) 2 True True
