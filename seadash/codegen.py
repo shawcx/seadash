@@ -42,7 +42,7 @@ from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
     BuiltinClass, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION,
-    PARSER, ParserType, SubParsersType,
+    PARSER, ParserType, SubParsersType, HTTPServerType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
     TupleType, Type, Var, element_type, is_numeric, user_dunder,
@@ -250,6 +250,8 @@ class CodeGen:
                 return "sd::json::Value"
             case BuiltinClass():
                 return t.cpp
+            case HTTPServerType():
+                return "sd::httpserver::HTTPServer"
             case StructFormatType():
                 return "sd::structmod::Struct"
             case FutureType(elem):
@@ -517,6 +519,7 @@ class CodeGen:
         self.line(f'{virtual}std::string sd_class_name() const{override} {{ return {cpp_string(st.origin or st.name)}; }}')
         self.protocol_members(st, name)
         self.class_attr_members(st)
+        self.handler_dispatch(st)
         if self.json_hooks(st):
             virtual = "" if st.base and self.json_hooks(st.base) else "virtual "
             suffix = " override" if st.base and self.json_hooks(st.base) else ""
@@ -530,6 +533,17 @@ class CodeGen:
         if "__lt__" in st.methods:
             self.line(f"inline bool operator<(const {ptr}& a, const {ptr}& b) {{ return a->sd_op_lt(b); }}")
         self.line()
+
+    def handler_dispatch(self, st: StructType) -> None:
+        """A BaseHTTPRequestHandler subclass: the request's method calls its do_<METHOD>()."""
+        if not st.is_subclass_of(builtins.HANDLER):
+            return
+        handlers = [m for key, m in st.methods.items() if key.startswith("do_")]
+        if not handlers:
+            return
+        tests = " ".join(f"if (sd_command == {cpp_string(m.name[3:])}) {{ this->{fn_name(m)}(); return true; }}" for m in handlers)
+        self.line(f"bool sd_dispatch(const std::string& sd_command) override {{ {tests} "
+                  f"return {class_name(st.base)}::sd_dispatch(sd_command); }}")
 
     def class_attr_members(self, st: StructType) -> None:
         """`version = "1.0"`: Cls.version is sd_class_version(); obj.version is sd_attr_version(),
@@ -1047,6 +1061,8 @@ class CodeGen:
             enter, exit_call = ctx, f"{ctx}.close()"
         elif info.kind == "connection":
             enter, exit_call = ctx, f"{ctx}.sd_exit(false)"  # commit; the catch below rolls back
+        elif info.kind == "server":
+            enter, exit_call = ctx, f"{ctx}.server_close()"
         else:
             st: StructType = item.context.ty
             arrow = "->" if st.kind == "class" else "."
@@ -1059,7 +1075,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind not in ("file", "socket", "process", "tempdir", "executor", "response", "connection"):  # still call __enter__ for its effects
+        elif info.kind not in ("file", "socket", "process", "tempdir", "executor", "response", "connection", "server"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -1711,6 +1727,8 @@ class CodeGen:
             return self.expr(e.sym)  # `key=str.lower`
         if isinstance(e.sym, tuple) and e.sym[0] == "thread_attr":
             return f"{self.expr(e.value)}.{e.sym[1]}()"
+        if isinstance(e.sym, tuple) and e.sym[0] == "server_method":  # target=server.serve_forever
+            return f"[sd_o = {self.expr(e.value)}]() mutable {{ sd_o.{e.sym[1]}(); }}"
         if isinstance(e.sym, tuple) and e.sym[0] == "class_attr":  # self.version
             getter = f"sd_attr_{e.sym[1].name}()"
             if is_self(e.value):
@@ -2735,7 +2753,7 @@ class CodeGen:
                 body_code = f"std::optional<sd::bytes>({self.expr(body)})"
             headers = self.expr(args["headers"]) if "headers" in args else "sd::dict<std::string, std::string>{}"
             return f"{r}.request({self.expr(args['method'])}, {self.expr(args['url'])}, {body_code}, {headers})"
-        if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType, BuiltinClass)):
+        if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType, BuiltinClass, HTTPServerType)):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):
@@ -2918,6 +2936,15 @@ class CodeGen:
             when = e.args[2] if len(e.args) > 2 else self.keyword(e, "return_when")
             return (f"sd::futures::wait<{elem}>({self.expr(e.args[0])}, {timeout}, "
                     f"{self.expr(when) if when is not None else chr(34) + 'ALL_COMPLETED' + chr(34) + 's'})")
+        if mod == "http.server" and name in ("HTTPServer", "ThreadingHTTPServer"):
+            args = e.http_args
+            st: StructType = args["RequestHandlerClass"].sym  # made for each connection, from its fields' defaults
+            fields = [self.expr_as(f.default, f.type) for f in st.all_fields().values()]
+            base = "sd::httpserver::BaseHTTPRequestHandler"
+            make = f"[] {{ return std::static_pointer_cast<{base}>(std::make_shared<{class_name(st)}>({', '.join(['sd::init', *fields])})); }}"
+            bind = self.expr(args["bind_and_activate"]) if "bind_and_activate" in args else "true"
+            address = self.expr_as(args["server_address"], TupleType((STR, INT)))
+            return f"sd::httpserver::HTTPServer({address}, {make}, {bind}, {'true' if name == 'ThreadingHTTPServer' else 'false'})"
         member = module.members[name]
         if member.cpp is not None and "{T}" in member.cpp:  # the result type picks the template: json.loads
             member = builtins.Function(member.name, member.check, member.cpp.replace("{T}", self.cpp_type(e.ty)), member.params)

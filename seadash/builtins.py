@@ -24,6 +24,7 @@ from .types import (
     SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
+    ClassAttr, ClassRefType, FuncInfo, HTTPServerType, Param, Var,
     assignable, element_type, is_hashable, is_numeric, join,
 )
 
@@ -1230,6 +1231,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = {"count": returns(INT, args=(elem_of,)), "index": returns(INT, args=(elem_of,))}
         case TupleType():
             table = TUPLE_METHODS
+        case HTTPServerType():
+            return HTTP_SERVER_METHODS.get(name)
         case ParserType():
             return PARSER_METHODS.get(name)
         case SubParsersType():
@@ -2128,6 +2131,8 @@ def type_attributes(t: Type) -> dict | None:
         return {name: (lambda _, ft=ft: ft) for name, ft in t.fields}
     if isinstance(t, DequeType):
         return {"maxlen": lambda t: OptionalType(INT)}
+    if isinstance(t, HTTPServerType):
+        return HTTP_SERVER_ATTRIBUTES
     if isinstance(t, FileType):
         return FILE_ATTRIBUTES
     if isinstance(t, PatternType):
@@ -4058,7 +4063,115 @@ for _name in ("HTTPConnection", "HTTPSConnection"):
     HTTP_CLIENT_MOD.members[_name].as_type = HTTP_CONNECTION
 HTTP_CLIENT_MOD.members["HTTPResponse"] = NamedType("HTTPResponse", HTTP_RESPONSE)
 HTTP_CLIENT_MOD.members["HTTPMessage"] = NamedType("HTTPMessage", HTTP_HEADERS)
-MODULES["http"] = Module("http", {"client": HTTP_CLIENT_MOD})
+
+# ---- http.server ----------------------------------------------------------------------------
+#
+# BaseHTTPRequestHandler is a base class in the runtime (sd::httpserver), which a program
+# subclasses with do_GET()... Its fields and methods are declared here as if it were written
+# in seadash, so a subclass can use and override them (the C++ signatures match).
+
+
+def runtime_method(owner: StructType, name: str, ret: Type, *params: tuple) -> FuncInfo:
+    """A method of a runtime base class: params are (name, type[, default as a literal node])."""
+    resolved = []
+    for p in params:
+        star = p[0].startswith("*")
+        default = p[2] if len(p) > 2 else None
+        resolved.append(Param(p[0].lstrip("*"), p[1], default, Loc(0, 0), star))
+    # (a node like a parsed method's, self first, so the flow analyses can read it: an empty body keeps nothing)
+    node = A.FunctionDef(name, [A.Param("self"), *(A.Param(p.name, None, p.default, p.star) for p in resolved)], None, [])
+    node.params[0].sym = Var("self", "self", owner, "param", Loc(0, 0))
+    for np, p in zip(node.params[1:], resolved):
+        np.sym = Var(p.name, p.name, p.type, "param", Loc(0, 0))
+    info = FuncInfo(name, resolved, ret, node, owner)
+    node.sym = info
+    owner.methods[name] = info
+    return info
+
+
+HANDLER = StructType("BaseHTTPRequestHandler", "class", None, builtin=True, runtime_fields=True,
+                     cpp_name="sd::httpserver::BaseHTTPRequestHandler", module="http.server")
+for _field, _t in (("command", STR), ("path", STR), ("request_version", STR), ("requestline", STR),
+                   ("raw_requestline", BYTES), ("headers", HTTP_HEADERS), ("client_address", TupleType((STR, INT))),
+                   ("rfile", BINARY_FILE), ("wfile", BINARY_FILE), ("close_connection", BOOL)):
+    HANDLER.fields[_field] = Field(_field, _t, None, Loc(0, 0))
+_NO_STR = A.NoneLit()
+_OPT_STR = OptionalType(STR)
+runtime_method(HANDLER, "send_response", NONE, ("code", INT), ("message", _OPT_STR, _NO_STR))
+runtime_method(HANDLER, "send_response_only", NONE, ("code", INT), ("message", _OPT_STR, _NO_STR))
+runtime_method(HANDLER, "send_header", NONE, ("keyword", STR), ("value", STR))
+runtime_method(HANDLER, "end_headers", NONE)
+runtime_method(HANDLER, "flush_headers", NONE)
+runtime_method(HANDLER, "send_error", NONE, ("code", INT), ("message", _OPT_STR, _NO_STR), ("explain", _OPT_STR, _NO_STR))
+runtime_method(HANDLER, "handle_expect_100", BOOL)
+runtime_method(HANDLER, "log_request", NONE, ("code", STR, A.StrLit("-")), ("size", STR, A.StrLit("-")))
+runtime_method(HANDLER, "log_error", NONE, ("format", STR), ("*args", VarTupleType(STR)))
+runtime_method(HANDLER, "log_message", NONE, ("format", STR), ("*args", VarTupleType(STR)))
+runtime_method(HANDLER, "version_string", STR)
+runtime_method(HANDLER, "date_time_string", STR, ("timestamp", OptionalType(FLOAT), A.NoneLit()))
+runtime_method(HANDLER, "log_date_time_string", STR)
+runtime_method(HANDLER, "address_string", STR)
+for _name, _value in (("server_version", "BaseHTTP/0.6"), ("sys_version", "seadash/0.0.1"), ("protocol_version", "HTTP/1.0"),
+                      ("error_content_type", "text/html;charset=utf-8"), ("error_message_format", ""),
+                      ("default_request_version", "HTTP/0.9")):
+    HANDLER.class_attrs[_name] = ClassAttr(_name, STR, A.StrLit(_value), Loc(0, 0))
+
+
+def handler_class(ctx: CallContext, node: A.Expr) -> StructType:
+    """The RequestHandlerClass argument: a subclass of BaseHTTPRequestHandler, which the server
+    makes one of for each connection (with no arguments)."""
+    st = ctx.checker.lookup_struct(node.id) if isinstance(node, A.Name) else None
+    if st is None or not st.is_subclass_of(HANDLER) or st is HANDLER:
+        raise ctx.error(f"{ctx.what} needs the handler class itself (a subclass of BaseHTTPRequestHandler with do_GET... "
+                        f"methods), not an instance or anything else", node)
+    if st.init is not None and st.init.owner is not HANDLER:
+        raise ctx.error(f"{st.name} can't have an __init__: the server makes a new {st.name} for each connection, "
+                        f"with no arguments of yours (keep shared state in a module-level Synchronized object)", node)
+    for t in st.ancestors():
+        for m in t.methods.values():
+            if m.name.startswith("do_") and (m.params or m.ret != NONE):
+                raise ctx.error(f"{t.name}.{m.name}() is called for each request with no arguments (besides self), "
+                                f"and returns nothing", m.node)
+    for f in st.all_fields().values():
+        if f.default is None:
+            raise ctx.error(f"{st.name}.{f.name} needs a default value: the server makes a new {st.name} for each "
+                            f"connection, with no arguments", node)
+    node.sym, node.ty = st, ClassRefType(st)
+    return st
+
+
+def http_server_new(threading: bool):
+    def check(ctx: CallContext) -> Type:
+        args = bind_args(ctx, (("server_address", None), ("RequestHandlerClass", None), ("bind_and_activate", BOOL, True)))
+        ctx.checker.expect_type(args["server_address"], TupleType((STR, INT)), "server_address")
+        if "bind_and_activate" in args:
+            ctx.checker.expect_type(args["bind_and_activate"], BOOL, "bind_and_activate")
+        st = handler_class(ctx, args["RequestHandlerClass"])
+        ctx.call.http_args = args  # (for codegen)
+        t = HTTPServerType(st, threading)
+        if threading:  # every request is handled on a thread of its own: the handler's code is thread code
+            record_spawn(ctx, args["RequestHandlerClass"], [], (), None)
+            ctx.call.spawn_extra["handler"] = st
+        return t
+    return check
+
+
+HTTP_SERVER_METHODS = {
+    "serve_forever": sync_method(NONE, ("poll_interval", FLOAT, "0.5")),
+    "shutdown": sync_method(NONE),
+    "handle_request": sync_method(NONE),
+    "server_close": sync_method(NONE),
+    "server_bind": sync_method(NONE),
+    "server_activate": sync_method(NONE),
+    "fileno": sync_method(INT),
+}
+HTTP_SERVER_ATTRIBUTES = {"server_address": lambda t: TupleType((STR, INT)), "server_port": lambda t: INT}
+HTTP_SERVER_MOD = Module("http.server", {
+    "HTTPServer": Function("HTTPServer", http_server_new(False), as_type=HTTPServerType()),
+    "ThreadingHTTPServer": Function("ThreadingHTTPServer", http_server_new(True), as_type=HTTPServerType(None, True)),
+    "BaseHTTPRequestHandler": HANDLER,
+}, "modules/httpserver.hpp", ("ssl", "crypto", "pthread"))
+MODULES["http"] = Module("http", {"client": HTTP_CLIENT_MOD, "server": HTTP_SERVER_MOD})
 
 
 class AttributeUnavailable(Exception):

@@ -35,7 +35,7 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     element_type,
-    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, EXECUTOR, IMMUTABLE, LOCKED, VALUE, BuiltinClass,
+    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, EXECUTOR, IMMUTABLE, LOCKED, VALUE, BuiltinClass, HTTPServerType,
     DefaultDictType, DequeType, DictType, FutureType, GeneratorType, MatchType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
@@ -61,6 +61,11 @@ READING_METHODS = frozenset(
     "put put_nowait submit map set count index union intersection difference symmetric_difference "
     "issubset issuperset isdisjoint update intersection_update difference_update symmetric_difference_update".split()
 )
+
+
+def handler_code(handler: StructType) -> list[A.Node]:
+    """What a server's threads run: every method of the handler class (and its own base classes)."""
+    return [stmt for st in handler.ancestors() if not st.builtin for m in st.methods.values() for stmt in m.node.body]
 
 
 def could_hold(t: Type, target: Type, seen: frozenset = frozenset()) -> bool:
@@ -140,7 +145,7 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
     match t:
         case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE):
             return None
-        case SyncType():
+        case SyncType() | HTTPServerType():
             return None
         case BuiltinClass() if t.threads:  # shared (it can't change, or locks itself), or copied
             return None
@@ -213,7 +218,7 @@ def not_a_value(t: Type) -> str | None:
 
 def shareable(t: Type) -> bool:
     """Safe to access from several threads at once without copying."""
-    return isinstance(t, (SyncType, FutureType)) or t == JSON_VALUE or (isinstance(t, BuiltinClass) and t.threads == LOCKED) or (
+    return isinstance(t, (SyncType, FutureType, HTTPServerType)) or t == JSON_VALUE or (isinstance(t, BuiltinClass) and t.threads == LOCKED) or (
         isinstance(t, StructType) and is_synchronized(t)
     )
 
@@ -696,6 +701,15 @@ class Spawn:
 
     def roots(self, target: A.Expr) -> tuple[list[A.Node], list[A.Node]]:
         """The code the thread starts in, and the closure bodies whose captures must be checked."""
+        if (handler := self.extra.get("handler")) is not None:  # ThreadingHTTPServer(addr, Handler)
+            return handler_code(handler), []
+        if isinstance(target, A.Attribute) and isinstance(target.value.ty, HTTPServerType):  # target=server.serve_forever
+            if target.value.ty.handler is None:
+                raise self.fail(
+                    "can't tell which handler class this server runs, so its code can't be checked for another thread: "
+                    "run serve_forever() on a server made here (HTTPServer(address, Handler))", target,
+                )
+            return handler_code(target.value.ty.handler), []
         sym = target.sym
         if isinstance(target, A.Lambda):
             return [target.body], [target]

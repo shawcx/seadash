@@ -40,7 +40,7 @@ from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
-    SYNC_ARITY, ClassAttr, ClassRefType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
+    SYNC_ARITY, ClassAttr, ClassRefType, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
@@ -1572,6 +1572,8 @@ class Checker:
             return WithInfo("tempdir", STR, None, False)
         if t == SQLITE_CONNECTION:  # `with conn:` commits, or rolls back if the block raised
             return WithInfo("connection", t, None, False)
+        if isinstance(t, HTTPServerType):  # `with HTTPServer(...) as server:` closes it at the end
+            return WithInfo("server", t, None, False)
         if isinstance(t, ProcessType) and t.kind == "Popen":  # waits for the child at the end
             return WithInfo("process", t, None, False)
         if isinstance(t, SyncType) and t.kind == "Mutex":
@@ -2707,6 +2709,9 @@ class Checker:
         if isinstance(vt, ClassRefType) and (ca := vt.st.find_class_attr(attr)) is not None:  # Handler.version
             e.sym = ("class_attr_of", vt.st, ca)
             return ca.type
+        if isinstance(vt, HTTPServerType) and attr in ("serve_forever", "handle_request", "shutdown"):
+            e.sym = ("server_method", attr)  # target=server.serve_forever
+            return FuncType((), NONE)
         if isinstance(vt, SyncType) and vt.kind == "Thread" and attr in builtins.THREAD_ATTRIBUTES:
             e.sym = ("thread_attr", attr)
             return builtins.THREAD_ATTRIBUTES[attr]

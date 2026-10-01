@@ -2,6 +2,8 @@
 // compressed stream (gzip, bz2, lzma) can be an ordinary text or binary file object.
 #pragma once
 
+#include <fcntl.h>
+
 namespace sd {
 
 struct Cookie {

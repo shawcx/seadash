@@ -7,10 +7,8 @@ in the README and in the design docs, not here.
 
 1. **`http.client`** (done): `HTTPConnection`/`HTTPSConnection`, streaming `HTTPResponse`,
    a client-side `ssl` module, and `urllib.request` rebuilt on them.
-2. **`http.server`**: `HTTPServer`, `ThreadingHTTPServer`, `BaseHTTPRequestHandler`
-   (`do_GET`... methods on a user subclass, `send_response`/`send_header`/`end_headers`,
-   `wfile`/`rfile`, `log_message`). A threading server runs handlers on several threads, so
-   the handler class and whatever it touches must pass the thread checker.
+2. **`http.server`** (done): `HTTPServer`, `ThreadingHTTPServer`, `BaseHTTPRequestHandler`.
+   Not yet: `self.server` in a handler, `socketserver` as a module, HTTPS serving.
 3. **`SimpleHTTPRequestHandler`**, which needs `mimetypes`, `html.escape` and
    `email.utils.formatdate`.
 

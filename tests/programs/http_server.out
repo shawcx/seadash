@@ -1,0 +1,52 @@
+log: "%s" %s %s ['GET /x?q=1 HTTP/1.1', '200', '-']
+'HTTP/1.0 200 OK\r\nServer: Test/1.0 X\r\nDate: X\r\nContent-Type: text/plain\r\nContent-Length: 33\r\n\r\nGET /x?q=1 HTTP/1.1 hi 127.0.0.1\n'
+log: code %d, message %s ['404', 'Not Found']
+log: "%s" %s %s ['GET /missing HTTP/1.1', '404', '-']
+'HTTP/1.0 404 Not Found\r\nServer: Test/1.0 X\r\nDate: X\r\nConnection: close\r\nContent-Type: text/html;charset=utf-8\r\nContent-Length: 330\r\n\r\n<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 404</p>\n        <p>Message: Not Found.</p>\n        <p>Error code explanation: 404 - Nothing matches the given URI.</p>\n    </body>\n</html>\n'
+log: code %d, message %s ['418', 'Teapot here']
+log: "%s" %s %s ['GET /teapot HTTP/1.0', '418', '-']
+'HTTP/1.0 418 Teapot here\r\nServer: Test/1.0 X\r\nDate: X\r\nConnection: close\r\nContent-Type: text/html;charset=utf-8\r\nContent-Length: 325\r\n\r\n<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 418</p>\n        <p>Message: Teapot here.</p>\n        <p>Error code explanation: 418 - longer &lt;explain&gt;.</p>\n    </body>\n</html>\n'
+log: "%s" %s %s ['POST /p HTTP/1.1', '201', '-']
+'HTTP/1.0 201 Made\r\nServer: Test/1.0 X\r\nDate: X\r\n\r\nHELLO'
+log: "%s" %s %s ['HEAD /h HTTP/1.1', '204', '-']
+'HTTP/1.0 204 No Content\r\nServer: Test/1.0 X\r\nDate: X\r\n\r\n'
+log: code %d, message %s ['501', "Unsupported method ('PUT')"]
+log: "%s" %s %s ['PUT /x HTTP/1.1', '501', '-']
+'HTTP/1.0 501 Unsupported method (\'PUT\')\r\nServer: Test/1.0 X\r\nDate: X\r\nConnection: close\r\nContent-Type: text/html;charset=utf-8\r\nContent-Length: 356\r\n\r\n<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 501</p>\n        <p>Message: Unsupported method (\'PUT\').</p>\n        <p>Error code explanation: 501 - Server does not support this operation.</p>\n    </body>\n</html>\n'
+log: code %d, message %s ['400', "Bad request syntax ('BOGUS')"]
+log: "%s" %s %s ['BOGUS', '400', '-']
+'<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 400</p>\n        <p>Message: Bad request syntax (\'BOGUS\').</p>\n        <p>Error code explanation: 400 - Bad request syntax or unsupported method.</p>\n    </body>\n</html>\n'
+log: code %d, message %s ['505', 'Invalid HTTP version (2.0)']
+log: "%s" %s %s ['GET / HTTP/2.0', '505', '-']
+'<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 505</p>\n        <p>Message: Invalid HTTP version (2.0).</p>\n        <p>Error code explanation: 505 - Cannot fulfill request.</p>\n    </body>\n</html>\n'
+log: "%s" %s %s ['GET /', '200', '-']
+'GET / HTTP/0.9 None 127.0.0.1\n'
+log: code %d, message %s ['400', "Bad HTTP/0.9 request type ('POST')"]
+log: "%s" %s %s ['POST /', '400', '-']
+'<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 400</p>\n        <p>Message: Bad HTTP/0.9 request type (\'POST\').</p>\n        <p>Error code explanation: 400 - Bad request syntax or unsupported method.</p>\n    </body>\n</html>\n'
+log: code %d, message %s ['400', "Bad request version ('extra')"]
+log: "%s" %s %s ['GET / HTTP/1.1 extra', '400', '-']
+'<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 400</p>\n        <p>Message: Bad request version (\'extra\').</p>\n        <p>Error code explanation: 400 - Bad request syntax or unsupported method.</p>\n    </body>\n</html>\n'
+log: code %d, message %s ['400', "Bad request version ('FTP/1.1')"]
+log: "%s" %s %s ['GET / FTP/1.1', '400', '-']
+'<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 400</p>\n        <p>Message: Bad request version (\'FTP/1.1\').</p>\n        <p>Error code explanation: 400 - Bad request syntax or unsupported method.</p>\n    </body>\n</html>\n'
+log: code %d, message %s ['400', "Bad request version ('HTTP/1.x')"]
+log: "%s" %s %s ['GET / HTTP/1.x', '400', '-']
+'<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 400</p>\n        <p>Message: Bad request version (\'HTTP/1.x\').</p>\n        <p>Error code explanation: 400 - Bad request syntax or unsupported method.</p>\n    </body>\n</html>\n'
+''
+log: "%s" %s %s ['GET //evil.example/path HTTP/1.1', '200', '-']
+'HTTP/1.0 200 OK\r\nServer: Test/1.0 X\r\nDate: X\r\nContent-Type: text/plain\r\nContent-Length: 47\r\n\r\nGET /evil.example/path HTTP/1.1 None 127.0.0.1\n'
+log: code %d, message %s ['501', "Unsupported method ('get')"]
+log: "%s" %s %s ['get / HTTP/1.1', '501', '-']
+'HTTP/1.0 501 Unsupported method (\'get\')\r\nServer: Test/1.0 X\r\nDate: X\r\nConnection: close\r\nContent-Type: text/html;charset=utf-8\r\nContent-Length: 356\r\n\r\n<!DOCTYPE HTML>\n<html lang="en">\n    <head>\n        <meta charset="utf-8">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 501</p>\n        <p>Message: Unsupported method (\'get\').</p>\n        <p>Error code explanation: 501 - Server does not support this operation.</p>\n    </body>\n</html>\n'
+log: "%s" %s %s ['GET /via-client HTTP/1.1', '200', '-']
+200 OK text/plain Test/1.0 b'GET /via-client HTTP/1.1 c 127.0.0.1\n'
+log: "%s" %s %s ['POST /echo HTTP/1.1', '201', '-']
+201 Made b'ABC'
+11 200 None b'/one'
+11 200 None b'/two'
+11 200 None b'/three'
+'HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nServer: BaseHTTP/0.6 X\r\nDate: X\r\nContent-Length: 7\r\n\r\n/expect'
+True 200
+'HTTP/1.1 200 OK\r\nServer: BaseHTTP/0.6 X\r\nDate: X\r\nContent-Length: 5\r\n\r\n/once'
+Test/1.0 HTTP/1.1 HTTP/1.0

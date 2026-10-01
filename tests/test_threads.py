@@ -573,3 +573,50 @@ def test_pool_tasks_share_what_nothing_changes(block, shared):
 def test_pool_tasks_outside_a_with_get_copies():
     cpp = translate(PRELUDE + POOL + "    pool = ThreadPoolExecutor()\n    f = pool.submit(total, xs)\nmain()\n").cpp
     assert "sd::lend(" not in cpp
+
+
+SERVER = "from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer\n"
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("seen: list[str] = []\nclass H(BaseHTTPRequestHandler):\n    def do_GET(self):\n        seen.append(self.path)\n"
+     "ThreadingHTTPServer(('', 0), H).serve_forever()\n",
+     "thread code uses the module-level 'seen' (list[str]), but it's modified (line 8)"),
+    ("count = 0\nclass H(BaseHTTPRequestHandler):\n    def do_GET(self):\n        global count\n        count += 1\n"
+     "s = HTTPServer(('', 0), H)\nthreading.Thread(target=s.serve_forever).start()\n",
+     "thread code uses the module-level 'count' (int), but it's modified (line 9)"),
+    ("def run(s: HTTPServer):\n    threading.Thread(target=s.serve_forever).start()\n",
+     "can't tell which handler class this server runs"),
+])
+def test_handler_code_is_thread_code_when_it_runs_on_threads(src, msg):
+    assert msg in compile_error(SERVER + src).message
+
+
+def test_a_server_on_the_main_thread_may_change_globals():
+    compile_ok(SERVER + textwrap.dedent("""
+        count = 0
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                global count
+                count += 1
+        HTTPServer(('', 0), H).serve_forever()
+    """))
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("class H(BaseHTTPRequestHandler):\n    def __init__(self, x: int):\n        pass\nHTTPServer(('', 0), H)\n",
+     "H can't have an __init__: the server makes a new H for each connection, with no arguments of yours "
+     "(keep shared state in a module-level Synchronized object)"),
+    ("class H(BaseHTTPRequestHandler):\n    n: int\nHTTPServer(('', 0), H)\n",
+     "H.n needs a default value: the server makes a new H for each connection, with no arguments"),
+    ("class H(BaseHTTPRequestHandler):\n    def do_GET(self, x: int):\n        pass\nHTTPServer(('', 0), H)\n",
+     "H.do_GET() is called for each request with no arguments (besides self), and returns nothing"),
+    ("class H(BaseHTTPRequestHandler):\n    pass\nHTTPServer(('', 0), H())\n",
+     "http.server.HTTPServer() needs the handler class itself (a subclass of BaseHTTPRequestHandler with do_GET... "
+     "methods), not an instance or anything else"),
+    ("class H(BaseHTTPRequestHandler):\n    def log_message(self, format: str) -> None:\n        pass\n",
+     "H.log_message() overrides BaseHTTPRequestHandler.log_message(), so it must have the same parameter and return "
+     "types: def log_message(format: str, *args: str) -> None"),
+])
+def test_handler_errors(src, msg):
+    assert compile_error(SERVER + src).message == msg

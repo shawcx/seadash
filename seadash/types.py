@@ -243,6 +243,19 @@ class VarTupleType(Type):
 
 
 @dataclass(frozen=True)
+class HTTPServerType(Type):
+    """http.server.HTTPServer / ThreadingHTTPServer, with the handler class it serves, so the
+    thread checker knows what code its threads run (None: a server from elsewhere, as in an
+    annotation)."""
+
+    handler: object = None  # StructType (compared by identity)
+    threading: bool = False
+
+    def __str__(self) -> str:
+        return "ThreadingHTTPServer" if self.threading else "HTTPServer"
+
+
+@dataclass(frozen=True)
 class ParserType(Type):
     """argparse.ArgumentParser. Each parser created in the code has its own key, which
     the checker files its add_argument() calls under (None: a parser from elsewhere)."""
@@ -411,7 +424,7 @@ class FuncInfo:
     generator: bool = False  # has `yield`: returns an Iterator[T] that runs the body on demand
 
     def __str__(self) -> str:
-        params = ", ".join(f"{p.name}: {p.type}" for p in self.params)
+        params = ", ".join(f"*{p.name}: {p.type.elem}" if p.star else f"{p.name}: {p.type}" for p in self.params)
         return f"def {self.name}({params}) -> {self.ret}"
 
 
@@ -437,6 +450,9 @@ class StructType(Type):
     origin: str | None = None
     type_args: tuple = ()
     frozen: bool = False  # @dataclass(frozen=True): fields are read-only after construction
+    # A runtime base class whose fields are its members in C++ (BaseHTTPRequestHandler): a
+    # subclass reaches them as fields, but they aren't part of its constructor or repr.
+    runtime_fields: bool = False
     class_attrs: dict[str, ClassAttr] = field(default_factory=dict)  # declared here (a subclass may redefine one)
 
     def __str__(self) -> str:
@@ -463,14 +479,17 @@ class StructType(Type):
         return any(t.builtin and t.name == "BaseException" for t in self.ancestors())
 
     def all_fields(self) -> dict[str, Field]:
-        """Inherited fields first, like a dataclass."""
+        """Inherited fields first, like a dataclass (not a runtime base class's: runtime_fields)."""
         out: dict[str, Field] = {}
         for t in reversed(self.ancestors()):
-            out.update(t.fields)
+            if not t.runtime_fields:
+                out.update(t.fields)
         return out
 
     def find_field(self, name: str) -> Field | None:
-        return self.all_fields().get(name)
+        if (f := self.all_fields().get(name)) is not None:
+            return f
+        return next((t.fields[name] for t in self.ancestors() if t.runtime_fields and name in t.fields), None)
 
     def find_method(self, name: str) -> FuncInfo | None:
         for t in self.ancestors():
@@ -548,6 +567,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return True
     if isinstance(src, StructType) and isinstance(dst, StructType):
         return src.is_subclass_of(dst)
+    if isinstance(src, HTTPServerType) and isinstance(dst, HTTPServerType):  # `server: HTTPServer`
+        return dst.handler is None and (src.threading or not dst.threading)
     if isinstance(src, ProcessType) and isinstance(dst, ProcessType):  # an annotation: subprocess.Popen
         return src.kind == dst.kind and dst.args is None
     if type(src) is type(dst) and isinstance(src, (PatternType, MatchType)):
