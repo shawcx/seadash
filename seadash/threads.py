@@ -35,7 +35,7 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     element_type,
-    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, IMMUTABLE, LOCKED, VALUE, BuiltinClass,
+    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, EXECUTOR, IMMUTABLE, LOCKED, VALUE, BuiltinClass,
     DefaultDictType, DequeType, DictType, FutureType, GeneratorType, MatchType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
@@ -61,6 +61,23 @@ READING_METHODS = frozenset(
     "put put_nowait submit map set count index union intersection difference symmetric_difference "
     "issubset issuperset isdisjoint update intersection_update difference_update symmetric_difference_update".split()
 )
+
+
+def could_hold(t: Type, target: Type, seen: frozenset = frozenset()) -> bool:
+    """Could changing a value of type t change a `target` (because it is one, or holds one)?"""
+    if t == target:
+        return True
+    match t:
+        case ListType(x) | SetType(x) | OptionalType(x) | DequeType(x) | VarTupleType(x):
+            return could_hold(x, target, seen)
+        case DictType(k, v):
+            return could_hold(k, target, seen) or could_hold(v, target, seen)
+        case TupleType(xs):
+            return any(could_hold(x, target, seen) for x in xs)
+        case StructType() if t.kind == "class" and id(t) not in seen:
+            classes = [t] + [c for c in ALL_CLASSES if c is not t and c.is_subclass_of(t)]
+            return any(could_hold(f.type, target, seen | {id(t)}) for c in classes for f in c.all_fields().values())
+    return False
 
 
 def holds_references(t: Type) -> bool:
@@ -568,6 +585,88 @@ class Spawn:
         self.check_lost_changes()
         self.check_captures(captured, roots)
         self.check_reachable(roots)
+        self.lend_arguments()
+
+    # ---- sharing instead of copying, inside `with ThreadPoolExecutor() as pool:` -------------
+
+    # Calls that can't run the program's own code (which could change what's lent).
+    LIBRARY_CALLS = frozenset({"builtin", "builtin_method", "module_func", "sync_new", "collection_new", "isinstance",
+                               "class_func"})
+
+    def lend_arguments(self) -> None:
+        """`pool.submit(work, xs)` inside `with ThreadPoolExecutor() as pool:` shares xs with the
+        task instead of copying it, when nothing can change xs until the task is done: the task
+        only reads it, and the block (which waits for every task when it ends) changes nothing
+        that could be it. Codegen reads `call.lent`: the indexes (into call.args) to share."""
+        call = self.call
+        if not (isinstance(call.func, A.Attribute) and call.func.attr == "submit" and isinstance(call.func.value, A.Name)):
+            return
+        block = self.pool_block(call.func.value.sym)
+        if block is None or not isinstance(self.extra["target"].sym, FuncInfo):
+            return
+        task: FuncInfo = self.extra["target"].sym
+        if task.owner is not None or task.generator:
+            return
+        params = [p.sym for p in task.node.params]
+        _, task_changes, task_escapes = uses(task.node.body)
+        block_changes = self.changed_in(block)
+        if block_changes is None:
+            return
+        lent = set()
+        for i, (arg, param) in enumerate(zip(call.args[1:], params), start=1):
+            var = arg.sym if isinstance(arg, A.Name) else None
+            if not (isinstance(var, Var) and var.kind in ("local", "param", "global") and not var.captured
+                    and holds_references(var.type)):
+                continue
+            if id(param) in task_changes or id(param) in task_escapes or param.captured:
+                continue  # the task changes it, or keeps it somewhere
+            if any(could_hold(changed.type, var.type) for changed in block_changes):
+                continue  # the block changes something that could be it
+            lent.add(i)
+        if lent:
+            call.lent = lent
+
+    def pool_block(self, pool: Var | None) -> list[A.Stmt] | None:
+        """The body of the `with ThreadPoolExecutor(...) as pool:` this call is directly in."""
+        body = self.scope.info.node.body if self.scope.info is not None else self.module_body()
+        for n in walk_all(body):
+            if not isinstance(n, A.With) or len(n.items) != 1:
+                continue
+            item = n.items[0]
+            if not (isinstance(item.target, A.Name) and item.target.sym is pool and item.context.ty == EXECUTOR):
+                continue
+            inside = [x for x in walk_all(n.body)]
+            if not any(x is self.call for x in inside):
+                continue
+            # The pool must still be the one the with made, and nothing may run between the
+            # tasks' start and their end that the block doesn't show: no yield, no shutdown().
+            if any(isinstance(x, (A.Yield, A.FunctionDef, A.Lambda)) for x in inside):
+                return None
+            if any(isinstance(x, A.Call) and isinstance(x.func, A.Attribute) and x.func.attr == "shutdown" for x in inside):
+                return None
+            assigned, _ = changes(n.body)
+            return None if assigned.get(id(pool), 0) else n.body
+        return None
+
+    def changed_in(self, block: list[A.Stmt]) -> list[Var] | None:
+        """The variables the block changes in place (or lets escape), or None if it runs code
+        of the program's own (a function, a method, a constructor) that could change anything."""
+        spawns = {id(call) for call, _, _ in self.program_spawns()}
+        for n in walk_all(block):
+            if isinstance(n, A.Call) and id(n) not in spawns and getattr(n.sym, "kind", None) not in self.LIBRARY_CALLS:
+                return None
+            if isinstance(n, A.Call) and getattr(n.sym, "kind", None) == "class_func" and not getattr(n.sym.target, "cpp", None):
+                return None
+        _, modified, escaped = uses(block)
+        found: dict[int, Var] = {}
+        for n in walk_all(block):
+            if isinstance(n, A.Name) and isinstance(n.sym, Var) and (id(n.sym) in modified or id(n.sym) in escaped):
+                found[id(n.sym)] = n.sym
+        return list(found.values())
+
+    def program_spawns(self):
+        for _, info, _ in self.program.units:
+            yield from info.spawns
 
     def check_lost_changes(self) -> None:
         """A thread gets its own copy of each argument. Changing that copy and never using it

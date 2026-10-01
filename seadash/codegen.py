@@ -2677,7 +2677,9 @@ class CodeGen:
             params, result = e.work_types
             fn = self.expr_as(e.args[0], FuncType(params, result))
             if name == "submit":
-                args = ", ".join([fn, *(self.sent(a, self.expr_as(a, p)) for a, p in zip(e.args[1:], params))])
+                lent = getattr(e, "lent", set())  # shared with the task, not copied (threads.Spawn.lend_arguments)
+                args = ", ".join([fn, *(f"sd::lend({self.expr_as(a, p)})" if i in lent else self.sent(a, self.expr_as(a, p))
+                                        for i, (a, p) in enumerate(zip(e.args[1:], params), start=1))])
                 return f"{r}.submit<{self.cpp_type(result)}>({args})"
             timeout = self.keyword(e, "timeout")
             t = self.expr_as(timeout, OptionalType(FLOAT)) if timeout is not None else "std::nullopt"

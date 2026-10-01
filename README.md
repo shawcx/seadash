@@ -201,7 +201,8 @@ all, unless it's a thread-safe object: `threading.Lock`, `queue.Queue`, or seada
 under python3 that import finds working Python versions, so such programs still run there).
 A `Mutex` owns what it's given: `shared = Mutex(data)` moves `data` in, and using `data`
 afterwards is an error. A list the sender never uses again
-is moved rather than copied. A thread that changes its copy and never uses it is an error
+is moved rather than copied, and inside `with ThreadPoolExecutor() as pool:` a task that only
+reads a list shares it rather than copying it, when nothing can change it until the task ends. A thread that changes its copy and never uses it is an error
 (the change would be lost). Threads may read module globals that nothing changes; changing
 a list through another name, or passing it to a function that could change it, counts:
 

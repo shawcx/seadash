@@ -1221,6 +1221,22 @@ std::remove_cvref_t<T> send(T&& x) {
     return value_copy(static_cast<const U&>(x));
 }
 
+// What the compiler shares with a pool task instead of copying, because it has checked that
+// nothing changes it until the task is done (inside `with ThreadPoolExecutor() as pool:`).
+template <class T>
+struct Lent {
+    T value;
+    operator const T&() const { return value; }
+};
+template <class T>
+Lent<std::remove_cvref_t<T>> lend(T&& x) {
+    return {std::forward<T>(x)};
+}
+template <class T>
+Lent<T> send(Lent<T> x) {
+    return x;
+}
+
 // xs *= 2, s |= t: Python changes the container in place (every reference to it sees
 // the change), so the result replaces its contents rather than rebinding the name.
 template <class T>

@@ -86,6 +86,16 @@ A value crosses into another thread when it is:
   This is an optimization only; the meaning is still "the receiver has its own".
 - **Module globals** keep today's rule: thread code may only read them, unless they're
   thread-safe. They can't be copied implicitly because every thread names the same one.
+- **Shared with pool tasks:** inside `with ThreadPoolExecutor() as pool:`, an argument of
+  `pool.submit(task, xs)` is shared rather than copied when nothing can change it until the
+  task is done: the task only reads it (doesn't change it, keep it, or pass it on), and the
+  block changes nothing that could be it and runs none of the program's own code (functions,
+  methods, lambdas; the tasks themselves aside), no `yield` and no `shutdown()`. The block
+  waits for its tasks when it ends, so afterwards the value is the caller's alone again. If a
+  value is shared and also handed on (`q.put(xs)`), `sd::send` sees it isn't the only
+  reference and copies. This is an optimization only: the task couldn't tell the difference.
+  (`threads.Spawn.lend_arguments`; codegen wraps the argument in `sd::lend`. Not done yet:
+  `pool.map`, bound methods and lambdas as tasks, and the parts of a value: `xs[0]`, `obj.items`.)
 
 ### Modifying a copy in a thread is an error
 

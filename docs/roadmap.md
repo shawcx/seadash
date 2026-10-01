@@ -17,6 +17,14 @@ in the README and in the design docs, not here.
 Server-side TLS (`SSLContext.load_cert_chain`, `wrap_socket(server_side=True)`) would also
 make HTTPS testable locally; today HTTPS is only checked by hand against public hosts.
 
+## Next: threads
+
+1. **`seadash` module** (done): `Mutex`, `RWMutex`, `Atomic`, `Synchronized` come from
+   `seadash`, with Python versions in `seadash/__init__.py`.
+2. **Shared pool arguments** (done for `pool.submit` with a plain function and a variable):
+   see `docs/values-and-references.md` ("Shared with pool tasks"). Next: `pool.map` (its
+   items), lambdas and nested defs as tasks, and attributes or items as arguments.
+
 ## Decided, not built
 
 - **Passing an `HTTPConnection` to a thread** (it's currently a compile error). Recommended:

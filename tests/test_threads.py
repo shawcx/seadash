@@ -527,3 +527,49 @@ def test_seadash_thread_types_also_run_under_python(name, tmp_path):
     result = subprocess.run([sys.executable, str(program)], capture_output=True, text=True, timeout=60, cwd=tmp_path,
                             env={**os.environ, "PYTHONPATH": str(root)})
     assert result.stdout == program.with_suffix(".out").read_text()
+
+
+POOL = """
+from concurrent.futures import ThreadPoolExecutor
+class Box:
+    items: list[int]
+def total(xs: list[int]) -> int:
+    return sum(xs)
+def grow(xs: list[int]) -> int:
+    xs.append(1)
+    return len(xs)
+def keep(xs: list[int]) -> list[int]:
+    return xs
+def helper():
+    pass
+def main():
+    xs = [1, 2, 3]
+    ys = xs
+    d = {"k": xs}
+    box = Box(xs)
+    print(ys, d, box)
+"""
+
+
+@pytest.mark.parametrize("block,shared", [
+    ("f = pool.submit(total, xs)\nprint(f.result())", True),
+    ("fs = [pool.submit(total, xs) for _ in range(3)]\nprint(sum(f.result() for f in fs), len(xs))", True),
+    ("f = pool.submit(grow, xs)", False),  # the task changes it
+    ("f = pool.submit(keep, xs)", False),  # the task keeps it
+    ("f = pool.submit(total, xs)\nxs.append(4)", False),  # the block changes it
+    ("f = pool.submit(total, xs)\nys.append(4)", False),  # ...or something that could be it
+    ('f = pool.submit(total, xs)\nd["k"].append(4)', False),
+    ("f = pool.submit(total, xs)\nbox.items.append(4)", False),
+    ("f = pool.submit(total, xs)\nhelper()", False),  # the program's own code could change anything
+    ("f = pool.submit(total, xs)\ng = lambda: 1", False),
+    ("f = pool.submit(total, xs)\npool.shutdown(wait=False)", False),
+])
+def test_pool_tasks_share_what_nothing_changes(block, shared):
+    body = textwrap.indent(block, " " * 8)
+    cpp = translate(PRELUDE + POOL + f"    with ThreadPoolExecutor() as pool:\n{body}\nmain()\n").cpp
+    assert ("sd::lend(" in cpp) == shared
+
+
+def test_pool_tasks_outside_a_with_get_copies():
+    cpp = translate(PRELUDE + POOL + "    pool = ThreadPoolExecutor()\n    f = pool.submit(total, xs)\nmain()\n").cpp
+    assert "sd::lend(" not in cpp

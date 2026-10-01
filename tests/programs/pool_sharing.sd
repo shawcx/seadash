@@ -1,0 +1,36 @@
+# Inside `with ThreadPoolExecutor() as pool:`, tasks that only read their arguments share them
+# rather than getting copies (the block can't change them, and waits for every task).
+from concurrent.futures import ThreadPoolExecutor
+
+
+def part_sum(xs: list[int], lo: int, hi: int) -> int:
+    total = 0
+    for i in range(lo, hi):
+        total += xs[i]
+    return total
+
+
+def lookups(table: dict[str, list[int]], keys: list[str]) -> int:
+    return sum(len(table[k]) for k in keys if k in table)
+
+
+def largest(grid: list[list[int]]) -> int:
+    return max(max(row) for row in grid)
+
+
+def main():
+    n = 200_000
+    xs = [i % 97 for i in range(n)]
+    table = {f"k{i}": list(range(i)) for i in range(50)}
+    grid = [[r * c for c in range(30)] for r in range(30)]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        step = n // 8
+        parts = [pool.submit(part_sum, xs, k * step, (k + 1) * step) for k in range(8)]
+        counts = [pool.submit(lookups, table, [f"k{i}", "missing"]) for i in range(50)]
+        big = pool.submit(largest, grid)
+        print(sum(f.result() for f in parts) == sum(xs), sum(f.result() for f in counts), big.result())
+    xs.append(-1)  # (the tasks are done: the block waited for them)
+    print(len(xs), largest(grid))
+
+
+main()
