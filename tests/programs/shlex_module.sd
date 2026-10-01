@@ -35,6 +35,7 @@ print(shlex.split("# only a comment", comments=True), shlex.split("x #y", True))
 words = ["simple", "two words", "it's", "", "a\"b", "$HOME", "café", "naïve ☃", "@safe%chars+=:,./-", "semi;colon", "new\nline", "tab\there"]
 for word in words:
     print(repr(word), "->", shlex.quote(word))
+print(repr(shlex.quote("nul\x00byte")))  # (a NUL needs quoting too)
 print(shlex.join(words))
 print(shlex.join(["echo", "hello world", "it's fine"]))
 print(shlex.split(shlex.join(words)) == words)

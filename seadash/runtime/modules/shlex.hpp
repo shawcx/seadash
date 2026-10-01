@@ -86,10 +86,11 @@ inline list<std::string> split(const std::string& s, bool comments = false, bool
 
 inline std::string quote(const std::string& s) {
     if (s.empty()) return "''";
-    auto safe = [](unsigned char c) {  // (ASCII only, like Python: r'[\w@%+=:,./-]' with re.ASCII)
-        return std::isalnum(c) || c == '_' || std::strchr("@%+=:,./-", c) != nullptr;
+    auto safe = [](char ch) {  // (ASCII only, like Python: r'[\w@%+=:,./-]' with re.ASCII)
+        auto c = static_cast<unsigned char>(ch);  // (char may be signed or not)
+        return c < 128 && (std::isalnum(c) || c == '_' || (c != 0 && std::strchr("@%+=:,./-", c) != nullptr));
     };
-    if (std::all_of(s.begin(), s.end(), [&](char c) { return c < 0 ? false : safe(static_cast<unsigned char>(c)); })) return s;
+    if (std::all_of(s.begin(), s.end(), safe)) return s;
     std::string out = "'";
     for (char c : s) {
         if (c == '\'') out += "'\"'\"'";  // '...' can't hold a quote: end it, add "'", resume

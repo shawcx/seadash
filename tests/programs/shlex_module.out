@@ -30,6 +30,7 @@
 'new\nline' -> 'new
 line'
 'tab\there' -> 'tab	here'
+"'nul\x00byte'"
 simple 'two words' 'it'"'"'s' '' 'a"b' '$HOME' 'café' 'naïve ☃' @safe%chars+=:,./- 'semi;colon' 'new
 line' 'tab	here'
 echo 'hello world' 'it'"'"'s fine'
