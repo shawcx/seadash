@@ -17,7 +17,7 @@ dicts and sets were values.
   values, and copying a value class copies everything in it.
 - `@dataclass(frozen=True)` makes a value class or an ordinary class immutable. Immutability is checked at
   compile time.
-- `threading.Mutex(x)` **takes ownership** of `x`. The view inside `with m as t:` can't
+- `seadash.Mutex(x)` **takes ownership** of `x`. The view inside `with m as t:` can't
   escape the block.
 - A **modified copy that is never used** is a compile error, because the change is lost.
 
@@ -96,7 +96,7 @@ copy and never uses it**, the checker reports an error:
 ```
 error: work() changes its copy of 'out' but never uses it: a thread gets its own copy of
 each argument, so the change never reaches the caller. Share the data with
-threading.Mutex, send results back through a queue.Queue, or return them
+seadash.Mutex, send results back through a queue.Queue, or return them
 (ThreadPoolExecutor)
 ```
 
@@ -106,10 +106,10 @@ captures: each thread gets copies, made when the thread is created.
 
 ## Sharing a non-thread-safe object: `Mutex[T]`
 
-`threading.Mutex` (which already exists) is the container for sharing any object:
+`seadash.Mutex` (`from seadash import Mutex`; it was `threading.Mutex` at first) is the container for sharing any object:
 
 ```python
-shared = threading.Mutex([])        # takes ownership of the list
+shared = Mutex([])        # takes ownership of the list
 
 def worker(n: int):
     with shared as xs:              # holds the lock while the block runs
@@ -132,7 +132,7 @@ New rules:
    container that outlives the block. Anything read out of `t` that is a reference (for
    example `row = t[0]` when `t` is a `list[list[int]]`) is subject to the same rule; copy
    what you need (`list(t)`, `[list(row) for row in t]`).
-3. **`threading.RWMutex(x)`** for data read far more than written: `with m.read() as t:`
+3. **`seadash.RWMutex(x)`** for data read far more than written: `with m.read() as t:`
    allows many readers at once (a `std::shared_mutex`), and `with m.write() as t:` one
    writer. A `read()` view is read-only: changing it (also through `for row in t:
    row.append(...)`) is a compile error. There's no plain `with m as t:`, and `read()` /

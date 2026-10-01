@@ -1,9 +1,10 @@
 # seadash-only: RWMutex lets many threads read at once, or one write; a Mutex owns what
 # it's given.
 import threading
+from seadash import Mutex, RWMutex
 
-config = threading.RWMutex({"mode": "fast", "level": "1"})
-seen: threading.Mutex[list[str]] = threading.Mutex([])
+config = RWMutex({"mode": "fast", "level": "1"})
+seen: Mutex[list[str]] = Mutex([])
 
 
 def reader(rounds: int):
@@ -33,9 +34,9 @@ with seen as s:
 print(config.get(), config)
 
 
-def build() -> threading.Mutex[list[int]]:
+def build() -> Mutex[list[int]]:
     items = [1, 2]
-    box = threading.Mutex(items)  # moved in: `items` can't be used again...
+    box = Mutex(items)  # moved in: `items` can't be used again...
     items = [3]  # ...until it's given a new value
     box.set(items)
     items = []

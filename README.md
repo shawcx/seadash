@@ -65,7 +65,7 @@ standard-library spelling and `reinterpret_cast`s get in the way. seadash keeps 
 Python you write and gives you the C++ you'd want underneath.
 
 `bench/run.py` checks that both produce identical output, then times them (best of 3; under
-python3, `bench/python/seadash.py` stands in for `@value`):
+python3, `from seadash import value` finds the compiler's package, whose `value` does nothing):
 
 | benchmark | python3 | seadash | speedup |
 |---|---:|---:|---:|
@@ -196,9 +196,10 @@ match shape:                         # a json.Value
 parallel. Anything that crosses into another thread (`Thread` arguments, `queue.Queue`
 items, `executor.submit` arguments and results, what goes into and out of a `Mutex`, and
 the variables a thread's closure uses from its enclosing function) is copied, lists and
-all, unless it's a thread-safe object (`Lock`, `queue.Queue`, `threading.Mutex[T]`,
-`threading.RWMutex[T]`, `threading.Atomic`, `threading.Synchronized` classes). A `Mutex`
-owns what it's given: `shared = threading.Mutex(data)` moves `data` in, and using `data`
+all, unless it's a thread-safe object: `threading.Lock`, `queue.Queue`, or seadash's own
+`Mutex[T]`, `RWMutex[T]`, `Atomic` and `Synchronized` classes (`from seadash import Mutex`;
+under python3 that import finds working Python versions, so such programs still run there).
+A `Mutex` owns what it's given: `shared = Mutex(data)` moves `data` in, and using `data`
 afterwards is an error. A list the sender never uses again
 is moved rather than copied. A thread that changes its copy and never uses it is an error
 (the change would be lost). Threads may read module globals that nothing changes; changing
@@ -209,7 +210,7 @@ total = 0
 def work():
     global total
     total += 1   # error: thread code uses the module-level 'total' (int), but it's
-                 # modified. Threads can't share it safely: wrap it in a threading.Mutex,
+                 # modified. Threads can't share it safely: wrap it in a seadash.Mutex,
                  # send data through a queue.Queue, or pass a copy in args=
 ```
 
@@ -233,7 +234,8 @@ def work():
 | `ssl` | for HTTPS clients: `create_default_context`, `SSLContext` (`check_hostname`, `verify_mode`, `load_verify_locations`), `_create_unverified_context`, `SSLError`/`SSLCertVerificationError` |
 | `time`, `math`, `random` | the usual |
 | `socket` | TCP/UDP with Python's API and errors; `socket.socket(fileno=fd)` takes over a descriptor |
-| `threading`, `queue` | threads, locks, events, queues; plus seadash's `Mutex[T]` (owns its data: `with m as data:`), `RWMutex[T]` (`with m.read()` / `m.write()`), `Atomic` and `Synchronized` |
+| `threading`, `queue` | threads, locks, events, queues |
+| `seadash` | `@value`, and for sharing between threads `Mutex[T]` (owns its data: `with m as data:`), `RWMutex[T]` (`with m.read()` / `m.write()`), `Atomic` and `Synchronized` classes |
 | `concurrent.futures` | `ThreadPoolExecutor` (`submit`, `map`, `shutdown`, `with`), `Future`, `as_completed`, `wait`; work on the pool is checked for data races like threads are |
 | `itertools` | all of it, lazily: `count`, `cycle`, `repeat`, `accumulate`, `chain`, `groupby`, `islice`, `tee`, `zip_longest`, `product`, `permutations`, `combinations`, `pairwise`, `batched`... (`permutations(xs, 2)` gives `tuple[T, T]`) |
 | `struct` | `pack`, `unpack`, `unpack_from`, `iter_unpack`, `calcsize`, `Struct`: every format code, byte order and native alignment, with Python's errors; the format literal decides the types (`struct.unpack("<hf", data)` is a `tuple[int, float]`). Ints are 64-bit, so `Q`/`N` values above 2**63-1 aren't representable |

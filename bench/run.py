@@ -23,7 +23,7 @@ RUNS = 3
 def run(cmd: list[str]) -> tuple[float, str]:
     """(wall seconds, stdout)."""
     start = time.perf_counter()
-    env = {**os.environ, "PYTHONPATH": str(BENCH / "python")}  # (`from seadash import value` under python3)
+    env = {**os.environ, "PYTHONPATH": str(BENCH.parent)}  # (`from seadash import value` under python3: seadash/__init__.py)
     result = subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
     return time.perf_counter() - start, result.stdout
 

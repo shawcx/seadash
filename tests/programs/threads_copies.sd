@@ -3,6 +3,7 @@
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from seadash import Mutex, Synchronized
 
 grid = [[1, 2], [3]]
 
@@ -29,7 +30,7 @@ print(q.get(), sent)
 # a Mutex owns what it's given (the name can't be used again until it's reassigned), and
 # get() hands out copies
 original = {"a": [1]}
-box = threading.Mutex(original)
+box = Mutex(original)
 original = {"a": [2]}  # a new dict: the Mutex's is untouched
 with box as d:
     d["a"].append(3)
@@ -38,11 +39,11 @@ out["a"].append(4)
 print(original, box.get(), out)
 
 
-def owned(start: list[int]) -> threading.Mutex[list[int]]:
+def owned(start: list[int]) -> Mutex[list[int]]:
     items = list(start)
     items.append(0)
     other = items  # (an alias: the Mutex gets a copy, so nothing is shared)
-    m = threading.Mutex(items)
+    m = Mutex(items)
     other.append(-1)
     m.set(other)
     return m
@@ -52,7 +53,7 @@ print(owned([5]).get())
 
 
 # a Synchronized class copies the lists its methods take and return
-class Registry(threading.Synchronized):
+class Registry(Synchronized):
     names: list[str]
 
     def add_all(self, more: list[str]):

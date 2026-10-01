@@ -73,7 +73,7 @@ class MaybeUnbound:
 
 @dataclass(frozen=True)
 class Moved(MaybeUnbound):
-    """Handed to a threading.Mutex, which now owns it: reading the name again is an error
+    """Handed to a seadash.Mutex, which now owns it: reading the name again is an error
     until it's given a new value."""
 
     mutex: str | None  # how the Mutex was written, for the message: "shared"
@@ -227,6 +227,16 @@ def with_submodules(mods: list[builtins.Module]) -> list[builtins.Module]:
 
 
 class Checker:
+    def imported_modules(self) -> list[builtins.Module]:
+        """The modules whose headers and libraries the program needs. seadash's thread types
+        are in threading's header, so using them (or `import seadash`) brings it in."""
+        mods = list(self.modules.values()) + [m for m, _ in self.imported.values()]
+        seadash = builtins.MODULES["seadash"]
+        if seadash in self.modules.values() or any(
+                m is seadash and member in builtins.SEADASH_THREAD_TYPES for m, member in self.imported.values()):
+            mods.append(builtins.MODULES["threading"])
+        return mods
+
     def __init__(self, module_name: str = "__main__", loader=None) -> None:
         self.module_name = module_name
         # loader(dotted_name) -> builtins.UserModule | None: finds and checks another .sd file.
@@ -346,7 +356,7 @@ class Checker:
             functions=self.out_functions,
             globals=list(self.globals.values()),
             main_locals=[v for v in main_scope.locals if v.kind != "global"],
-            imports=with_submodules(list(self.modules.values()) + [m for m, _ in self.imported.values()]),
+            imports=with_submodules(self.imported_modules()),
             generics=self.generics,
             spawns=self.spawns,
         )
@@ -411,7 +421,7 @@ class Checker:
                     self.modules[alias.asname or alias.name] = sub
                     continue
             if alias.name not in mod.members:
-                raise self.error(f"module '{mod.name}' has no member '{alias.name}'", alias)
+                raise self.error(builtins.missing_member(mod, alias.name), alias)
             self.imported[alias.asname or alias.name] = (mod, alias.name)
 
     def find_module(self, name: str, node: A.Node) -> builtins.Module:
@@ -1064,6 +1074,10 @@ class Checker:
                 return m.type
             if isinstance(m, builtins.Function) and m.as_type is not None:  # socket.socket
                 return m.as_type
+            mod_name, _, member = name.rpartition(".")
+            if (m is None and member in builtins.SEADASH_THREAD_TYPES and isinstance(mod := self.modules.get(mod_name), builtins.Module)
+                    and mod.name == "threading"):
+                raise self.error(builtins.missing_member(mod, member), node)  # threading.Mutex: it's seadash's
             raise self.error(f"unknown type '{name}'", node)
         raise self.error(f"unknown type '{name}'", node)
 
@@ -2257,14 +2271,14 @@ class Checker:
             raise self.error(f"{t} can't be converted to a string", e)
 
     def name_the_mutex(self, target: A.Expr, value: A.Expr) -> None:
-        """`shared = threading.Mutex(data)`: say `with shared as data:` in the moved-from error."""
+        """`shared = seadash.Mutex(data)`: say `with shared as data:` in the moved-from error."""
         if isinstance(target, A.Name) and isinstance(value, A.Call) and getattr(value.sym, "kind", None) == "sync_new":
             moved = value.sym.target[1].get("value")
             if isinstance(moved, A.Name) and isinstance(entry := self.state.names.get(moved.id), Moved):
                 self.state.names[moved.id] = Moved(target.id, entry.loc, entry.var)
 
     def move_into_mutex(self, value: A.Expr | None, mutex: str | None) -> None:
-        """threading.Mutex(data) / m.set(data): the Mutex owns data now. A plain local name is
+        """seadash.Mutex(data) / m.set(data): the Mutex owns data now. A plain local name is
         moved (codegen), and reading it afterwards is an error; anything else is copied."""
         if not isinstance(value, A.Name) or not isinstance(value.sym, Var):
             return
@@ -2684,7 +2698,7 @@ class Checker:
     def module_member(self, e: A.Expr, mod: builtins.Module, member: str) -> Type:
         m = mod.members.get(member)
         if m is None:
-            raise self.error(f"module '{mod.name}' has no member '{member}'", e)
+            raise self.error(builtins.missing_member(mod, member), e)
         if isinstance(m, builtins.Function):
             raise self.error(f"'{mod.name}.{member}' can only be called here (functions aren't values yet)", e)
         if isinstance(m, StructType):
@@ -3489,7 +3503,7 @@ class Checker:
     def check_module_call(self, e: A.Call, mod: builtins.Module, member: str, expected: Type | None = None) -> Type:
         f = mod.members.get(member)
         if f is None:
-            raise self.error(f"module '{mod.name}' has no member '{member}'", e.func)
+            raise self.error(builtins.missing_member(mod, member), e.func)
         if isinstance(f, StructType):
             return self.check_constructor(e, f)  # utils.Point(...), raise zlib.error("...")
         if isinstance(f, builtins.SyncTypeDef):  # threading.Lock(), queue.Queue(...)

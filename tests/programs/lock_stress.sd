@@ -2,8 +2,9 @@
 # release from another thread (the atomic fast path plus the sleeping slow path).
 import threading
 import time
+from seadash import Atomic
 
-def hammer(lock: threading.Lock, inside: threading.Atomic, violations: threading.Atomic, rounds: int):
+def hammer(lock: threading.Lock, inside: Atomic, violations: Atomic, rounds: int):
     for _ in range(rounds):
         with lock:
             if inside.add(1) != 1:
@@ -11,8 +12,8 @@ def hammer(lock: threading.Lock, inside: threading.Atomic, violations: threading
             inside.sub(1)
 
 lock = threading.Lock()
-inside = threading.Atomic(0)
-violations = threading.Atomic(0)
+inside = Atomic(0)
+violations = Atomic(0)
 ts = [threading.Thread(target=hammer, args=(lock, inside, violations, 50000)) for _ in range(16)]
 for t in ts:
     t.start()

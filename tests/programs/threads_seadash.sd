@@ -1,10 +1,11 @@
 # seadash's thread-safe sharing: Atomic, Mutex[T], and Synchronized classes
 import threading
+from seadash import Atomic, Mutex, Synchronized
 
-counter = threading.Atomic()
-tally = threading.Mutex({"even": 0, "odd": 0})
+counter = Atomic()
+tally = Mutex({"even": 0, "odd": 0})
 
-class Stats(threading.Synchronized):
+class Stats(Synchronized):
     count: int
     biggest: int
 

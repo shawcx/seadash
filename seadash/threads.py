@@ -4,7 +4,7 @@ proves they can't race on memory.
 The rule: a thread may only reach
   * values it received as copies (arguments to Thread(...), items from a Queue), and
   * thread-safe objects: Lock, RLock, Event, Queue[T], Mutex[T], RWMutex[T], Atomic, Thread,
-    and instances of threading.Synchronized classes (their methods hold a lock).
+    and instances of seadash.Synchronized classes (their methods hold a lock).
 
 Values are copied (all the way down: sd::value_copy) when they cross into a thread, so
 the only ways to *share* memory are class instances, closure-captured variables, and
@@ -152,7 +152,7 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
         case StructType() if is_synchronized(t) or deeply_immutable(t):
             return None  # (thread-safe, or can't change: shared, not copied)
         case StructType():
-            return (f"a {t.name} is a class instance, shared by reference (make it a threading.Synchronized class, "
+            return (f"a {t.name} is a class instance, shared by reference (make it a seadash.Synchronized class, "
                     f"or a frozen dataclass whose fields can't change either)")
         case FuncType():
             return "a function value (it could share variables it captured)"
@@ -593,7 +593,7 @@ class Spawn:
             if (loc := lost_change(node.body, var)) is not None:
                 raise self.fail(
                     f"{fn.name}() changes its copy of '{var.name}' but never uses it: a thread gets its own copy of "
-                    f"each argument, so the change never reaches the caller. Share the data with threading.Mutex, "
+                    f"each argument, so the change never reaches the caller. Share the data with seadash.Mutex, "
                     f"send results back through a queue.Queue, or return them (ThreadPoolExecutor)", _At(loc),
                 )
 
@@ -611,7 +611,7 @@ class Spawn:
                         and not deeply_immutable(obj_type)):
                     raise self.fail(
                         f"a thread can't run a method of a {obj_type.name}: the object would be shared by both "
-                        f"threads. Make {obj_type.name} a threading.Synchronized class", target,
+                        f"threads. Make {obj_type.name} a seadash.Synchronized class", target,
                     )
             return list(sym.node.body), []
         if isinstance(sym, Var) and isinstance(sym.type, FuncType):
@@ -675,13 +675,13 @@ class Spawn:
                     raise self.fail(
                         f"the thread's function uses '{var.name}' from the enclosing function, but {reason}. "
                         f"Pass it in args= instead, or use a thread-safe type "
-                        f"(queue.Queue, threading.Mutex, threading.Atomic)", n,
+                        f"(queue.Queue, seadash.Mutex, seadash.Atomic)", n,
                     )
                 if inside_assigned.get(id(var), 0) or lost_change(body, var) is not None:
                     raise self.fail(
                         f"the thread's function changes '{var.name}', but a thread works on its own copy of the "
                         f"variables it uses from the enclosing function (made when the thread is created), so the "
-                        f"change is lost. Share it with threading.Mutex, or send results back through a queue.Queue",
+                        f"change is lost. Share it with seadash.Mutex, or send results back through a queue.Queue",
                         n,
                     )
                 if recursive and (assigned.get(id(var), 0) > (0 if var.kind == "param" else 1) or id(var) in modified):
@@ -689,7 +689,7 @@ class Spawn:
                         f"the thread's function uses '{var.name}' from the enclosing function, but the enclosing "
                         f"function changes '{var.name}' (and a recursive nested def, or one defined more than once, "
                         f"shares it rather than getting a copy). Pass it in args= instead, or use a thread-safe "
-                        f"type (queue.Queue, threading.Mutex, threading.Atomic)", n,
+                        f"type (queue.Queue, seadash.Mutex, seadash.Atomic)", n,
                     )
         if not recursive and snapshot:  # (nothing captured: nothing to copy)
             closure.snapshot = snapshot
@@ -723,7 +723,7 @@ class Spawn:
         why = reason or (f"it's modified (line {loc.line})" if loc else "it's reassigned")
         raise self.fail(
             f"thread code uses the module-level '{var.name}' ({var.type}), but {why}. Threads can't share "
-            f"it safely: wrap it in a threading.Mutex, send data through a queue.Queue, or pass a copy in args=", use,
+            f"it safely: wrap it in a seadash.Mutex, send data through a queue.Queue, or pass a copy in args=", use,
         )
 
 

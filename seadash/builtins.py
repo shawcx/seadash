@@ -1874,9 +1874,17 @@ THREAD_ATTRIBUTES = {"name": STR, "daemon": BOOL}
 SYNCHRONIZED = StructType("Synchronized", "class", None, builtin=True, cpp_name="sd::threading::Synchronized")
 
 MODULES["threading"] = Module("threading", {
-    **{kind: SyncTypeDef(kind) for kind in ("Thread", "Lock", "RLock", "Event", "Atomic", "Mutex", "RWMutex")},
-    "Synchronized": SYNCHRONIZED,
+    **{kind: SyncTypeDef(kind) for kind in ("Thread", "Lock", "RLock", "Event")},
 }, "modules/threading.hpp", ("pthread",))
+# seadash's own thread-safe types aren't in Python's threading module: they're imported from seadash.
+SEADASH_THREAD_TYPES = ("Mutex", "RWMutex", "Atomic", "Synchronized")
+
+
+def missing_member(mod: Module, member: str) -> str:
+    """The error for `module.member` that doesn't exist (with a hint where one helps)."""
+    if mod.name == "threading" and member in SEADASH_THREAD_TYPES:
+        return f"{member} is seadash's own, not Python's: `from seadash import {member}`"
+    return f"module '{mod.name}' has no member '{member}'"
 
 @dataclass
 class CollectionTypeDef:
@@ -4355,7 +4363,9 @@ MODULES["dataclasses"] = Module("dataclasses", {
 # seadash's own: `@value class Point:` makes a value type (copied on assignment, like an int).
 MODULES["seadash"] = Module("seadash", {
     "value": DecoratorName("value"),
-})
+    **{kind: SyncTypeDef(kind) for kind in ("Atomic", "Mutex", "RWMutex")},  # thread-safe sharing
+    "Synchronized": SYNCHRONIZED,
+})  # (no header of its own: its thread types need threading's, but @value needs nothing)
 MODULES["functools"] = Module("functools", {
     "cache": DecoratorName("cache"),
     "lru_cache": DecoratorName("lru_cache"),

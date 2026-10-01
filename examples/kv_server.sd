@@ -8,17 +8,18 @@
 # Commands (one per line): SET key value, GET key, DEL key, INCR key, KEYS, STATS, QUIT.
 #
 # The threads run in parallel (there's no GIL), so what they share must be thread-safe,
-# and the compiler checks that it is. `Store` is a threading.Synchronized class: each
+# and the compiler checks that it is. `Store` is a Synchronized class (from seadash): each
 # method call holds the object's lock, so `incr` is atomic without any locking here.
 import argparse
 import logging
 import socket
 import threading
+from seadash import Atomic, Synchronized
 
 log = logging.getLogger("kv")
 
 
-class Store(threading.Synchronized):
+class Store(Synchronized):
     items: dict[str, str]
 
     def set(self, key: str, value: str):
@@ -42,8 +43,8 @@ class Store(threading.Synchronized):
         return sorted(self.items)
 
 
-connections = threading.Atomic()  # open right now
-commands = threading.Atomic()     # handled since the server started
+connections = Atomic()  # open right now
+commands = Atomic()     # handled since the server started
 
 
 def respond(store: Store, raw: bytes) -> str | None:

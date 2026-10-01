@@ -23,7 +23,9 @@ The name is final (a nod to the author's two kids).
 - **Closures share captured variables** like Python (cells).
 - **Threads without a GIL**, made safe by the checker (`threads.py`): threads receive copies
   or thread-safe objects (Lock, Queue, Mutex[T], RWMutex[T], Atomic, Synchronized classes); unsafe
-  sharing is a compile error with a suggested fix.
+  sharing is a compile error with a suggested fix. What isn't Python's comes from the `seadash`
+  module (`from seadash import value, Mutex`), never from a standard-library one, and
+  `seadash/__init__.py` has Python versions of it so such programs also run under python3.
 - **Typed JSON**: `json.loads` decodes into the expected type; `json.Value` for any JSON.
 - **Literal arguments decide types** where Python's result depends on them: `open(p, "rb")`,
   `subprocess.run(..., text=True)`, `permutations(xs, 2)`, `add_argument(type=int)`.

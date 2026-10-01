@@ -7,7 +7,7 @@ import pytest
 from seadash.driver import translate
 from seadash.errors import CompileError
 
-PRELUDE = "import threading\nimport queue\n"
+PRELUDE = "import threading\nimport queue\nfrom seadash import Atomic, Mutex, RWMutex, Synchronized\n"
 
 
 def compile_ok(src: str) -> None:
@@ -44,8 +44,8 @@ SAFE = {
     """,
     "thread-safe globals": """
         q: queue.Queue[int] = queue.Queue()
-        counter = threading.Atomic()
-        box = threading.Mutex([0])
+        counter = Atomic()
+        box = Mutex([0])
         lock = threading.Lock()
         def work():
             q.put(1)
@@ -57,7 +57,7 @@ SAFE = {
         threading.Thread(target=work).start()
     """,
     "synchronized class in args": """
-        class Account(threading.Synchronized):
+        class Account(Synchronized):
             balance: int
             def deposit(self, n: int):
                 self.balance += n
@@ -90,7 +90,7 @@ SAFE = {
         threading.Thread(target=work).start()
     """,
     "bound method of a synchronized object": """
-        class Log(threading.Synchronized):
+        class Log(Synchronized):
             lines: list[str]
             def write(self, s: str):
                 self.lines.append(s)
@@ -159,7 +159,7 @@ SAFE = {
         threading.Thread(target=work).start()
     """,
     "mutex view used in place": """
-        box = threading.Mutex([[0]])
+        box = Mutex([[0]])
         def work():
             with box as rows:
                 rows[0].append(1)
@@ -183,7 +183,7 @@ UNSAFE = [
         def work(n: int):
             results.append(n)
         threading.Thread(target=work, args=(1,)).start()
-     """, "thread code uses the module-level 'results' (list[int]), but it's modified (line 6)"),
+     """, "thread code uses the module-level 'results' (list[int]), but it's modified (line 7)"),
     ("""
         seen: dict[str, int] = {}
         def record(k: str):
@@ -191,14 +191,14 @@ UNSAFE = [
         def work():
             record("x")
         threading.Thread(target=work).start()
-     """, "thread code uses the module-level 'seen' (dict[str, int]), but it's modified (line 6)"),
+     """, "thread code uses the module-level 'seen' (dict[str, int]), but it's modified (line 7)"),
     ("""
         class Node:
             value: int
         def work(n: Node):
             n.value += 1
         threading.Thread(target=work, args=(Node(1),)).start()
-     """, "can't pass this to a thread: a Node is a class instance, shared by reference (make it a threading.Synchronized class, "
+     """, "can't pass this to a thread: a Node is a class instance, shared by reference (make it a seadash.Synchronized class, "
                 "or a frozen dataclass whose fields can't change either)"),
     ("""
         def work():
@@ -220,7 +220,7 @@ UNSAFE = [
         q: queue.Queue[Node] = queue.Queue()
      """, "a Queue can only hold values that can be copied between threads: a Node is a class instance"),
     ("""
-        class Account(threading.Synchronized):
+        class Account(Synchronized):
             balance: int
         a = Account(0)
         print(a.balance)
@@ -231,7 +231,7 @@ UNSAFE = [
             print(total[0])
         threading.Thread(target=work).start()
         total[0] = 5
-     """, "thread code uses the module-level 'total' (list[int]), but it's modified (line 8)"),
+     """, "thread code uses the module-level 'total' (list[int]), but it's modified (line 9)"),
     ("""
         def work(n: int):
             pass
@@ -383,7 +383,7 @@ def test_executor_work_is_checked_like_threads():
 ])
 def test_mutex_view_cant_escape(body, msg):
     e = compile_error(f"""
-        box = threading.Mutex([[0]])
+        box = Mutex([[0]])
         def helper(xs: list[list[int]]) -> int:
             return len(xs)
         with box as rows:
@@ -409,21 +409,21 @@ def test_last_use_moves_instead_of_copying(body, moved):
 
 
 @pytest.mark.parametrize("body,msg", [
-    ("data = [1]\n    shared = threading.Mutex(data)\n    data.append(2)",
-     "'data' was moved into a Mutex (line 5), which owns it now: use it through the Mutex (`with shared as data:`), "
+    ("data = [1]\n    shared = Mutex(data)\n    data.append(2)",
+     "'data' was moved into a Mutex (line 6), which owns it now: use it through the Mutex (`with shared as data:`), "
      "or give 'data' a new value first"),
-    ("shared = threading.Mutex([0])\n    data = [1]\n    shared.set(data)\n    print(data)", "'data' was moved into a Mutex"),
-    ("data = [1]\n    for i in range(2):\n        shared = threading.Mutex(data)", "'data' was moved into a Mutex"),
-    ("data = [1]\n    if len(data) > 0:\n        shared = threading.Mutex(data)\n    print(data)", "'data' was moved into a Mutex"),
-    ("config = threading.RWMutex({'a': 1})\n    with config.read() as c:\n        c['a'] = 2",
+    ("shared = Mutex([0])\n    data = [1]\n    shared.set(data)\n    print(data)", "'data' was moved into a Mutex"),
+    ("data = [1]\n    for i in range(2):\n        shared = Mutex(data)", "'data' was moved into a Mutex"),
+    ("data = [1]\n    if len(data) > 0:\n        shared = Mutex(data)\n    print(data)", "'data' was moved into a Mutex"),
+    ("config = RWMutex({'a': 1})\n    with config.read() as c:\n        c['a'] = 2",
      "config.read() gives read-only access (other threads may be reading too), but this changes 'c'. "
      "Use `with config.write() as c:` to change it"),
-    ("config = threading.RWMutex([[1]])\n    with config.read() as c:\n        for row in c:\n            row.append(2)",
+    ("config = RWMutex([[1]])\n    with config.read() as c:\n        for row in c:\n            row.append(2)",
      "config.read() gives read-only access"),
-    ("config = threading.RWMutex([1])\n    with config as c:\n        pass", "say which: `with config.read() as data:`"),
-    ("config = threading.RWMutex([1])\n    view = config.read()",
+    ("config = RWMutex([1])\n    with config as c:\n        pass", "say which: `with config.read() as data:`"),
+    ("config = RWMutex([1])\n    view = config.read()",
      "read() gives a view of the data that's only valid while locked: use it in a with statement"),
-    ("config = threading.RWMutex([1])\n    keep: list[int] = []\n    with config.write() as c:\n        keep = c",
+    ("config = RWMutex([1])\n    keep: list[int] = []\n    with config.write() as c:\n        keep = c",
      "'c' is only valid while the mutex is held"),
 ])
 def test_mutex_ownership_and_rwmutex_errors(body, msg):
@@ -435,10 +435,10 @@ def test_mutex_ownership_allows_new_values():
     compile_ok("""
         def f():
             data = [1]
-            shared = threading.Mutex(data)
+            shared = Mutex(data)
             data = [5]
             data.append(6)
-            config = threading.RWMutex({"a": [1]})
+            config = RWMutex({"a": [1]})
             with config.read() as c:
                 print(len(c["a"]), sorted(c))
             with config.write() as c:
@@ -479,3 +479,51 @@ def test_loops_refer_to_items_when_nothing_can_tell(body, by_reference):
     src = LOOP_HEADER + "def f(ps: list[P]):\n    " + body + "\n"
     cpp = translate(src).cpp
     assert ("auto& p = " in cpp or "auto& n = " in cpp) == by_reference
+
+
+@pytest.mark.parametrize("src,name", [
+    ("m = threading.Mutex([1])", "Mutex"),
+    ("c = threading.Atomic()", "Atomic"),
+    ("m = threading.RWMutex({'a': 1})", "RWMutex"),
+    ("m = threading.Mutex[list[int]]([])", "Mutex"),
+    ("def f(m: threading.Mutex[list[int]]):\n    pass", "Mutex"),
+    ("class S(threading.Synchronized):\n    n: int", "Synchronized"),
+    ("from threading import Mutex", "Mutex"),
+])
+def test_seadash_types_are_not_in_threading(src, name):
+    e = compile_error(src + "\n")
+    assert e.message == f"{name} is seadash's own, not Python's: `from seadash import {name}`"
+
+
+def test_seadash_types_by_module_name():
+    compile_ok("""
+        import seadash
+        m = seadash.Mutex([1])
+        class S(seadash.Synchronized):
+            n: int
+        def f(x: seadash.Mutex[list[int]], y: seadash.RWMutex[dict[str, int]], z: seadash.Atomic):
+            with x as xs:
+                xs.append(1)
+        f(m, seadash.RWMutex({"a": 1}), seadash.Atomic())
+        print(S(1))
+    """)
+
+
+def test_only_the_thread_types_need_threadings_header():
+    assert "threading.hpp" not in translate("from seadash import value\n").cpp
+    assert "threading.hpp" in translate("from seadash import Atomic\nc = Atomic()\n").cpp
+    assert "pthread" in translate("import seadash\nc = seadash.Atomic()\n").libs
+
+
+@pytest.mark.parametrize("name", ["threads_seadash", "threads_rwmutex"])
+def test_seadash_thread_types_also_run_under_python(name, tmp_path):
+    # seadash/__init__.py has Python versions of them, so these programs give the same output under python3.
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).parent.parent
+    program = root / "tests" / "programs" / f"{name}.sd"
+    result = subprocess.run([sys.executable, str(program)], capture_output=True, text=True, timeout=60, cwd=tmp_path,
+                            env={**os.environ, "PYTHONPATH": str(root)})
+    assert result.stdout == program.with_suffix(".out").read_text()
