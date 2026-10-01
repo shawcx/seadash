@@ -19,8 +19,10 @@
 namespace sd::pathlib {
 
 // Whether a name matches a glob pattern, by Python's rules: defined in fnmatch.hpp (on
-// PCRE2), which programs calling glob(), rglob() or match() include and link.
-inline bool name_matches(const std::string& name, const std::string& pattern);
+// PCRE2), which programs calling glob(), rglob() or match() include and link. (A template,
+// so a program that includes this without fnmatch.hpp is fine while it doesn't call them.)
+template <class S>
+bool name_matches(const S& name, const S& pattern);
 
 class Path;
 
