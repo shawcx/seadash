@@ -1,0 +1,198 @@
+# copy.copy and copy.deepcopy: what a shallow copy shares and a deep copy doesn't.
+import copy
+from collections import Counter, defaultdict, deque
+from dataclasses import dataclass
+
+
+# ---- containers ----
+
+grid = [[1, 2], [3, 4]]
+shallow = copy.copy(grid)
+deep = copy.deepcopy(grid)
+grid[0].append(99)
+grid.append([5])
+print(grid)
+print(shallow)  # the same rows: sees 99, not the new row
+print(deep)  # rows of its own
+print(shallow is grid, shallow[0] is grid[0], deep[0] is grid[0])
+
+# A list that appears twice stays one list in the deep copy, as with the memo.
+row = [0]
+twice = [row, row]
+d2 = copy.deepcopy(twice)
+d2[0].append(1)
+print(twice, d2, d2[0] is d2[1])
+
+table = {"a": [1], "b": [2]}
+t1 = copy.copy(table)
+t2 = copy.deepcopy(table)
+table["a"].append(10)
+table["c"] = [3]
+print(table, t1, t2)
+
+tags = {"x", "y"}
+tags2 = copy.copy(tags)
+tags2.add("z")
+print(sorted(tags), sorted(tags2))
+
+pairs = ([1], [2])
+p1 = copy.copy(pairs)
+p2 = copy.deepcopy(pairs)
+pairs[0].append(3)
+print(pairs, p1, p2)
+
+maybe: list[int] | None = [7]
+m1 = copy.deepcopy(maybe)
+if maybe is not None:
+    maybe.append(8)
+print(maybe, m1)
+
+q = deque([[1], [2]], maxlen=3)
+q1 = copy.copy(q)
+q2 = copy.deepcopy(q)
+q[0].append(5)
+q.append([9])
+print(q, q1, q2)
+
+counts = Counter("abracadabra")
+c2 = copy.copy(counts)
+c2["z"] += 1
+print(counts.most_common(2), c2["z"], counts["z"])
+
+groups: defaultdict[str, list[int]] = defaultdict(list)
+groups["odd"].append(1)
+g2 = copy.deepcopy(groups)
+g2["odd"].append(3)
+g2["even"].append(2)
+print(dict(groups), dict(g2))
+
+n = copy.copy(42)
+s = copy.deepcopy("text")
+print(n, s, copy.copy((1, "a")), copy.deepcopy(2.5))
+
+
+# ---- classes ----
+
+class Node:
+    name: str
+    children: list["Node"]
+    parent: "Node | None"
+
+    def __init__(self, name: str):
+        self.name = name
+        self.children = []
+        self.parent = None
+
+    def add(self, child: "Node") -> None:
+        child.parent = self
+        self.children.append(child)
+
+
+root = Node("root")
+root.add(Node("a"))
+root.add(Node("b"))
+
+c = copy.copy(root)
+print(c is root, c.name, c.children is root.children)  # a new object sharing its list
+c.name = "renamed"
+print(root.name, c.name)
+
+d = copy.deepcopy(root)
+print(d is root, d.children is root.children, d.children[0] is root.children[0])
+# The cycle (child.parent is the root) comes out as the same cycle in the copy.
+for child in d.children:
+    up = child.parent
+    print(up is not None and up is d, up is not None and up is root)
+d.children[0].name = "changed"
+root.add(Node("c"))
+print([n.name for n in root.children], [n.name for n in d.children])
+
+loop = Node("self")
+loop.parent = loop
+loop2 = copy.deepcopy(loop)
+up = loop2.parent
+print(up is not None and up is loop2, loop2 is loop)
+
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+
+@dataclass
+class Shape:
+    name: str
+    points: list[Point]
+
+
+@dataclass
+class Circle(Shape):
+    radius: float
+
+
+tri = Shape("tri", [Point(0, 0), Point(1, 0), Point(0, 1)])
+tri1 = copy.copy(tri)
+tri2 = copy.deepcopy(tri)
+tri.points[0].x = 5
+tri.points.append(Point(2, 2))
+print(tri1)
+print(tri2)
+
+shapes: list[Shape] = [Circle("c", [Point(0, 0)], 1.5), tri]
+shapes2 = copy.deepcopy(shapes)
+print(shapes2[0], shapes2[0] is shapes[0])
+one: Shape = shapes[0]
+copied = copy.copy(one)  # still a Circle
+print(copied, isinstance(copied, Circle))
+
+
+@dataclass(frozen=True)
+class Version:
+    major: int
+    minor: int
+
+
+v = Version(1, 2)
+v2 = copy.copy(v)
+print(v2, v2 == v, v2 is v, copy.replace(v, minor=3))
+
+
+# Objects that appear twice in a deep copy stay shared with each other.
+shared = Point(1, 1)
+both = [shared, shared]
+both2 = copy.deepcopy(both)
+both2[0].x = 9
+print(both2, both2[0] is both2[1], shared)
+keyed = {"p": shared, "q": shared}
+keyed2 = copy.deepcopy(keyed)
+print(keyed2["p"] is keyed2["q"], keyed2["p"] is shared)
+
+
+# A class can say how it's copied.
+class Account:
+    owner: str
+    history: list[int]
+
+    def __init__(self, owner: str, history: list[int]):
+        self.owner = owner
+        self.history = history
+
+    def __copy__(self) -> "Account":
+        return Account(self.owner + " (copy)", list(self.history))
+
+
+acct = Account("ann", [10, 20])
+acct2 = copy.copy(acct)
+acct2.history.append(30)
+acct3 = copy.deepcopy(acct)  # (deepcopy doesn't call __copy__)
+print(acct2.owner, acct.history, acct2.history, acct3.owner)
+
+
+# Functions are shared, as in Python.
+def double(x: int) -> int:
+    return x * 2
+
+
+f = copy.deepcopy(double)
+print(f(21))

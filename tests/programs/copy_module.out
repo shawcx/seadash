@@ -1,0 +1,29 @@
+[[1, 2, 99], [3, 4], [5]]
+[[1, 2, 99], [3, 4]]
+[[1, 2], [3, 4]]
+False True False
+[[0], [0]] [[0, 1], [0, 1]] True
+{'a': [1, 10], 'b': [2], 'c': [3]} {'a': [1, 10], 'b': [2]} {'a': [1], 'b': [2]}
+['x', 'y'] ['x', 'y', 'z']
+([1, 3], [2]) ([1, 3], [2]) ([1], [2])
+[7, 8] [7]
+deque([[1, 5], [2], [9]], maxlen=3) deque([[1, 5], [2]], maxlen=3) deque([[1], [2]], maxlen=3)
+[('a', 5), ('b', 2)] 1 0
+{'odd': [1]} {'odd': [1, 3], 'even': [2]}
+42 text (1, 'a') 2.5
+False root True
+root renamed
+False False False
+True False
+True False
+['a', 'b', 'c'] ['changed', 'b']
+True False
+Shape(name='tri', points=[Point(x=5, y=0), Point(x=1, y=0), Point(x=0, y=1), Point(x=2, y=2)])
+Shape(name='tri', points=[Point(x=0, y=0), Point(x=1, y=0), Point(x=0, y=1)])
+Circle(name='c', points=[Point(x=0, y=0)], radius=1.5) False
+Circle(name='c', points=[Point(x=0, y=0)], radius=1.5) True
+Version(major=1, minor=2) True False Version(major=1, minor=3)
+[Point(x=9, y=1), Point(x=9, y=1)] True Point(x=1, y=1)
+True False
+ann (copy) [10, 20] [10, 20, 30] ann
+42

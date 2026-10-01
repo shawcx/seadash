@@ -2266,3 +2266,49 @@ def test_heapq_bisect_types():
     info = ok(HEAPQ_BISECT + "h = [(2, 'b'), (1, 'a')]\nheapq.heapify(h)\na = heapq.heappop(h)\nb = heapq.nlargest(1, [1.5])\n"
               "c = heapq.merge([1], [2], key=lambda x: -x)\nd = bisect([P(1)], 1, key=lambda p: p.n)\n")
     assert {"a: tuple[int, str]", "b: list[float]", "c: Iterator[int]", "d: int"} <= set(variables(info))
+
+
+COPY = "import copy\nimport threading\nfrom seadash import Synchronized\n"
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("copy.copy(threading.Lock())\n",
+     "copy.copy() can't copy a Lock (Python raises TypeError: cannot pickle it); make a new one, or share this one"),
+    ("copy.deepcopy([threading.RLock()])\n",
+     "copy.deepcopy() can't copy list[RLock]: it holds a RLock, which can't be copied (Python raises TypeError: "
+     "cannot pickle it); make a new one, or share this one"),
+    ("copy.copy(open('x'))\n",
+     "copy.copy() can't copy a file (Python raises TypeError: cannot pickle it); open it again, or share this one"),
+    ("class C:\n    n: int\n    lock: threading.Lock\nc = copy.deepcopy(C(1, threading.Lock()))\n",
+     "copy.deepcopy() can't copy C: C.lock holds a Lock, which can't be copied (Python raises TypeError: cannot "
+     "pickle it); make a new one, or share this one"),
+    ("class B:\n    x: int\nclass D(B):\n    lock: threading.Lock\nbs = copy.deepcopy([B(1)])\n",
+     "copy.deepcopy() can't copy list[B]: subclass D.lock holds a Lock, which can't be copied (Python raises "
+     "TypeError: cannot pickle it); make a new one, or share this one"),
+    ("class S(Synchronized):\n    n: int\ns = copy.copy(S(1))\n",
+     "copy.copy() can't copy S: a Synchronized object's lock can't be copied; make a new one from its fields"),
+    ("q: dict[str, threading.Event] = {}\nd = copy.deepcopy(q)\n",
+     "copy.deepcopy() can't copy dict[str, Event]: it holds an Event, which can't be copied; share this one, or "
+     "make a new one"),
+    ("class C:\n    x: int\n    def __deepcopy__(self, memo: dict[int, int]) -> 'C':\n        return C(self.x)\n"
+     "d = copy.deepcopy(C(1))\n",
+     "copy.deepcopy() can't copy C, which defines __deepcopy__ (seadash doesn't call __deepcopy__ yet: it has no "
+     "type for the memo); remove __deepcopy__ to copy every field, or copy it yourself"),
+    ("class C:\n    x: int\n    def __copy__(self) -> int:\n        return 1\nd = copy.copy(C(1))\n",
+     "C.__copy__ must take only self and return a C (def __copy__(self) -> C:), for copy.copy()"),
+    ("d = copy.deepcopy([1], {})\n", "deepcopy()'s memo argument isn't supported yet: call deepcopy(x)"),
+    ("d = copy.copy(ValueError('x'))\n", "copy.copy() can't copy ValueError: copying an exception isn't supported yet"),
+])
+def test_copy_errors(src, msg):
+    assert err(COPY + src).message == msg
+
+
+def test_copy_types():
+    info = ok(COPY + "class C:\n    lock: threading.Lock\n"
+              "class B:\n    x: int\n    def __copy__(self) -> 'B':\n        return B(self.x)\nclass D(B):\n    y: int = 0\n"
+              "a = copy.copy(C(threading.Lock()))\n"  # (a shallow copy shares the lock, as in Python)
+              "b = copy.copy(D(1))\n"  # (D's __copy__ is B's, which makes a B)
+              "c = copy.deepcopy({'k': [(1, 'x')]})\n"
+              "e: D | None = None\n"
+              "d = copy.copy(e)\n")
+    assert {"a: C", "b: B", "c: dict[str, list[tuple[int, str]]]", "d: B?"} <= set(variables(info))
