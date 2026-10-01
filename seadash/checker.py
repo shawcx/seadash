@@ -2495,7 +2495,7 @@ class Checker:
             self.check_condition(operand)
             return BOOL
         t = self.check_expr(operand)
-        if op in ("-", "+") and (is_numeric(t) or t == TIMEDELTA):
+        if op in ("-", "+") and (is_numeric(t) or t in (TIMEDELTA, builtins.NORMAL_DIST)):
             return t
         if op == "~" and t == INT:
             return INT
@@ -2524,6 +2524,10 @@ class Checker:
         if l in DATETIME_TYPES or r in DATETIME_TYPES:
             if (result := datetime_arithmetic(op, l, r)) is not None:
                 return result
+            raise self.error(f"unsupported operand types for {op}: {l} and {r}", e)
+        if builtins.NORMAL_DIST in (l, r):
+            if normal_dist_arithmetic(op, l, r):
+                return builtins.NORMAL_DIST
             raise self.error(f"unsupported operand types for {op}: {l} and {r}", e)
         match op:
             case "+":
@@ -4004,6 +4008,16 @@ def datetime_arithmetic(op: str, l: Type, r: Type) -> Type | None:
         case "//", _, _ if l == TIMEDELTA:
             return INT if r == TIMEDELTA else TIMEDELTA if r == INT else None
     return None
+
+
+def normal_dist_arithmetic(op: str, l: Type, r: Type) -> bool:
+    """statistics.NormalDist's operators: +/- another NormalDist or a number, * and / by a number."""
+    nd = builtins.NORMAL_DIST
+    if op in ("+", "-"):
+        return (l == nd and (r == nd or is_numeric(r))) or (r == nd and is_numeric(l))
+    if op == "*":
+        return (l == nd and is_numeric(r)) or (r == nd and is_numeric(l))
+    return op == "/" and l == nd and is_numeric(r)
 
 
 def has_yield(body: list[A.Stmt]) -> bool:

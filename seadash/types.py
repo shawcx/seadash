@@ -89,6 +89,8 @@ HTTP_HEADERS = BuiltinClass("http.client.HTTPMessage", "sd::httpclient::HTTPMess
 URL_REQUEST = BuiltinClass("urllib.request.Request", "sd::urlrequest::Request", COPIED)
 URL_PARTS = BuiltinClass("urllib.parse.ParseResult", "sd::urlparse::Parts", VALUE)
 TEMPDIR = BuiltinClass("TemporaryDirectory", "sd::tempfile::TemporaryDirectory")  # removed when done
+NORMAL_DIST = BuiltinClass("NormalDist", "sd::statistics::NormalDist", IMMUTABLE)  # statistics
+LINEAR_REGRESSION = BuiltinClass("LinearRegression", "sd::statistics::LinearRegression", IMMUTABLE)
 
 DATE = BuiltinClass("date", "sd::datetime::date", IMMUTABLE)  # the datetime module's value types
 TIME = BuiltinClass("time", "sd::datetime::time", IMMUTABLE)

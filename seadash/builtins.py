@@ -21,7 +21,7 @@ from .types import (
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
     GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T,
     BuiltinClass, ZLIB_COMPRESS, ZLIB_DECOMPRESS, BZ2_COMPRESSOR, BZ2_DECOMPRESSOR, LZMA_COMPRESSOR, LZMA_DECOMPRESSOR,
-    SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
+    SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType, NORMAL_DIST, LINEAR_REGRESSION,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     DictType, Field, FileType, Prim, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
     ClassAttr, ClassRefType, CmpKeyType, FuncInfo, HTTPServerType, Param, Var,
@@ -1736,6 +1736,105 @@ MODULES["random"] = module_with_params(runtime_module(
 MODULES["random"].members["shuffle"].mutates_first_arg = True
 
 
+# ---- statistics ---------------------------------------------------------------------
+#
+# Numeric results are floats, whatever the data: Python's mean([1, 2, 3]) is the int 2,
+# because it computes with fractions and converts back to the data's type when it can,
+# but a static type can't depend on the values. median_low, median_high, mode and
+# multimode return the data's own items (so they work on strings too).
+
+NUMBERS = object()  # an iterable of ints or floats (passed to C++ as it is)
+ORDERED_ITEMS = object()  # an iterable of anything ordered
+HASHABLE_ITEMS = object()  # an iterable of anything hashable
+NUMBERS_OR_NONE = object()  # weights=: an iterable of numbers, or None
+ITEM_KINDS = {NUMBERS: "numbers (ints or floats)", NUMBERS_OR_NONE: "numbers (ints or floats)",
+              ORDERED_ITEMS: "items that can be compared", HASHABLE_ITEMS: "hashable items"}
+
+
+def stats_fn(result, *params, positional: int | None = None, positional_only: int = 0):
+    """A statistics function. A param is (name, type or one of the item kinds above[, C++
+    default]); `positional` is how many may be given positionally (the rest are keyword-only),
+    and the first `positional_only` can't be given by keyword. `result` is a Type or a
+    function of the first argument's item type."""
+
+    def handler(ctx: CallContext) -> Type:
+        most = len(params) if positional is None else positional
+        if len(ctx.args) > most:
+            takes = f"{most} positional argument{'s' if most != 1 else ''}"
+            raise ctx.error(f"{ctx.what} takes {takes} but {len(ctx.args)} were given")
+        only = [p[0] for p in params[:positional_only]]
+        if bad := [kw.name for kw in ctx.call.keywords if kw.name in only]:
+            raise ctx.error(f"{ctx.what} got some positional-only arguments passed as keyword arguments: "
+                            f"'{', '.join(bad)}'")
+        args = bind_args(ctx, params)
+        first = None
+        for name, kind, *_ in params:
+            node = args.get(name)
+            if node is None:
+                continue
+            if kind is NUMBERS_OR_NONE and isinstance(node, A.NoneLit):
+                ctx.checker.check_expr(node)
+                continue
+            if kind in ITEM_KINDS:
+                empty = isinstance(node, A.ListLit) and not node.elts and kind in (NUMBERS, NUMBERS_OR_NONE)
+                t = ctx.checker.check_expr(node, ListType(FLOAT) if empty else None)  # (mean([]) is an error at run time)
+                elem = element_type(t)
+                if elem is None:
+                    raise ctx.error(f"{ctx.what} argument '{name}' must be something you can loop over, not {t}"
+                                    f"{mixed_tuple_hint(t)}", node)
+                mark_tuple_iterable(node, t, elem)
+                ok = {ORDERED_ITEMS: ordered, HASHABLE_ITEMS: is_hashable}.get(kind, is_numeric)(elem)
+                if not ok:
+                    raise ctx.error(f"{ctx.what} argument '{name}' needs {ITEM_KINDS[kind]}, not {t}", node)
+                first = elem if first is None else first
+                continue
+            actual = ctx.checker.check_expr(node, kind)
+            if not assignable(actual, kind):
+                raise ctx.error(f"{ctx.what} argument '{name}' must be {kind}, not {actual}", node)
+        return result(first) if callable(result) else result
+
+    handler.params = params
+    return handler
+
+
+def stats_spread(name: str, center: str):
+    """variance(data, xbar=None) and the like."""
+    return stats_fn(FLOAT, ("data", NUMBERS), (center, OptionalType(FLOAT), "std::nullopt")), f"sd::statistics::{name}"
+
+
+MODULES["statistics"] = module_with_params(runtime_module(
+    "statistics", "modules/statistics.hpp",
+    mean=(stats_fn(FLOAT, ("data", NUMBERS)), "sd::statistics::mean"),
+    fmean=(stats_fn(FLOAT, ("data", NUMBERS), ("weights", NUMBERS_OR_NONE, "std::nullopt")), "sd::statistics::fmean"),
+    geometric_mean=(stats_fn(FLOAT, ("data", NUMBERS)), "sd::statistics::geometric_mean"),
+    harmonic_mean=(stats_fn(FLOAT, ("data", NUMBERS), ("weights", NUMBERS_OR_NONE, "std::nullopt")),
+                   "sd::statistics::harmonic_mean"),
+    median=(stats_fn(FLOAT, ("data", NUMBERS)), "sd::statistics::median"),
+    median_low=(stats_fn(lambda elem: elem, ("data", ORDERED_ITEMS)), "sd::statistics::median_low"),
+    median_high=(stats_fn(lambda elem: elem, ("data", ORDERED_ITEMS)), "sd::statistics::median_high"),
+    median_grouped=(stats_fn(FLOAT, ("data", NUMBERS), ("interval", FLOAT, "1.0")), "sd::statistics::median_grouped"),
+    mode=(stats_fn(lambda elem: elem, ("data", HASHABLE_ITEMS)), "sd::statistics::mode"),
+    multimode=(stats_fn(ListType, ("data", HASHABLE_ITEMS)), "sd::statistics::multimode"),
+    quantiles=(stats_fn(ListType(FLOAT), ("data", NUMBERS), ("n", INT, "4"), ("method", STR, '"exclusive"s'),
+                        positional=1), "sd::statistics::quantiles"),
+    variance=stats_spread("variance", "xbar"),
+    stdev=stats_spread("stdev", "xbar"),
+    pvariance=stats_spread("pvariance", "mu"),
+    pstdev=stats_spread("pstdev", "mu"),
+    covariance=(stats_fn(FLOAT, ("x", NUMBERS), ("y", NUMBERS), positional_only=2), "sd::statistics::covariance"),
+    correlation=(stats_fn(FLOAT, ("x", NUMBERS), ("y", NUMBERS), ("method", STR, '"linear"s'), positional=2,
+                          positional_only=2), "sd::statistics::correlation"),
+    linear_regression=(stats_fn(LINEAR_REGRESSION, ("x", NUMBERS), ("y", NUMBERS), ("proportional", BOOL, "false"),
+                                positional=2, positional_only=2), "sd::statistics::linear_regression"),
+    NormalDist=(signature(NORMAL_DIST, ("mu", FLOAT, "0.0"), ("sigma", FLOAT, "1.0")), "sd::statistics::NormalDist::make"),
+    StatisticsError=exception_class("StatisticsError", "sd::statistics::StatisticsError", "ValueError"),
+))
+MODULES["statistics"].members["NormalDist"].as_type = NORMAL_DIST
+MODULES["statistics"].members["LinearRegression"] = NamedType("LinearRegression", LINEAR_REGRESSION)  # (annotations)
+LINEAR_REGRESSION.attributes.update({"slope": lambda t: FLOAT, "intercept": lambda t: FLOAT})
+NORMAL_DIST.attributes.update({name: (lambda t: FLOAT) for name in ("mean", "median", "mode", "stdev", "variance")})
+
+
 # ---- threading and queue ----------------------------------------------------------
 
 
@@ -2365,7 +2464,18 @@ CLASS_MEMBERS: dict[Type, dict[str, Function | Value]] = {
                                   ("date", DATE), ("time", TIME), ("tzinfo", OPT_TZ, "std::nullopt")),
     },
     TIMEZONE: {"utc": Value("utc", TIMEZONE, DT + "timezone::utc()")},
+    NORMAL_DIST: {"from_samples": Function("NormalDist.from_samples", stats_fn(NORMAL_DIST, ("data", NUMBERS)),
+                                           "sd::statistics::NormalDist::from_samples", (("data", NUMBERS),))},
 }
+NORMAL_DIST.methods.update({
+    "pdf": sync_method(FLOAT, ("x", FLOAT)),
+    "cdf": sync_method(FLOAT, ("x", FLOAT)),
+    "inv_cdf": sync_method(FLOAT, ("p", FLOAT)),
+    "zscore": sync_method(FLOAT, ("x", FLOAT)),
+    "quantiles": sync_method(ListType(FLOAT), ("n", INT, "4")),
+    "overlap": sync_method(FLOAT, ("other", NORMAL_DIST)),
+    "samples": sync_method(ListType(FLOAT), ("n", INT), ("seed", OptionalType(INT), "std::nullopt")),
+})
 
 
 # ---- argparse ---------------------------------------------------------------------------

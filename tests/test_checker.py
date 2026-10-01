@@ -1211,6 +1211,49 @@ def test_random_errors(src, msg):
     assert err(f"import random\n{src}\n").message == msg
 
 
+# ---- statistics -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("expr,ty", [
+    ("statistics.mean([1, 2, 3])", "float"),  # (Python: the int 2, as the mean of ints happens to be whole)
+    ("statistics.median((1, 3, 2))", "float"),
+    ("statistics.variance(range(5), xbar=2)", "float"),
+    ("statistics.median_low([1, 3, 2])", "int"),
+    ("statistics.median_high(['a', 'b'])", "str"),
+    ("statistics.mode('abca')", "str"),
+    ("statistics.multimode([1.5, 2.5])", "list[float]"),
+    ("statistics.quantiles([1, 2, 3], n=10)", "list[float]"),
+    ("statistics.linear_regression([1, 2], [3, 4])", "LinearRegression"),
+    ("statistics.linear_regression([1, 2], [3, 4]).slope", "float"),
+    ("statistics.NormalDist(1, 2) * 3 - statistics.NormalDist()", "NormalDist"),
+    ("statistics.NormalDist.from_samples([1, 2]).samples(3, seed=1)", "list[float]"),
+    ("-statistics.NormalDist().stdev", "float"),
+])
+def test_statistics_types(expr, ty):
+    [v] = ok(f"import statistics\nx = {expr}\n").globals
+    assert str(v.type) == ty
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("statistics.mean(['a'])", "statistics.mean() argument 'data' needs numbers (ints or floats), not list[str]"),
+    ("statistics.mean(3)", "statistics.mean() argument 'data' must be something you can loop over, not int"),
+    ("statistics.median_low([{1: 2}])", "statistics.median_low() argument 'data' needs items that can be compared, "
+                                        "not list[dict[int, int]]"),
+    ("statistics.quantiles([1, 2], 4)", "statistics.quantiles() takes 1 positional argument but 2 were given"),
+    ("statistics.covariance(x=[1], y=[2])", "statistics.covariance() got some positional-only arguments passed as "
+                                            "keyword arguments: 'x, y'"),
+    ("statistics.correlation([1], [2], 'ranked')", "statistics.correlation() takes 2 positional arguments but 3 were given"),
+    ("statistics.fmean([1], weights=['a'])", "statistics.fmean() argument 'weights' needs numbers (ints or floats), not list[str]"),
+    ("statistics.variance([1.5], xbar='a')", "statistics.variance() argument 'xbar' must be float?, not str"),
+    ("statistics.mean()", "statistics.mean() is missing argument 'data'"),
+    ("statistics.NormalDist() / statistics.NormalDist()", "unsupported operand types for /: NormalDist and NormalDist"),
+    ("1 / statistics.NormalDist()", "unsupported operand types for /: int and NormalDist"),
+    ("statistics.NormalDist().overlap(1.0)", "NormalDist.overlap() argument 'other' must be NormalDist, not float"),
+])
+def test_statistics_errors(src, msg):
+    assert err(f"import statistics\n{src}\n").message == msg
+
+
 # ---- socket ---------------------------------------------------------------------------
 
 

@@ -1,0 +1,91 @@
+import statistics
+from statistics import NormalDist, StatisticsError, fmean, mean, median, mode, multimode, quantiles
+
+# (Numeric results are floats in seadash, so the data here gives float results in Python too.)
+data = [2.5, 3.25, 5.5, 11.25, 11.75]
+print(mean(data), mean([1, 2]), mean((0.5, 1.5)), mean(x * 2.0 for x in [1, 2, 3]))
+print(fmean([3.5, 4.0, 5.25]), fmean([1, 2, 3, 4]), fmean([85, 92, 83, 91], weights=[0.2, 0.2, 0.3, 0.3]))
+print(fmean([1.0, 2.0], weights=None), statistics.harmonic_mean([40, 60]), statistics.harmonic_mean([40, 60], weights=[5, 30]))
+print(statistics.harmonic_mean([0.5]), statistics.harmonic_mean([1.0, 4.0, 4.0]))
+print(statistics.geometric_mean([1.0, 1.0]), statistics.geometric_mean([3.0, 0, 5.0]))
+
+print(median([1.0, 3.0, 5.0]), median([1, 3, 5, 7]), median([5, 1.5, 3, 4]))
+print(statistics.median_low([1, 3, 5, 7]), statistics.median_high([1, 3, 5, 7]), statistics.median_low([4, 1, 3]))
+print(statistics.median_low(["b", "c", "a", "d"]), statistics.median_high(("x", "y")))
+print(statistics.median_grouped([52, 52, 53, 54]), statistics.median_grouped([1, 3, 3, 5, 7], interval=2))
+print(statistics.median_grouped([1, 2, 2, 3, 4, 4, 4, 4, 4, 5]), statistics.median_grouped([2.5]))
+
+print(mode([1, 1, 2, 3, 3, 3, 3, 4]), mode(["red", "blue", "blue", "red", "green", "red", "red"]))
+print(mode("aabbbbbbbbcc"), mode([1.5, 2.5, 2.5]), mode(["a", "b"]))
+print(multimode("aabbbbccddddeeffffgg"), multimode([3, 1, 2]), multimode(["x"]))
+
+print(quantiles([1.0, 2.0, 3.0, 4.0]), quantiles([1.0, 2.0, 3.0, 4.0], method="inclusive"))
+print(quantiles([105, 129, 87, 86, 111, 111, 89, 81, 108, 92, 110, 100, 75, 105, 103, 109, 76, 119, 99, 91, 103, 129], n=10))
+print(quantiles([0.5, 1.5, 2.5, 3.5, 4.5], n=2), quantiles([0, 10], n=5, method="inclusive"), quantiles([7.0], n=3))
+
+print(statistics.pvariance([1, 2, 3, 4]), statistics.variance([2.75, 1.75, 1.25, 0.25, 0.5, 1.25, 3.5]))
+print(statistics.variance([1.5, 2.5, 2.5, 2.75, 3.25, 4.75]), statistics.variance([1, 3, 5], xbar=3.0))
+print(statistics.pvariance([0.0, 0.25, 0.25, 1.25, 1.5, 1.75, 2.75, 3.25]), statistics.pvariance([1, 2, 3], mu=2.0))
+print(statistics.pstdev([2, 4, 4, 4, 5, 5, 7, 9]), statistics.stdev([1.0, 3.0]), statistics.stdev([1, 3, 5], xbar=3.0))
+print(statistics.pstdev([1.5, 2.5], mu=2.0), statistics.variance(x + 0.5 for x in [1, 2, 3, 4, 5]))
+
+x = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+y = [1, 2, 3, 1, 2, 3, 1, 2, 3]
+print(statistics.covariance(x, y), statistics.covariance(x, [9, 8, 7, 6, 5, 4, 3, 2, 1]))
+print(statistics.correlation(x, x), statistics.correlation(x, [9, 8, 7, 6, 5, 4, 3, 2, 1]))
+print(statistics.correlation([1, 2, 3, 4, 5], [1, 4, 9, 16, 25], method="ranked"))
+print(statistics.correlation([10, 20, 20, 40], [4, 3, 3, 1], method="ranked"))
+fit = statistics.linear_regression([1, 2, 3, 4, 5], [3.0, 5.0, 7.0, 9.0, 11.0])
+print(fit, fit.slope, fit.intercept)
+print(statistics.linear_regression([1, 2, 3], [2, 4, 6], proportional=True))
+slope = statistics.linear_regression([0.0, 1.0], [1.0, 0.0]).slope
+print(slope)
+
+n = NormalDist(10, 2)
+print(n, NormalDist(), n.mean, n.median, n.mode, n.stdev, n.variance)
+print(n.cdf(10), n.inv_cdf(0.5), n.zscore(13), n.pdf(10) == 1 / (2 * (2 * 3.141592653589793) ** 0.5))
+print([round(q, 6) for q in NormalDist().quantiles()], round(NormalDist().cdf(1.96), 6), round(NormalDist().inv_cdf(0.975), 6))
+print(round(NormalDist(2.4, 1.6).overlap(NormalDist(3.2, 2.0)), 9), NormalDist(1, 1).overlap(NormalDist(1, 1)))
+print(n + 5, n - 1, n * 3, n / 2, 3 * n, 5 - n, n + NormalDist(1, 1.5), -n, +n)
+print(n == NormalDist(10.0, 2.0), n != NormalDist(10.0, 3.0))
+print(NormalDist.from_samples([2.5, 3.5, 4.5]), statistics.NormalDist.from_samples([1, 2, 3, 4, 5]))
+draws = n.samples(5, seed=42)
+print(len(draws), [round(d, 6) for d in draws] == [round(d, 6) for d in NormalDist(10, 2).samples(5, seed=42)])
+
+no_words: list[str] = []
+for empty in [[], [1.5]]:
+    try:
+        print(statistics.variance(empty))
+    except StatisticsError as e:
+        print("StatisticsError:", e)
+tries = [
+    lambda: mean([]), lambda: fmean([]), lambda: median([]), lambda: len(mode(no_words)) + 0.5, lambda: len(statistics.median_low(no_words)) + 0.5,
+    lambda: statistics.median_grouped([]), lambda: statistics.pvariance([]), lambda: statistics.stdev([1]),
+    lambda: statistics.pstdev([]), lambda: statistics.geometric_mean([]), lambda: statistics.geometric_mean([1, -2]),
+    lambda: statistics.harmonic_mean([]), lambda: statistics.harmonic_mean([1, -2]),
+    lambda: statistics.harmonic_mean([1, 2], weights=[1]), lambda: fmean([1, 2], weights=[1]),
+    lambda: fmean([1, 2], weights=[0, 0]), lambda: quantiles([1, 2], n=0)[0], lambda: quantiles([])[0],
+    lambda: statistics.covariance([1], [1]), lambda: statistics.covariance([1, 2], [1, 2, 3]),
+    lambda: statistics.correlation([1, 1, 1], [1, 2, 3]), lambda: statistics.correlation([1], [2]),
+    lambda: statistics.linear_regression([2, 2], [1, 2]).slope, lambda: statistics.linear_regression([1], [1]).slope,
+    lambda: NormalDist(0, -1).mean, lambda: NormalDist(0, 0).pdf(1), lambda: NormalDist().inv_cdf(1.0),
+    lambda: NormalDist.from_samples([1]).mean,
+]
+for f in tries:
+    try:
+        print(f())
+    except StatisticsError as e:
+        print("StatisticsError:", e)
+for bad in ["middle", "Linear"]:
+    try:
+        print(quantiles([1, 2, 3], method=bad))
+    except ValueError as e:
+        print("ValueError:", e)
+    try:
+        print(statistics.correlation([1, 2], [3, 4], method=bad))
+    except ValueError as e:
+        print("ValueError:", e)
+try:
+    mean([])
+except ValueError as e:  # a StatisticsError is a ValueError
+    print("ValueError:", e)

@@ -1895,6 +1895,9 @@ class CodeGen:
             if op in ("//", "%"):
                 return f"sd::datetime::{'floordiv' if op == '//' else 'mod'}({lc}, {rc})"
             return f"({lc} {op} {rc})"
+        if builtins.NORMAL_DIST in (lt, rt):  # C++ operators on statistics.NormalDist
+            lc, rc = (self.coerce(code, ct, FLOAT) if ct == INT else code for code, ct in ((lc, lt), (rc, rt)))
+            return f"({lc} {op} {rc})"
         if dunder is not None:  # a + b -> a.__add__(b), or 2 * v -> v.__rmul__(2)
             param = dunder.method.params[0].type
             if dunder.reflected:
