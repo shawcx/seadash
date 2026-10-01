@@ -1,4 +1,7 @@
-"""End-to-end tests: compile each tests/programs/*.sd to a binary, run it, compare output.
+"""End-to-end tests: compile each tests/programs/*.sd (and tests/programs/seadash/*.sd) to a
+binary, run it, compare output. Those in tests/programs/ are valid Python whose output python3
+gives too (test_python_parity.py checks it); those in seadash/ use seadash's own syntax, types
+or behaviour.
 
 For NAME.sd:
   NAME.out   expected stdout (required)
@@ -19,7 +22,8 @@ import pytest
 from seadash.driver import BuildError, BuildOptions, compile_cpp, translate
 
 PROGRAMS = Path(__file__).parent / "programs"
-CASES = sorted(p.stem for p in PROGRAMS.glob("*.sd"))
+PATHS = {p.stem: p for p in [*PROGRAMS.glob("*.sd"), *(PROGRAMS / "seadash").glob("*.sd")]}
+CASES = sorted(PATHS)
 
 
 @pytest.fixture(scope="session")
@@ -29,7 +33,7 @@ def binaries(tmp_path_factory) -> dict[str, Path | str]:
 
     def build(name: str) -> Path | str:
         try:
-            path = PROGRAMS / f"{name}.sd"
+            path = PATHS[name]
             result = translate(path.read_text(), path)
         except Exception as e:  # compile errors are test failures, with the message shown
             return f"seadash failed: {e}"
@@ -58,9 +62,10 @@ def test_program(name: str, binaries, tmp_path):
     shutil.copytree(PROGRAMS.parent / "certs", tmp_path / "certs")
     result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10, cwd=tmp_path)
 
-    expected_out = (PROGRAMS / f"{name}.out").read_text()
-    err_file = PROGRAMS / f"{name}.err"
-    exit_file = PROGRAMS / f"{name}.exit"
+    path = PATHS[name]
+    expected_out = path.with_suffix(".out").read_text()
+    err_file = path.with_suffix(".err")
+    exit_file = path.with_suffix(".exit")
     expected_err = err_file.read_text() if err_file.exists() else ""
     if exit_file.exists():
         expected_code = int(exit_file.read_text())

@@ -356,13 +356,15 @@ source.sd → lexer → parser → type checker → C++23 codegen → g++ → na
 | `seadash/threads.py` | which values threads may share |
 | `seadash/codegen.py` | C++ generation |
 | `seadash/runtime/` | the header-only runtime (`seadash.hpp`, plus `modules/*.hpp`) |
-| `tests/programs/` | end-to-end programs with expected output (most also run under `python3`) |
+| `tests/programs/` | end-to-end programs with expected output, which python3 gives too (`seadash/`: those using seadash's own features) |
+| `tools/check.py` | the checks before a commit: tests, `-Wall -Wextra`, AddressSanitizer, ThreadSanitizer |
 | `bench/` | benchmarks against CPython |
 
 ## Tests
 
 ```console
 $ .venv/bin/python -m pytest -q tests/
+$ .venv/bin/python tools/check.py
 $ .venv/bin/python bench/run.py
 ```
 

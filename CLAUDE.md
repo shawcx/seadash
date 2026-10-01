@@ -53,14 +53,18 @@ The name is final (a nod to the author's two kids).
   `methods` and `attributes` next to its module. The checker, `threads.py` and codegen look
   those up, so only a class that needs special code generation gets a case of its own.
 - `tests/programs/*.sd` are end-to-end tests: `.out` is the expected stdout (and optional
-  `.err` / `.exit`). `tests/test_*.py` are unit tests; checker error messages are tested in
-  `tests/test_checker.py`.
+  `.err` / `.exit`). They're valid Python that python3 gives the same output for
+  (`tests/test_python_parity.py` checks; `NEEDS_PYTHON` there lists the version-dependent ones).
+  Programs that use seadash's own syntax, types or behaviour go in `tests/programs/seadash/`.
+  `tests/test_*.py` are unit tests; checker error messages are tested in `tests/test_checker.py`.
 - `bench/*.sd` run unchanged under python3 and seadash.
 
 ## Commands
 
 ```sh
-.venv/bin/python -m pytest -q tests/          # everything (~20s; ~5s once the build cache is warm)
+.venv/bin/python -m pytest -q tests/          # the tests (~25s; less once the build cache is warm)
+.venv/bin/python tools/check.py               # all the pre-commit checks (~3 min): tests, warnings, ASan, TSan
+.venv/bin/python tools/check.py -k http asan  # some checks, on the programs whose names contain "http"
 .venv/bin/sd run file.sd                      # also: build, check, emit (the C++), clean (the cache)
 .venv/bin/python bench/run.py [name]          # benchmarks vs python3, checks identical output
 tools/linux/check.sh [--sanitize]             # on macOS: the same checks on Linux/g++-14 (Docker)
@@ -82,12 +86,10 @@ headers (Homebrew's `pcre2` and `openssl@3` on macOS).
   Python first (`python3 -c ...`) rather than guessing. For intricate algorithms (textwrap),
   fuzz against Python.
 - Checker errors should say what's wrong and how to fix it; add them to `test_checker.py`.
-- Before committing a feature, check:
-  - the full test suite passes;
-  - the generated C++ compiles cleanly with `-Wall -Wextra`;
-  - anything with threads, coroutines or lifetimes runs clean under
-    `-fsanitize=address,undefined`, and threads under `-fsanitize=thread`. ThreadSanitizer
-    needs `setarch $(uname -m) -R ./binary`.
+- Before committing a feature, run `tools/check.py`: the full test suite passes, the generated
+  C++ compiles cleanly with `-Wall -Wextra`, every test program runs clean under
+  `-fsanitize=address,undefined`, and the thread programs under `-fsanitize=thread`.
+  (By hand, ThreadSanitizer needs `setarch $(uname -m) -R ./binary` on Linux.)
   - Compile emitted C++ with
     `g++-14 -std=c++23 -fwrapv -ffp-contract=off -Iseadash/runtime file.cpp [-l...]`.
     On macOS it's `clang++`, plus `-I/opt/homebrew/include -L/opt/homebrew/lib` for the

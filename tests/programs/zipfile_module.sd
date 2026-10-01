@@ -49,6 +49,7 @@ def on_disk() -> None:
     os.makedirs(os.path.join(src, "sub"))
     with open(os.path.join(src, "a.txt"), "w") as f:
         f.write("alpha\n" * 100)
+    os.chmod(os.path.join(src, "a.txt"), 0o644)  # (whatever the umask)
     with open(os.path.join(src, "sub", "b.txt"), "w") as f:
         f.write("beta\n")
 

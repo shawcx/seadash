@@ -7,7 +7,7 @@ echo "== tests ($(g++-14 --version | head -1), $(python3 --version))"
 
 echo "== -Wall -Wextra"
 mkdir -p /tmp/w
-ls tests/programs/*.sd | xargs -P"$(nproc)" -I{} sh -c '
+ls tests/programs/*.sd tests/programs/seadash/*.sd | xargs -P"$(nproc)" -I{} sh -c '
     n=$(basename {} .sd)
     /venv/bin/sd emit {} > /tmp/w/$n.cpp 2>/dev/null || exit 0
     g++-14 -std=c++23 -fwrapv -ffp-contract=off -Wall -Wextra -fsyntax-only -Iseadash/runtime /tmp/w/$n.cpp 2> /tmp/w/$n.err ||
@@ -21,7 +21,7 @@ grep -h "warning:" /tmp/w/*.err 2>/dev/null | sed -E 's/^[^ ]*: warning: //' | s
 [ "$1" = "--sanitize" ] || exit 0
 
 run() {  # run SANITIZER PROGRAM: build it with the sanitizer, run it, compare with its .out
-    san=$1 n=$2 f=tests/programs/$2.sd
+    san=$1 f=$2 n=$(basename "$2" .sd)
     libs=$(/venv/bin/python -c "from pathlib import Path; from seadash.driver import translate
 print(' '.join('-l' + l for l in translate(Path('$f').read_text(), Path('$f')).libs))")
     /venv/bin/sd emit "$f" > /tmp/$n.cpp
@@ -40,14 +40,15 @@ print(' '.join('-l' + l for l in translate(Path('$f').read_text(), Path('$f')).l
     reports=$(grep -cE "Sanitizer|runtime error" "$d/err")
     if [ "$reports" != 0 ]; then
         echo "$san $n: $reports reports"; grep -m3 -E "Sanitizer|runtime error" "$d/err"
-    elif ! cmp -s "$d/out" "tests/programs/$n.out"; then
+    elif ! cmp -s "$d/out" "${f%.sd}.out"; then
         echo "$san $n: output differs"
     fi
 }
 echo "== address,undefined"
-for f in tests/programs/*.sd; do run address,undefined "$(basename "$f" .sd)"; done
+for f in tests/programs/*.sd tests/programs/seadash/*.sd; do run address,undefined "$f"; done
 echo "== thread"
-for f in tests/programs/threads*.sd tests/programs/http_server*.sd tests/programs/http_threads*.sd tests/programs/futures*.sd tests/programs/signal*.sd; do
-    run thread "$(basename "$f" .sd)"
+for f in tests/programs/threads*.sd tests/programs/http_server*.sd tests/programs/http_threads*.sd tests/programs/futures*.sd \
+         tests/programs/signal*.sd tests/programs/seadash/*thread*.sd tests/programs/seadash/lock*.sd; do
+    run thread "$f"
 done
 echo "(no news is good news)"
