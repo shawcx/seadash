@@ -465,7 +465,7 @@ public:
                 try {
                     std::rethrow_exception(current);
                 } catch (const Thrown& t) {
-                    r.exc_text = t.exc->sd_type() + (t.exc->message.empty() ? "" : ": " + t.exc->message);
+                    r.exc_text = t.exc->sd_type() + (t.exc->sd_str().empty() ? "" : ": " + t.exc->sd_str());
                 } catch (...) {
                 }
             } else {

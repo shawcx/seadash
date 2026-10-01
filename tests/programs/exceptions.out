@@ -28,3 +28,7 @@ inner finally
 outer caught: inner
 bare except caught it
 0.25 None
+'k' KeyError('k') ['k']
+ KeyError() []
+'m' MissingKey('m') ['m']
+'b' KeyError('b')

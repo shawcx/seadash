@@ -52,7 +52,7 @@ class Future {
             cb(*this);
         } catch (const Thrown& t) {  // like Python: logged, and the other callbacks still run
             std::string msg = "exception calling callback for " + sd_repr() + "\n" + t.exc->sd_type() +
-                              (t.exc->message.empty() ? "" : ": " + t.exc->message) + "\n";
+                              (t.exc->sd_str().empty() ? "" : ": " + t.exc->sd_str()) + "\n";
             std::fwrite(msg.data(), 1, msg.size(), stderr);
         }
     }

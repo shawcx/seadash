@@ -60,6 +60,7 @@ struct BaseException : std::enable_shared_from_this<BaseException> {
     virtual ~BaseException() = default;
     virtual std::string sd_type() const { return "BaseException"; }
     virtual std::string sd_repr() const;  // e.g. ValueError('bad input')
+    virtual std::string sd_str() const { return message; }  // str(e)
 };
 
 #define SD_EXCEPTION(Name, Base)                                  \
@@ -85,13 +86,15 @@ SD_EXCEPTION(OverflowError, ArithmeticError)
 SD_EXCEPTION(LookupError, Exception)
 SD_EXCEPTION(IndexError, LookupError)
 
-// A KeyError from a failed lookup holds repr(key) as its message, so its
-// repr is KeyError('b') rather than KeyError("'b'"), matching Python.
+// Python shows a KeyError's argument as a repr: str(KeyError('k')) is 'k'. One from a
+// failed lookup already holds repr(key) as its message (from_lookup), so its repr is
+// KeyError('b') rather than KeyError("'b'").
 struct KeyError : LookupError {
     using LookupError::LookupError;
     bool from_lookup = false;
     std::string sd_type() const override { return "KeyError"; }
     std::string sd_repr() const override;
+    std::string sd_str() const override;
 };
 SD_EXCEPTION(ValueError, Exception)
 SD_EXCEPTION(TypeError, Exception)
@@ -722,7 +725,7 @@ std::string str(const T& x) {
         return x;
     } else if constexpr (is_shared<T>::value) {
         if constexpr (std::is_base_of_v<BaseException, typename T::element_type>) {
-            return x ? x->message : "None";  // str(e) is the message, like Python
+            return x ? x->sd_str() : "None";  // str(e) is the message, like Python
         } else if constexpr (requires { x->sd_str(); }) {
             return x ? x->sd_str() : "None";  // a class's __str__
         } else {
@@ -1444,8 +1447,13 @@ inline std::string BaseException::sd_repr() const {
     std::string type = sd_type();  // a module's exception shows its bare name: error('...'), not zlib.error('...')
     return type.substr(type.rfind('.') + 1) + "(" + (message.empty() ? "" : repr_str(message)) + ")";
 }
+inline std::string KeyError::sd_str() const {
+    return from_lookup || message.empty() ? message : repr_str(message);
+}
 inline std::string KeyError::sd_repr() const {
-    return from_lookup ? "KeyError(" + message + ")" : LookupError::sd_repr();
+    if (!from_lookup) return LookupError::sd_repr();
+    std::string type = sd_type();
+    return type.substr(type.rfind('.') + 1) + "(" + message + ")";
 }
 
 // f-strings: append every piece into one string (no chain of temporaries).
@@ -4201,7 +4209,7 @@ inline int run_main(int argc, char** argv_, void (*module_main)()) {
     } catch (const Thrown& t) {
         std::fflush(stdout);
         std::string type = t.exc->sd_type();
-        const std::string& msg = t.exc->message;
+        std::string msg = t.exc->sd_str();
         std::fprintf(stderr, "%s%s%s\n", type.c_str(), msg.empty() ? "" : ": ", msg.c_str());
         code = 1;
     }

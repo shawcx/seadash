@@ -291,7 +291,7 @@ inline void run_thread(const std::shared_ptr<ThreadState>& s) {
         s->fn();
     } catch (const Thrown& t) {
         // Like Python: report it and end this thread; the rest of the program carries on.
-        std::string msg = t.exc->message;
+        std::string msg = t.exc->sd_str();
         std::string text = "Exception in thread " + s->name + ":\n" + t.exc->sd_type() + (msg.empty() ? "" : ": " + msg) + "\n";
         std::fwrite(text.data(), 1, text.size(), stderr);
     } catch (const Exit&) {

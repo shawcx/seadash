@@ -113,3 +113,15 @@ def safe_div(a: float, b: float) -> float?:
         return None
 
 print(safe_div(1, 4), safe_div(1, 0))
+
+
+class MissingKey(KeyError):
+    pass
+
+
+for k in [KeyError("k"), KeyError(), MissingKey("m")]:  # a KeyError shows its argument as a repr
+    print(str(k), repr(k), f"[{k}]")
+try:
+    {"a": 1}["b"]
+except KeyError as e:
+    print(str(e), repr(e))

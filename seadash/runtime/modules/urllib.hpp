@@ -414,7 +414,7 @@ inline Response open_once(const std::string& method, const std::string& url,
         conn.endheaders(data);
     } catch (const Thrown& t) {
         if (!dynamic_cast<OSError*>(t.exc.get())) throw;
-        std::string why = dynamic_cast<TimeoutError*>(t.exc.get()) ? "timed out" : t.exc->message;
+        std::string why = dynamic_cast<TimeoutError*>(t.exc.get()) ? "timed out" : t.exc->sd_str();
         throw Thrown{std::make_shared<urlerror::URLError>(why)};
     }
     Response r = conn.getresponse();

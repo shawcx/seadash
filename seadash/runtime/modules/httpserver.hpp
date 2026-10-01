@@ -747,7 +747,7 @@ private:
 
     // socketserver's handle_error: the request failed, the server goes on.
     static void handle_error(const std::tuple<std::string, std::int64_t>& addr, const Thrown& t) {
-        std::string msg = t.exc->message;
+        std::string msg = t.exc->sd_str();
         std::string text = std::string(40, '-') + "\nException occurred during processing of request from " + repr(addr) +
                            "\n" + t.exc->sd_type() + (msg.empty() ? "" : ": " + msg) + "\n" + std::string(40, '-') + "\n";
         std::fwrite(text.data(), 1, text.size(), stderr);
