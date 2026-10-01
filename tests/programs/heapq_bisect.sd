@@ -1,0 +1,151 @@
+# heapq and bisect: heaps and sorted lists of anything comparable.
+import bisect
+import heapq
+from bisect import bisect_left, bisect_right, insort, insort_left
+from dataclasses import dataclass
+from heapq import heapify, heappop, heappush, merge, nlargest, nsmallest
+
+
+@dataclass
+class Task:
+    priority: int
+    name: str
+
+    def __lt__(self, other: "Task") -> bool:
+        return self.priority < other.priority
+
+
+class PriorityQueue:
+    items: list[tuple[int, int, str]]
+    count: int
+
+    def __init__(self):
+        self.items = []
+        self.count = 0
+
+    def push(self, priority: int, name: str) -> None:
+        heappush(self.items, (priority, self.count, name))
+        self.count += 1
+
+    def pop(self) -> str:
+        return heappop(self.items)[2]
+
+
+def show_errors() -> None:
+    empty: list[int] = []
+    try:
+        heappop(empty)
+    except IndexError as e:
+        print("IndexError:", e)
+    try:
+        heapq.heapreplace(empty, 1)
+    except IndexError as e:
+        print("IndexError:", e)
+    try:
+        bisect_left([1, 2], 1, -1)
+    except ValueError as e:
+        print("ValueError:", e)
+    try:
+        bisect_left([1, 2, 3], 5, 0, 10)
+    except IndexError as e:
+        print("IndexError:", e)
+
+
+# The heap's layout is Python's, item for item.
+h: list[int] = []
+for x in [5, 3, 8, 1, 9, 2, 7, 1, 6]:
+    heappush(h, x)
+print(h)
+print([heappop(h) for _ in range(4)], h)
+data = [9, 4, 7, 1, 8, 2, 6, 3, 5, 0, 4, 4]
+heapify(data)
+print(data)
+print(heapq.heappushpop(data, -1), heapq.heappushpop(data, 5), data)
+print(heapq.heapreplace(data, 10), data)
+ordered: list[int] = []
+while data:
+    ordered.append(heappop(data))
+print(ordered)
+empty: list[int] = []
+print(heapq.heappushpop(empty, 3), empty)
+
+# Floats, strings, tuples and classes with __lt__.
+fs = [2.5, -1.0, 3.25, 0.5]
+heapify(fs)
+heappush(fs, 1.0)
+print(fs, heappop(fs))
+words = ["pear", "apple", "fig", "banana"]
+heapify(words)
+print(words, heappop(words))
+jobs: list[tuple[int, str]] = []
+for job in [(3, "write"), (1, "plan"), (2, "code"), (1, "eat")]:
+    heappush(jobs, job)
+print([heappop(jobs) for _ in range(len(jobs))])
+tasks = [Task(3, "c"), Task(1, "a"), Task(2, "b"), Task(1, "a2")]
+heapify(tasks)
+print([t.name for t in tasks])
+heappush(tasks, Task(0, "z"))
+print(heappop(tasks).name, heappop(tasks).name, len(tasks))
+
+# nlargest and nsmallest: like sorted(...)[:n], ties in their original order.
+nums = [5, 1, 8, 3, 9, 2, 8, 7]
+print(nlargest(3, nums), nsmallest(3, nums), nlargest(0, nums), nsmallest(-2, nums), nlargest(20, nums))
+print(nsmallest(1, nums), nlargest(1, nums), nsmallest(3, (4, 2, 6)), nlargest(2, range(10)))
+names = ["bob", "alice", "eve", "dan", "carol", "al"]
+print(nlargest(2, names, key=len), nsmallest(3, names, key=len), nsmallest(2, names, len))
+print(nlargest(3, names, key=None), heapq.nsmallest(2, [t.name for t in tasks]))
+pairs = [(1, "b"), (2, "a"), (1, "a"), (2, "b")]
+print(nlargest(2, pairs, key=lambda p: p[0]), nsmallest(2, pairs, key=lambda p: p[1]))
+
+# merge: lazy, stable, with key= and reverse=.
+print(list(merge([1, 3, 5, 7], [2, 4, 6], [0, 8])))
+print(list(merge([1, 1, 2], [1, 2, 2])), list(merge([10, 5, 1], [9, 6], reverse=True)))
+print(list(merge(["bb", "a"], ["ccc", "dd"], key=len, reverse=True)), list(merge(["a", "bb"], ["c", "dd"], key=len)))
+print(list(merge([3, 1], [2, 0])), list(merge([1, 2, 3])), list(merge(empty, [1], empty)))
+lazy = merge(iter([1, 4]), (x * x for x in range(3)))
+print(next(lazy), next(lazy), list(lazy))
+print(list(merge([1.5, 2.5], [2.0, 3.0])), list(merge([(1, "x")], [(0, "y"), (1, "a")])))
+print([t.name for t in merge([Task(1, "p"), Task(4, "q")], [Task(1, "r"), Task(2, "s")])])
+
+# bisect: insertion points, with lo, hi and key=.
+xs = [1, 2, 4, 4, 4, 7, 9]
+print(bisect_left(xs, 4), bisect_right(xs, 4), bisect.bisect(xs, 4), bisect_left(xs, 0), bisect_right(xs, 10))
+print(bisect_left(xs, 4, 3), bisect_left(xs, 4, lo=4), bisect_right(xs, 4, 0, 3), bisect_left(xs, 9, hi=None))
+print(bisect_left(xs, 4, hi=-1), bisect_left(xs, 4, hi=-5), bisect_left(xs, 2, lo=10))
+grades = [60, 70, 80, 90]
+print(["FDCBA"[bisect.bisect(grades, score)] for score in [33, 99, 77, 70, 89, 90, 100]])
+people = [("al", 20), ("bo", 25), ("cy", 25), ("di", 31)]
+print(bisect_left(people, 25, key=lambda p: p[1]), bisect_right(people, 25, key=lambda p: p[1]))
+fl = [0.5, 1.5, 2.5]
+print(bisect_left(fl, 2), bisect_right(fl, 1.5), bisect.bisect_right(["a", "c", "e"], "d"))
+
+# insort: insert keeping the list sorted.
+s = [1, 3, 5]
+insort(s, 4)
+insort(s, 0)
+insort_left(s, 3)
+bisect.insort_right(s, 3)
+print(s)
+s2 = [1, 2, 3]
+insort(s2, 0, lo=5)
+insort(s2, 9, hi=-3)
+print(s2)
+sorted_people = [("al", 20), ("di", 31)]
+insort(sorted_people, ("bo", 25), key=lambda p: p[1])
+insort_left(sorted_people, ("ed", 25), key=lambda p: p[1])
+bisect.insort_right(sorted_people, ("fy", 25), key=lambda p: p[1])
+print(sorted_people)
+ts: list[Task] = []
+for t in [Task(2, "two"), Task(1, "one"), Task(2, "deux"), Task(3, "three")]:
+    insort(ts, t)
+print([t.name for t in ts], bisect_left(ts, Task(2, "")), bisect_right(ts, Task(2, "")))
+fs2: list[float] = []
+for v in [3.0, 1.5, 2.0]:
+    insort(fs2, v)
+print(fs2)
+
+pq = PriorityQueue()
+for priority, name in [(2, "b"), (1, "a"), (2, "b2"), (0, "z")]:
+    pq.push(priority, name)
+print(pq.pop(), pq.pop(), pq.pop(), pq.items)
+show_errors()

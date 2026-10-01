@@ -2278,6 +2278,36 @@ class CodeGen:
                 return f"{ns}batched<{self.cpp_type(out.elem)}>({self.expr(args['iterable'])}, {self.expr(args['n'])})"
         raise NotImplementedError(f"codegen for itertools.{name}")
 
+    # ---- heapq and bisect -----------------------------------------------------------
+
+    def heapq_bisect_call(self, mod: str, name: str, e: A.Call) -> str:
+        args = getattr(e, "lib_args", {})
+        key = args.get("key", self.keyword(e, "key"))
+        key_code = self.expr(key) if key is not None and not isinstance(key, A.NoneLit) else "nullptr"
+        if mod == "heapq":
+            match name:
+                case "heapify" | "heappop":
+                    return f"sd::heapq::{name}({self.expr(e.args[0])})"
+                case "heappush" | "heappushpop" | "heapreplace":
+                    return f"sd::heapq::{name}({self.expr(e.args[0])}, {self.expr_as(e.args[1], e.args[0].ty.elem)})"
+                case "nlargest" | "nsmallest":
+                    T = self.cpp_type(e.ty.elem)
+                    return (f"sd::heapq::{name}<{T}>({self.expr_as(args['n'], INT)}, {self.expr(args['iterable'])}, "
+                            f"{key_code})")
+                case "merge":
+                    T = self.cpp_type(e.ty.elem)
+                    inputs = ", ".join(f"sd::heapq::as_generator<{T}>({self.expr(x)})" for x in e.args)
+                    reverse = self.keyword(e, "reverse")
+                    return (f"sd::heapq::merge<{T}>(std::vector<sd::Generator<{T}>>{{{inputs}}}, {key_code}, "
+                            f"{self.expr(reverse) if reverse is not None else 'false'})")
+            raise NotImplementedError(f"codegen for heapq.{name}")
+        func = {"bisect": "bisect_right", "insort": "insort_right"}.get(name, name)
+        a = args["a"]
+        x = self.expr_as(args["x"], a.ty.elem if func.startswith("insort") else e.compared_as)
+        lo = self.expr_as(args["lo"], INT) if "lo" in args else "0"
+        hi = self.expr_as(args["hi"], OptionalType(INT)) if "hi" in args else "std::nullopt"
+        return f"sd::bisect::{func}({self.expr(a)}, {x}, {lo}, {hi}, {key_code})"
+
     # ---- subprocess -----------------------------------------------------------------
 
     def process_call(self, e: A.Call) -> str:
@@ -2914,6 +2944,8 @@ class CodeGen:
             return self.process_call(e)
         if mod == "itertools":
             return self.itertools_call(name, e)
+        if mod in ("heapq", "bisect"):
+            return self.heapq_bisect_call(mod, name, e)
         if mod in ("hashlib", "hmac") and hasattr(e, "hash_args"):
             return self.hash_call(mod, name, e)
         if mod == "urllib.request" and name in ("urlopen", "Request"):

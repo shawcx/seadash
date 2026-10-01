@@ -2209,3 +2209,40 @@ def test_partial_types():
     info = ok("from typing import Callable\n" + PARTIAL + "p = partial(f, 1)\nq = partial(f, b=2, c=4)\nr = partial(f, 1, 2, 3)\n"
               "s: Callable[[int, int], int] = partial(f, 1)\n")
     assert {"p: (int) -> int", "q: (int) -> int", "r: () -> int", "s: (int, int) -> int"} <= set(variables(info))
+
+
+
+HEAPQ_BISECT = ("import heapq\nfrom bisect import bisect, bisect_left, insort\nclass P:\n    n: int\n"
+                "    def __init__(self, n: int):\n        self.n = n\n")
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("h: list[dict[str, int]] = []\nheapq.heappush(h, {})\n", "heapq.heappush() can't compare dict[str, int] values"),
+    ("ps: list[P] = []\nheapq.heapify(ps)\n", "heapq.heapify() can't compare P values (give P a __lt__ method)"),
+    ("h: list[int] = []\nheapq.heappush(h, 'x')\n", "heapq.heappush() item must be int (the list's item type), not str"),
+    ("h = (1, 2)\nheapq.heapify(h)\n", "heapq.heapify() needs a list, not tuple[int, int]"),
+    ("h: list[int] = []\nheapq.heappush(h)\n", "heapq.heappush() takes exactly 2 arguments (1 given)"),
+    ("x = heapq.nlargest('2', [1, 2])\n", "heapq.nlargest() n must be int, not str"),
+    ("x = heapq.nlargest(2, [P(1)])\n", "heapq.nlargest() can't compare P values (give P a __lt__ method, or pass key=)"),
+    ("x = heapq.nsmallest(2, [1], 3, 4)\n", "heapq.nsmallest() takes from 2 to 3 positional arguments but 4 were given"),
+    ("x = heapq.merge([1], ['a'])\n", "heapq.merge() needs iterables of the same kind of item"),
+    ("x = heapq.merge()\n", "heapq.merge() needs at least one iterable to merge"),
+    ("x = heapq.merge([P(1)], reverse=True)\n", "heapq.merge() can't compare P values (give P a __lt__ method, or pass key=)"),
+    ("x = bisect_left([(1, 'a')], (1, 'a'), key=lambda p: p[0])\n",
+     "bisect.bisect_left() compares x with key(item), so it must be int, not tuple[int, str]"),
+    ("xs = [(1, 'a')]\ninsort(xs, 1, key=lambda p: p[0])\n",
+     "bisect.insort() x must be tuple[int, str] (the list's item type), not int"),
+    ("x = bisect([P(1)], P(2), key=lambda p: {p.n: p})\n",
+     "bisect.bisect() key must return something comparable, not dict[int, P]"),
+    ("x = bisect([1], 1, 0, 1, None)\n", "bisect.bisect() takes at most 4 positional arguments (5 given)"),
+    ("x = bisect([1], 1, hi=1.5)\n", "bisect.bisect() hi must be int?, not float"),
+    ("x = bisect({1: 2}, 1)\n", "bisect.bisect() needs a list, not dict[int, int]"),
+])
+def test_heapq_bisect_errors(src, msg):
+    assert err(HEAPQ_BISECT + src).message == msg
+
+
+def test_heapq_bisect_types():
+    info = ok(HEAPQ_BISECT + "h = [(2, 'b'), (1, 'a')]\nheapq.heapify(h)\na = heapq.heappop(h)\nb = heapq.nlargest(1, [1.5])\n"
+              "c = heapq.merge([1], [2], key=lambda x: -x)\nd = bisect([P(1)], 1, key=lambda p: p.n)\n")
+    assert {"a: tuple[int, str]", "b: list[float]", "c: Iterator[int]", "d: int"} <= set(variables(info))
