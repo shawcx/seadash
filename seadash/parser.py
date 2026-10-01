@@ -229,9 +229,14 @@ class Parser:
             case A.Name() | A.Attribute() | A.Index():
                 return
             case A.TupleLit(elts) | A.ListLit(elts):
+                stars = [elt for elt in elts if isinstance(elt, A.Starred)]
+                if len(stars) > 1:
+                    raise self.error("multiple starred expressions in assignment", stars[1].loc)
                 for elt in elts:
-                    self.check_target(elt)
+                    self.check_target(elt.value if isinstance(elt, A.Starred) else elt)
                 return
+            case A.Starred():
+                raise self.error("starred assignment target must be in a list or tuple", e.loc)
         raise self.error(f"cannot assign to {describe_expr(e)}", e.loc)
 
     def check_single_target(self, e: A.Expr, verb: str) -> None:
@@ -701,27 +706,34 @@ class Parser:
     # ---- expressions -------------------------------------------------------
 
     def parse_expr_list(self) -> A.Expr:
-        """`a` or `a, b, c` (an unparenthesized tuple), as in `return a, b`."""
-        first = self.parse_expr()
+        """`a` or `a, b, c` (an unparenthesized tuple), as in `return a, b`; items may be
+        starred: `a, *rest = xs`."""
+        first = self.parse_star_or(self.parse_expr)
         if not self.at(","):
             return first
         elts = [first]
         while self.accept(","):
             if not starts_expression(self.peek()):
                 break
-            elts.append(self.parse_expr())
+            elts.append(self.parse_star_or(self.parse_expr))
         return A.TupleLit(elts, loc=first.loc)
+
+    def parse_star_or(self, parse_item) -> A.Expr:
+        """`*xs` where a display or target allows it, else an ordinary item."""
+        if tok := self.accept("*"):
+            return A.Starred(self.parse_binary(), loc=tok.loc)
+        return parse_item()
 
     def parse_target_list(self) -> A.Expr:
         """Loop targets: `x` or `i, x`. Parsed above comparisons so `in` isn't consumed."""
-        first = self.parse_binary()
+        first = self.parse_star_or(self.parse_binary)
         target = first
         if self.at(","):
             elts = [first]
             while self.accept(","):
                 if self.at("in"):
                     break
-                elts.append(self.parse_binary())
+                elts.append(self.parse_star_or(self.parse_binary))
             target = A.TupleLit(elts, loc=first.loc)
         self.check_target(target)
         return target
@@ -859,10 +871,12 @@ class Parser:
                 if any(k.name == name.value for k in keywords):
                     raise self.error(f"keyword argument repeated: '{name.value}'", name.loc)
                 keywords.append(A.Keyword(name.value, self.parse_expr(), loc=name.loc))
+            elif self.at("**"):
+                raise self.error("'**' arguments aren't supported yet; pass the keywords by name")
             else:
                 if keywords:
                     raise self.error("positional argument follows keyword argument")
-                arg = self.parse_named_expr()
+                arg = self.parse_star_or(self.parse_named_expr)
                 if self.at("for"):
                     # sum(x * x for x in xs): a generator as the only argument
                     arg = A.GeneratorExp(arg, self.parse_comprehension(), loc=arg.loc)
@@ -948,17 +962,19 @@ class Parser:
         loc = self.next().loc
         if self.accept(")"):
             return A.TupleLit([], loc=loc)
-        first = self.parse_named_expr()
-        if self.at("for"):
+        first = self.parse_star_or(self.parse_named_expr)
+        if self.at("for") and not isinstance(first, A.Starred):
             gen = A.GeneratorExp(first, self.parse_comprehension(), loc=loc)
             self.expect(")", " after generator expression")
             return gen
         if self.accept(")"):
+            if isinstance(first, A.Starred):
+                raise self.error("cannot use starred expression here", first.loc)
             return first  # just grouping
         self.expect(",", " or ')' after expression")
         elts = [first]
         while not self.at(")"):
-            elts.append(self.parse_named_expr())
+            elts.append(self.parse_star_or(self.parse_named_expr))
             if not self.accept(","):
                 break
         self.expect(")", " to close tuple")
@@ -968,37 +984,45 @@ class Parser:
         loc = self.next().loc
         if self.accept("]"):
             return A.ListLit([], loc=loc)
-        first = self.parse_named_expr()
-        if self.at("for"):
+        first = self.parse_star_or(self.parse_named_expr)
+        if self.at("for") and not isinstance(first, A.Starred):
             comp = A.ListComp(first, self.parse_comprehension(), loc=loc)
             self.expect("]", " after list comprehension")
             return comp
-        return A.ListLit(self.parse_rest_of_items(first, "]", self.parse_named_expr), loc=loc)
+        return A.ListLit(self.parse_rest_of_items(first, "]", lambda: self.parse_star_or(self.parse_named_expr)), loc=loc)
 
     def parse_brace(self) -> A.Expr:
         """`{}` is an empty dict (as in Python); otherwise a dict or set, maybe a comprehension."""
         loc = self.next().loc
         if self.accept("}"):
             return A.DictLit([], [], loc=loc)
-        first = self.parse_expr()
-        if self.accept(":"):
+        if self.accept("**"):  # {**a, ...}: a None key
+            return self.parse_rest_of_dict(loc, [None], [self.parse_binary()])
+        first = self.parse_star_or(self.parse_expr)
+        if not isinstance(first, A.Starred) and self.accept(":"):
             value = self.parse_expr()
             if self.at("for"):
                 comp = A.DictComp(first, value, self.parse_comprehension(), loc=loc)
                 self.expect("}", " after dict comprehension")
                 return comp
-            keys, values = [first], [value]
-            while self.accept(",") and not self.at("}"):
-                keys.append(self.parse_expr())
-                self.expect(":", " after dict key")
-                values.append(self.parse_expr())
-            self.expect("}", " to close dict")
-            return A.DictLit(keys, values, loc=loc)
-        if self.at("for"):
+            return self.parse_rest_of_dict(loc, [first], [value])
+        if self.at("for") and not isinstance(first, A.Starred):
             comp = A.SetComp(first, self.parse_comprehension(), loc=loc)
             self.expect("}", " after set comprehension")
             return comp
-        return A.SetLit(self.parse_rest_of_items(first, "}", self.parse_expr), loc=loc)
+        return A.SetLit(self.parse_rest_of_items(first, "}", lambda: self.parse_star_or(self.parse_expr)), loc=loc)
+
+    def parse_rest_of_dict(self, loc: Loc, keys: list, values: list) -> A.DictLit:
+        while self.accept(",") and not self.at("}"):
+            if self.accept("**"):
+                keys.append(None)
+                values.append(self.parse_binary())
+                continue
+            keys.append(self.parse_expr())
+            self.expect(":", " after dict key")
+            values.append(self.parse_expr())
+        self.expect("}", " to close dict")
+        return A.DictLit(keys, values, loc=loc)
 
     def parse_rest_of_items(self, first: A.Expr, closer: str, parse_item) -> list[A.Expr]:
         items = [first]
@@ -1070,7 +1094,7 @@ def starts_expression(tok: Token) -> bool:
         case K.KEYWORD:
             return tok.value in ("True", "False", "None", "not", "lambda")
         case K.OP:
-            return tok.value in ("(", "[", "{", "-", "+", "~")
+            return tok.value in ("(", "[", "{", "-", "+", "~", "*")
     return False
 
 

@@ -2562,3 +2562,19 @@ def test_slice_assignment_of_an_empty_list_to_a_field():
         def clear_middle(self):
             self.items[1:-1] = []
     """)
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("a, b, *c = (1,)\n", "not enough values to unpack (expected at least 2, got 1)"),
+    ("a, *b = (1,)\n", "'*b' would always be empty here, so its type can't be told"),
+    ("a, *b = (1, 'x', 2)\n", "the starred items have different types: str, int"),
+    ("a, b = 5\n", "can't unpack int: it isn't iterable"),
+    ("xs = [1]\nprint([*xs, 2])\n", "unpacking with '*' here isn't supported yet (only in assignments: a, *rest = xs)"),
+])
+def test_unpacking_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_unpacking_types():
+    assert variables(ok("first, *rest = 'a b c'.split()\nx, *mid, y = (1, 2, 2.5, 'z')\n")) == [
+        "first: str", "rest: list[str]", "x: int", "mid: list[float]", "y: str"]

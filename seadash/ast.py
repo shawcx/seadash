@@ -164,7 +164,7 @@ class SetLit(Expr):
 
 @dataclass
 class DictLit(Expr):
-    keys: list[Expr]
+    keys: list[Expr | None]  # None: `**value`
     values: list[Expr]
 
 
@@ -273,6 +273,14 @@ class Call(Expr):
 class Attribute(Expr):
     value: Expr
     attr: str
+
+
+@dataclass
+class Starred(Expr):
+    """`*xs`: in a target (`a, *rest = xs`), a list, tuple or set display (`[*xs, 1]`), or a
+    call (`f(*args)`). (`**d` in a dict display is a None key in DictLit.)"""
+
+    value: Expr
 
 
 @dataclass

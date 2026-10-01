@@ -1658,20 +1658,50 @@ class CodeGen:
                     self.line(f"{c}[{key}] = {self.coerce(code, ty, target.ty)};")
                 else:
                     self.line(f"sd::index({c}, {self.expr(index)}) = {self.coerce(code, ty, target.ty)};")
-            case A.TupleLit(elts) | A.ListLit(elts) if isinstance(ty, VarTupleType):
+            case A.TupleLit(elts) | A.ListLit(elts) if isinstance(ty, TupleType):
                 tmp = self.fresh("t")
                 self.open("")
                 self.line(f"auto {tmp} = {code};")
-                self.line(f"sd::check_unpack({tmp}.size(), {len(elts)});")
-                for i, elt in enumerate(elts):
-                    self.assign(elt, f"{tmp}.items[{i}]", ty.elem)
+                star = next((i for i, elt in enumerate(elts) if isinstance(elt, A.Starred)), None)
+                if star is None:
+                    for i, elt in enumerate(elts):
+                        self.assign(elt, f"std::get<{i}>({tmp})", ty.elts[i])
+                else:  # (first, *middle, last) = a fixed tuple: where each item goes is known now
+                    after = len(elts) - star - 1
+                    n = len(ty.elts)
+                    for i, elt in enumerate(elts[:star]):
+                        self.assign(elt, f"std::get<{i}>({tmp})", ty.elts[i])
+                    rest = elts[star].ty
+                    items = ", ".join(self.coerce(f"std::get<{i}>({tmp})", ty.elts[i], rest.elem) for i in range(star, n - after))
+                    self.assign(elts[star].value, f"{self.cpp_type(rest)}{{{items}}}", rest)
+                    for j, elt in enumerate(elts[star + 1:]):
+                        self.assign(elt, f"std::get<{n - after + j}>({tmp})", ty.elts[n - after + j])
                 self.close()
-            case A.TupleLit(elts) | A.ListLit(elts):
+            case A.TupleLit(elts) | A.ListLit(elts):  # any iterable, checked when it runs
                 tmp = self.fresh("t")
                 self.open("")
-                self.line(f"auto {tmp} = {code};")
-                for i, elt in enumerate(elts):
-                    self.assign(elt, f"std::get<{i}>({tmp})", ty.elts[i])
+                if isinstance(ty, ListType):
+                    self.line(f"auto {tmp} = {code};")  # (the list itself: nothing copied)
+                elif isinstance(ty, VarTupleType):
+                    self.line(f"auto {tmp} = ({code}).items;")
+                else:
+                    self.line(f"auto {tmp} = sd::to_list({code});")
+                items = element_type(ty)
+                star = next((i for i, elt in enumerate(elts) if isinstance(elt, A.Starred)), None)
+                if star is None:
+                    self.line(f"sd::check_unpack({tmp}.size(), {len(elts)});")
+                    for i, elt in enumerate(elts):
+                        self.assign(elt, f"{tmp}[{i}]", items)
+                else:
+                    after = len(elts) - star - 1
+                    self.line(f"sd::check_unpack_star({tmp}.size(), {star + after});")
+                    size = f"static_cast<std::int64_t>({tmp}.size())"
+                    for i, elt in enumerate(elts[:star]):
+                        self.assign(elt, f"{tmp}[{i}]", items)
+                    rest = elts[star].ty
+                    self.assign(elts[star].value, f"{self.cpp_type(rest)}(sd::slice({tmp}, {star}, {size} - {after}, std::nullopt))", rest)
+                    for j, elt in enumerate(elts[star + 1:]):
+                        self.assign(elt, f"{tmp}[{tmp}.size() - {after - j}]", items)
                 self.close()
 
     def aug_assign(self, s: A.AugAssign, target: A.Expr, op: str, value: A.Expr) -> None:

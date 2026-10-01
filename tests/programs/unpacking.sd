@@ -1,0 +1,46 @@
+# Unpacking: tuples, lists and any other iterable, with a starred name taking the rest.
+first, *rest = [1, 2, 3]
+print(first, rest)
+*init, last = "abc"
+print(init, last)
+a, *middle, z = range(6)
+print(a, middle, z)
+head, *tail = (10, 20, 30)
+print(head, tail)
+x, *empty = [7]
+print(x, empty)
+key, value = "name=seadash".split("=")
+print(key, value)
+p, q = (n * n for n in [3, 4])
+print(p, q)
+s1, s2 = {"only"} | {"only"}, "x"
+print(s1, s2)
+k1, k2 = {"a": 1, "b": 2}
+print(k1, k2)
+(i, *js), last2 = [1, 2, 3], "end"
+print(i, js, last2)
+[u, *vs] = [1.5, 2.5]
+print(u, vs)
+*everything, = [4, 5]
+print(everything)
+mixed_first, *numbers = ("label", 1.5, 2.5)
+print(mixed_first, numbers)
+
+for best, *others in [[90, 85, 60], [70]]:
+    print(best, others, sum(others))
+for one, two in ["ab", "cd"]:
+    print(one, two)
+
+try:
+    m, n = [1]
+    print(m, n)
+except ValueError as e:
+    print("ValueError:", e)
+try:
+    m, n = [1, 2, 3]  # (Python 3.14 adds how many it got to the message)
+except ValueError as e:
+    print("ValueError:", str(e).startswith("too many values to unpack (expected 2"))
+try:
+    b1, b2, *bs = [1]
+except ValueError as e:
+    print("ValueError:", e)

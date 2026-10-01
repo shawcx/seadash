@@ -2310,6 +2310,12 @@ bool contains(const vtuple<T>& t, const X& x) {
     return std::find(t.items.begin(), t.items.end(), x) != t.items.end();
 }
 // `a, b = t`: the number of values must match, like Python.
+// a, *rest, z = xs: at least as many items as the names around the star.
+inline void check_unpack_star(std::size_t have, std::size_t want) {
+    if (have < want)
+        raise("ValueError", "not enough values to unpack (expected at least " + std::to_string(want) + ", got " +
+                                std::to_string(have) + ")");
+}
 inline void check_unpack(std::size_t have, std::size_t want) {
     if (have < want)
         raise("ValueError", "not enough values to unpack (expected " + std::to_string(want) + ", got " + std::to_string(have) + ")");

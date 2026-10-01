@@ -186,7 +186,7 @@ match shape:                         # a json.Value
 **Also supported:**
 - **Functions:** default and keyword arguments, `*args` (typed: `*args: str` is a `tuple[str, ...]`), generics (`def first[T](xs: list[T]) -> T | None`, `class Stack[T]:`), closures that share variables like Python's, lambdas, and functions as values.
 - **Generators:** `yield` and `yield from` (in functions and methods, including `__iter__`), `next()`, and `iter()`; they're C++20 coroutines, so values are made on demand, even from infinite generators. Generator expressions, `map`, `filter`, `zip` and `enumerate` are lazy too.
-- **Statements:** `del` of names, items, slices (`del xs[::2]`) and keys, and a class's own `__delitem__`; assigning any iterable to a slice of a list (`xs[1:3] = ...`, `xs[::2] = ...`).
+- **Statements:** `del` of names, items, slices (`del xs[::2]`) and keys, and a class's own `__delitem__`; assigning any iterable to a slice of a list (`xs[1:3] = ...`, `xs[::2] = ...`); unpacking any iterable, with a starred name for the rest (`key, value = line.split("=")`, `first, *rest = xs`, also in `for` loops).
 - **Error handling:** exceptions (`try`/`except`/`finally`/`raise`, custom exception classes), and `with` statements.
 - **Classes:** class attributes (`version = "1.0"`: constants a subclass can set to its own value), inheritance and dunder methods (`__add__`, `__eq__`, `__lt__`, `__hash__`, `__getitem__`, `__iter__`, `__str__`...).
 - **Decorators:** `@dataclass`, `@property`, `@staticmethod`, `@classmethod`, `@functools.cache`, and your own decorators.

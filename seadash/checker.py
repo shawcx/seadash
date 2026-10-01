@@ -1607,17 +1607,45 @@ class Checker:
                 if not assignable(t, slot):
                     raise self.error(f"can't store {t} in a {ct}", value)
                 target.ty = slot
-            case A.TupleLit(elts) | A.ListLit(elts) if isinstance(t, VarTupleType):
-                for elt in elts:  # checked when it runs: the lengths must match
-                    self.assign(elt, t.elem, value)
-                target.ty = t
-            case A.TupleLit(elts) | A.ListLit(elts):
-                if not isinstance(t, TupleType):
-                    raise self.error(f"can only unpack a tuple here, not {t}", value)
-                if len(t.elts) != len(elts):
-                    raise self.error(f"can't unpack {len(t.elts)} values into {len(elts)} names", target)
-                for elt, et in zip(elts, t.elts):
+            case A.TupleLit(elts) | A.ListLit(elts) if isinstance(t, TupleType):  # lengths known now
+                star = next((i for i, elt in enumerate(elts) if isinstance(elt, A.Starred)), None)
+                if star is None:
+                    if len(t.elts) != len(elts):
+                        raise self.error(f"can't unpack {len(t.elts)} values into {len(elts)} names", target)
+                    for elt, et in zip(elts, t.elts):
+                        self.assign(elt, et, value)
+                    target.ty = t
+                    return
+                after = len(elts) - star - 1
+                if len(t.elts) < star + after:
+                    raise self.error(f"not enough values to unpack (expected at least {star + after}, got "
+                                     f"{len(t.elts)})", target)
+                for elt, et in zip(elts[:star], t.elts):
                     self.assign(elt, et, value)
+                middle = t.elts[star:len(t.elts) - after]
+                if not middle:
+                    what = f"'*{elts[star].value.id}'" if isinstance(elts[star].value, A.Name) else "the starred target"
+                    raise self.error(f"{what} would always be empty here, so its type can't be told", elts[star])
+                items = middle[0]
+                for x in middle[1:]:
+                    items = widen(items, x)
+                    if items is None:
+                        raise self.error(f"the starred items have different types: {', '.join(map(str, middle))}", elts[star])
+                self.assign(elts[star].value, ListType(items), value)
+                elts[star].ty = ListType(items)
+                for elt, et in zip(elts[star + 1:], t.elts[len(t.elts) - after:]):
+                    self.assign(elt, et, value)
+                target.ty = t
+            case A.TupleLit(elts) | A.ListLit(elts):  # any iterable: the lengths are checked when it runs
+                items = element_type(t)
+                if items is None:
+                    raise self.error(f"can't unpack {t}: it isn't iterable", value)
+                for elt in elts:
+                    if isinstance(elt, A.Starred):
+                        self.assign(elt.value, ListType(items), value)
+                        elt.ty = ListType(items)
+                    else:
+                        self.assign(elt, items, value)
                 target.ty = t
             case _:
                 raise self.error("can't assign to this", target)
@@ -2503,6 +2531,8 @@ class Checker:
                 self.check_hashable(t.elem, "set elements", e)
                 return t
             case A.DictLit(keys, values):
+                if None in keys:
+                    raise self.error("unpacking with '**' isn't supported yet", e)
                 return self.check_dict_literal(e, keys, values, expected)
             case A.TupleLit(elts):
                 hints = expected.elts if isinstance(expected, TupleType) and len(expected.elts) == len(elts) else [None] * len(elts)
@@ -2555,6 +2585,8 @@ class Checker:
                 return self.check_index(e, value, index)
             case A.Slice():
                 raise self.error("a slice can only be used inside [...]", e)
+            case A.Starred():
+                raise self.error("unpacking with '*' here isn't supported yet (only in assignments: a, *rest = xs)", e)
         raise self.error(f"unsupported expression {type(e).__name__}", e)
 
     def check_name(self, e: A.Name, expected: Type | None = None) -> Type:
@@ -4138,6 +4170,8 @@ def target_names(target: A.Expr) -> list[str]:
             return [name]
         case A.TupleLit(elts) | A.ListLit(elts):
             return [n for elt in elts for n in target_names(elt)]
+        case A.Starred(value):  # a, *rest = xs
+            return target_names(value)
     return []
 
 
