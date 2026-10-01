@@ -121,6 +121,10 @@ def _holding_the_lock(method):
     return locked
 
 
+# (Python 3.14 keeps a class's annotations in a function, `__annotate_func__`.)
+_NOT_LOCKED = {"__new__", "__init_subclass__", "__annotate__", "__annotate_func__"}
+
+
 class Synchronized:
     """A class whose methods each hold the object's lock. Like any seadash class with fields and
     no __init__, it's constructed from its fields in order and prints them."""
@@ -133,6 +137,6 @@ class Synchronized:
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         for name, member in list(vars(cls).items()):
-            if callable(member) and not isinstance(member, type) and name not in ("__new__", "__init_subclass__"):
+            if callable(member) and not isinstance(member, type) and name not in _NOT_LOCKED:
                 setattr(cls, name, _holding_the_lock(member))
         dataclasses.dataclass(eq=False)(cls)  # (keeps an __init__ or __repr__ the class has)
