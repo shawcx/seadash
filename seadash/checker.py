@@ -2530,10 +2530,29 @@ class Checker:
                 t = self.check_sequence_literal(e, elts, expected, SetType, "set")
                 self.check_hashable(t.elem, "set elements", e)
                 return t
+            case A.DictLit(keys, values) if None in keys:  # {**a, "k": v}
+                return self.check_starred_dict(keys, values, expected)
             case A.DictLit(keys, values):
-                if None in keys:
-                    raise self.error("unpacking with '**' isn't supported yet", e)
                 return self.check_dict_literal(e, keys, values, expected)
+            case A.TupleLit(elts) if any(isinstance(x, A.Starred) for x in elts):  # (*xs, 1)
+                parts: list[Type] = []
+                fixed = True  # (only fixed tuples unpacked: the result's length is known)
+                for x in elts:
+                    if isinstance(x, A.Starred):
+                        t = self.check_expr(x.value)
+                        x.ty = t
+                        if isinstance(t, TupleType):
+                            parts.extend(t.elts)
+                            continue
+                        fixed = False
+                        if (items := element_type(t)) is None:
+                            raise self.error(f"can't unpack {t} with '*': it isn't iterable", x)
+                        parts.append(items)
+                    else:
+                        parts.append(self.check_expr(x))
+                if fixed:
+                    return TupleType(tuple(parts))
+                return VarTupleType(self.join_all(parts, elts, "tuple items") if parts else UNKNOWN)
             case A.TupleLit(elts):
                 hints = expected.elts if isinstance(expected, TupleType) and len(expected.elts) == len(elts) else [None] * len(elts)
                 if isinstance(expected, VarTupleType):
@@ -2586,7 +2605,8 @@ class Checker:
             case A.Slice():
                 raise self.error("a slice can only be used inside [...]", e)
             case A.Starred():
-                raise self.error("unpacking with '*' here isn't supported yet (only in assignments: a, *rest = xs)", e)
+                raise self.error("unpacking with '*' here isn't supported yet (it works in assignments, lists, "
+                                 "tuples and sets)", e)
         raise self.error(f"unsupported expression {type(e).__name__}", e)
 
     def check_name(self, e: A.Name, expected: Type | None = None) -> Type:
@@ -2762,8 +2782,49 @@ class Checker:
         if message := builtins.format_spec_error(t, spec if isinstance(spec, str) else None):
             raise self.error(message, part.value if message.startswith("a format spec") else part)
 
+    def starred_items(self, elts: list[A.Expr], hint: Type | None) -> list[Type]:
+        """The item types a display with stars adds: an item's own, or what `*x` unpacks."""
+        types = []
+        for x in elts:
+            if isinstance(x, A.Starred):
+                t = self.check_expr(x.value, ListType(hint) if hint is not None else None)
+                items = element_type(t)
+                if items is None:
+                    raise self.error(f"can't unpack {t} with '*': it isn't iterable", x)
+                x.ty = t
+                types.append(items)
+            else:
+                types.append(self.check_expr(x, hint))
+        return types
+
+    def check_starred_dict(self, keys: list, values: list[A.Expr], expected: Type | None) -> Type:
+        """{**a, "k": v}: the keys and values of each dict unpacked, and the pairs written."""
+        hint = expected if isinstance(expected, DictType) else None
+        kts, vts, where = [], [], []
+        for k, v in zip(keys, values):
+            if k is None:
+                t = self.check_expr(v, hint)
+                if not isinstance(t, DictType):
+                    raise self.error(f"'**' needs a dict, not {t}", v)
+                kts.append(t.key)
+                vts.append(t.value)
+            else:
+                kts.append(self.check_expr(k, hint.key if hint else None))
+                vts.append(self.check_expr(v, hint.value if hint else None))
+            where.append(v)
+        if hint is not None and all(assignable(t, hint.key) for t in kts) and all(assignable(t, hint.value) for t in vts):
+            return DictType(hint.key, hint.value)
+        key = self.join_all(kts, where, "dict keys")
+        self.check_hashable(key, "dict keys", where[0])
+        return DictType(key, self.join_all(vts, where, "dict values"))
+
     def check_sequence_literal(self, e, elts, expected, ctor, word: str) -> Type:
         hint = expected.elem if isinstance(expected, ctor) else None
+        if any(isinstance(x, A.Starred) for x in elts):  # [*xs, 1]
+            types = self.starred_items(elts, hint)
+            if hint is not None and all(assignable(t, hint) for t in types):
+                return expected
+            return ctor(self.join_all(types, elts, f"{word} items"))
         if not elts:
             if hint is None:
                 raise self.error(

@@ -4255,6 +4255,25 @@ template <class K, class V, class It>
 void dict_update(const dict<K, V>& d, const It& pairs) {  // d.update([(k, v), ...])
     for (auto&& [k, v] : iter(pairs)) d[K(k)] = V(v);
 }
+// What a display with stars adds, in order: [*xs, 1], {*a, *b}, {**d, "k": v}.
+template <class C, class X>
+void add_item(const C& out, X&& x) {
+    using T = typename C::value_type;
+    if constexpr (requires { out.push_back(std::declval<T>()); }) out.push_back(static_cast<T>(std::forward<X>(x)));
+    else out.insert(static_cast<T>(std::forward<X>(x)));
+}
+template <class C, class Xs>
+void add_items(const C& out, Xs&& xs) {
+    if constexpr (is_tuple<std::remove_cvref_t<Xs>>::value) {
+        std::apply([&](const auto&... x) { (add_item(out, x), ...); }, xs);
+    } else {
+        for (auto&& x : iter(std::forward<Xs>(xs))) add_item(out, x);
+    }
+}
+template <class K, class V, class D>
+void add_pairs(const dict<K, V>& out, const D& d) {
+    for (const auto& [k, v] : d) out[static_cast<K>(k)] = static_cast<V>(v);
+}
 template <class K, class V>
 dict<K, V> dict_or(const dict<K, V>& a, const dict<K, V>& b) {  // a | b
     dict<K, V> out = a.copy();

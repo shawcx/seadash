@@ -1850,8 +1850,16 @@ class CodeGen:
                 return self.in_order(values, lambda: self.fstring(parts))
             case A.Name():
                 return self.name(e)
+            case A.ListLit(elts) | A.SetLit(elts) if any(isinstance(x, A.Starred) for x in elts):  # [*xs, 1]
+                return self.starred_display(self.cpp_type(e.ty), elts, e.ty.elem)
             case A.ListLit(elts) | A.SetLit(elts):
                 return f"{self.cpp_type(e.ty)}{{{', '.join(self.expr_as(x, e.ty.elem) for x in elts)}}}"
+            case A.DictLit(keys, values) if None in keys:  # {**a, "k": v}
+                out = self.fresh("d")
+                steps = [f"sd::add_pairs({out}, {self.expr(v)});" if k is None
+                         else f"{out}[{self.expr_as(k, e.ty.key)}] = {self.expr_as(v, e.ty.value)};"
+                         for k, v in zip(keys, values)]
+                return f"[&] {{ {self.cpp_type(e.ty)} {out}; {' '.join(steps)} return {out}; }}()"
             case A.DictLit(keys, values):
                 if isinstance(e.ty, SetType):
                     return f"{self.cpp_type(e.ty)}{{}}"  # `s: set[int] = {}`
@@ -1859,6 +1867,17 @@ class CodeGen:
                     f"{{{self.expr_as(k, e.ty.key)}, {self.expr_as(v, e.ty.value)}}}" for k, v in zip(keys, values)
                 )
                 return f"{self.cpp_type(e.ty)}{{{pairs}}}"
+            case A.TupleLit(elts) if isinstance(e.ty, VarTupleType) and any(isinstance(x, A.Starred) for x in elts):
+                items = self.starred_display(f"sd::list<{self.cpp_type(e.ty.elem)}>", elts, e.ty.elem)
+                return f"{self.cpp_type(e.ty)}({items})"
+            case A.TupleLit(elts) if any(isinstance(x, A.Starred) for x in elts):  # (*pair, 1): a fixed tuple
+                parts, decls = [], []
+                for x in elts:
+                    p = self.fresh("p")
+                    code = self.expr(x.value) if isinstance(x, A.Starred) else f"std::tuple<{self.cpp_type(x.ty)}>{{{self.expr(x)}}}"
+                    decls.append(f"auto {p} = {code};")
+                    parts.append(p)
+                return f"[&] {{ {' '.join(decls)} return std::tuple_cat({', '.join(parts)}); }}()"
             case A.TupleLit(elts) if isinstance(e.ty, VarTupleType):  # the arguments packed into *args
                 return f"{self.cpp_type(e.ty)}{{{', '.join(self.expr_as(x, e.ty.elem) for x in elts)}}}"
             case A.TupleLit(elts):
@@ -3079,6 +3098,13 @@ class CodeGen:
         finally:
             self.format_args = saved
         return f"[&] {{ {' '.join(decls)} return {body}; }}()" if decls else body
+
+    def starred_display(self, cpp_type: str, elts: list[A.Expr], elem: Type) -> str:
+        """[*xs, 1] and the like: each item or unpacked iterable added in order."""
+        out = self.fresh("out")
+        steps = [f"sd::add_items({out}, {self.expr(x.value)});" if isinstance(x, A.Starred)
+                 else f"sd::add_item({out}, {self.expr_as(x, elem)});" for x in elts]
+        return f"[&] {{ {cpp_type} {out}; {' '.join(steps)} return {out}; }}()"
 
     def method_call(self, recv_type: Type, name: str, e: A.Call) -> str:
         r = self.expr(e.func.value)

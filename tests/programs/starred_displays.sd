@@ -1,0 +1,32 @@
+# Unpacking with * and ** in displays: lists, tuples, sets and dicts.
+xs = [1, 2]
+ys = (3, 4)
+print([*xs, *ys, 5])
+print([0, *range(3), 9])
+print((*xs, 10))
+pair = ("a", 1)
+print((*pair, True))
+print({*xs, *[2, 3]} == {1, 2, 3})
+print([*(n * n for n in xs)])
+words = "the sea".split()
+letters = [*words[0], *words[1]]
+print(letters)
+defaults = {"color": "blue", "size": "M"}
+chosen = {"size": "L"}
+print({**defaults, **chosen})
+print({**defaults, "color": "red", **{"extra": "yes"}})
+floats = [0.5, *xs]
+print(floats == [0.5, 1, 2])
+
+
+def total(*parts: int) -> int:
+    return sum(parts)
+
+
+def middle(xs: list[int]) -> tuple[int, ...]:
+    return (*xs[1:-1],)
+
+
+print(total(1, 2), middle([1, 2, 3, 4]))
+nested = [[*row, 0] for row in [[1], [2, 3]]]
+print(nested)

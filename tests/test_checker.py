@@ -2569,10 +2569,19 @@ def test_slice_assignment_of_an_empty_list_to_a_field():
     ("a, *b = (1,)\n", "'*b' would always be empty here, so its type can't be told"),
     ("a, *b = (1, 'x', 2)\n", "the starred items have different types: str, int"),
     ("a, b = 5\n", "can't unpack int: it isn't iterable"),
-    ("xs = [1]\nprint([*xs, 2])\n", "unpacking with '*' here isn't supported yet (only in assignments: a, *rest = xs)"),
+    ("print([*5])\n", "can't unpack int with '*': it isn't iterable"),
+    ("print({**[1]})\n", "'**' needs a dict, not list[int]"),
+    ("print([*[1], 'a'])\n", "list items have different types: int and str"),
+    ("def f(a: int) -> int:\n    return a\nprint(f(*[1]))\n",
+     "unpacking with '*' here isn't supported yet (it works in assignments, lists, tuples and sets)"),
 ])
 def test_unpacking_errors(src, msg):
     assert err(src).message == msg
+
+
+def test_starred_display_types():
+    assert variables(ok("xs = [1]\na = [*xs, 2.5]\nt = (*xs, 3)\nu = (*(1, 'a'), 2)\nd = {**{'k': 1}, 'j': 2}\n")) == [
+        "xs: list[int]", "a: list[float]", "t: tuple[int, ...]", "u: tuple[int, str, int]", "d: dict[str, int]"]
 
 
 def test_unpacking_types():
