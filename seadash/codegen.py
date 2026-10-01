@@ -36,6 +36,7 @@ from . import ast as A
 from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
+from .flow import walk as walk_nodes
 from .threads import MUTATING_METHODS  # (a parameter changed by one of these is passed by value)
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
@@ -681,14 +682,16 @@ class CodeGen:
         A body that modifies or captures a const& parameter works on its own copy
         (see local_params)."""
         out = []
+        mentioned = {n.id for n in walk_nodes(fn.node.body) if isinstance(n, A.Name)}
         for p, var in zip(fn.params, self.param_vars(fn)):
             t = self.cpp_type(p.type)
+            unused = "" if p.name in mentioned else "[[maybe_unused]] "  # (an override that ignores one: log_message)
             if by_value(p.type) or fn.generator:  # (a generator keeps running after the call: it needs its own copy)
                 name = f"sd_arg_{var.cpp_name}" if var.captured else ident(p.name)
-                out.append(f"{t} {name}")
+                out.append(f"{unused}{t} {name}")
             else:
                 own_copy = var.captured or p.name in modified_names(fn.node.body) or synchronized_copy(fn, p.type)
-                out.append(f"const {t}& {f'sd_arg_{var.cpp_name}' if own_copy else ident(p.name)}")
+                out.append(f"{unused}const {t}& {f'sd_arg_{var.cpp_name}' if own_copy else ident(p.name)}")
         return out
 
     def function(self, fn: FuncInfo) -> None:
@@ -1536,6 +1539,8 @@ class CodeGen:
                     f"{{{self.expr_as(k, e.ty.key)}, {self.expr_as(v, e.ty.value)}}}" for k, v in zip(keys, values)
                 )
                 return f"{self.cpp_type(e.ty)}{{{pairs}}}"
+            case A.TupleLit(elts) if isinstance(e.ty, VarTupleType):  # the arguments packed into *args
+                return f"{self.cpp_type(e.ty)}{{{', '.join(self.expr_as(x, e.ty.elem) for x in elts)}}}"
             case A.TupleLit(elts):
                 args = ", ".join(self.expr_as(x, t) for x, t in zip(elts, e.ty.elts))
                 return f"{self.cpp_type(e.ty)}{{{args}}}"  # braces: evaluated left to right

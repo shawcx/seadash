@@ -550,15 +550,20 @@ class Parser:
         params: list[A.Param] = []
         seen: set[str] = set()
         while not self.at(")"):
+            if params and params[-1].star:
+                raise self.error("parameters after *args (keyword-only parameters) aren't supported yet", self.peek().loc)
+            star = self.accept("*") is not None
             tok = self.expect_name("parameter name")
             if tok.value in seen:
                 raise self.error(f"duplicate parameter '{tok.value}'", tok.loc)
             seen.add(tok.value)
             annotation = self.parse_type() if self.accept(":") else None
+            if star and self.at("="):
+                raise self.error(f"*{tok.value} can't have a default value", self.peek().loc)
             default = self.parse_expr() if self.accept("=") else None
-            if default is None and params and params[-1].default is not None:
+            if default is None and not star and params and params[-1].default is not None:
                 raise self.error("parameter without a default follows parameter with a default", tok.loc)
-            params.append(A.Param(tok.value, annotation, default, loc=tok.loc))
+            params.append(A.Param(tok.value, annotation, default, star, loc=tok.loc))
             if not self.accept(","):
                 break
         return params

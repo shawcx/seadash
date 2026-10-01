@@ -184,7 +184,7 @@ match shape:                         # a json.Value
 ```
 
 **Also supported:**
-- **Functions:** generics (`def first[T](xs: list[T]) -> T | None`, `class Stack[T]:`), closures that share variables like Python's, lambdas, and functions as values.
+- **Functions:** default and keyword arguments, `*args` (typed: `*args: str` is a `tuple[str, ...]`), generics (`def first[T](xs: list[T]) -> T | None`, `class Stack[T]:`), closures that share variables like Python's, lambdas, and functions as values.
 - **Generators:** `yield` and `yield from` (in functions and methods, including `__iter__`), `next()`, and `iter()`; they're C++20 coroutines, so values are made on demand, even from infinite generators. Generator expressions, `map`, `filter`, `zip` and `enumerate` are lazy too.
 - **Error handling:** exceptions (`try`/`except`/`finally`/`raise`, custom exception classes), and `with` statements.
 - **Classes:** class attributes (`version = "1.0"`: constants a subclass can set to its own value), inheritance and dunder methods (`__add__`, `__eq__`, `__lt__`, `__hash__`, `__getitem__`, `__iter__`, `__str__`...).
@@ -275,7 +275,7 @@ seadash borrows Python's syntax, not all of its semantics:
 - **HTTP**: `URLError.reason` is always a `str`. `ssl` covers what HTTPS clients need (no server side yet), and its error messages lack Python's `(_ssl.c:1000)` suffix. `HTTPConnection.request` doesn't take a file or iterable body, or `encode_chunked`. After a `str` body fails to encode, Python sends the half-built request's headers along with the next request; seadash sends nothing.
 - **`match` checks exhaustiveness only simply.** A match counts as covering every value when a case is a plain capture or `_`, or `case None:` plus a pattern covering the rest of an optional, or a class pattern covering the subject's type. Otherwise the checker assumes no case might match (so a function may need a final `return`). An `int(n) | float(n)` capture is a `float` whichever matches.
 - **No tracebacks.** An uncaught exception (or `logging.exception()`) shows the exception's type and message, but not the stack of calls that led to it.
-- **Not supported yet:** a few dynamic features, such as `type(x)`, `getattr`, `*args` and `**kwargs`, unions other than `T | None`, and multiple inheritance; `del`, and assigning to a slice. The full list is in `docs/roadmap.md`.
+- **Not supported yet:** a few dynamic features, such as `type(x)`, `getattr`, `**kwargs`, keyword-only parameters, unions other than `T | None`, and multiple inheritance; `del`, and assigning to a slice. The full list is in `docs/roadmap.md`.
 
 ## How it works
 

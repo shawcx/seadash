@@ -3,7 +3,7 @@ import textwrap
 import pytest
 
 from seadash.checker import ModuleInfo, check
-from seadash.errors import CheckError, Loc
+from seadash.errors import CompileError, CheckError, Loc
 from seadash.parser import parse
 
 
@@ -2105,3 +2105,17 @@ def test_builtin_function_and_method_errors(src, msg):
 ])
 def test_class_attribute_errors(src, msg):
     assert err(src).message == msg
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("def f(*args):\n    pass\n", "parameter 'args' needs a type annotation, e.g. `*args: str`"),
+    ("def f(*args: int, x: int):\n    pass\n", "parameters after *args (keyword-only parameters) aren't supported yet"),
+    ("def f(*args: int = 1):\n    pass\n", "*args can't have a default value"),
+    ("def f(*args: int):\n    pass\nf(1, 'a')\n", "*args of f() takes int arguments, not str"),
+    ("def f(*args: int):\n    pass\nf(args=(1,))\n", "f() got an unexpected keyword argument 'args'"),
+    ("def f(a: int, *rest: int):\n    pass\nf()\n", "f() is missing argument 'a'"),
+])
+def test_star_args_errors(src, msg):
+    with pytest.raises(CompileError) as info:  # (some are found by the parser)
+        ok(src)
+    assert info.value.message == msg

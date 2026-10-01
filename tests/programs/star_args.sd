@@ -1,0 +1,29 @@
+# *args: the rest of the positional arguments, as a tuple (typed: *args: str).
+def total(label: str, *nums: int) -> str:
+    return f"{label}: {sum(nums)} from {len(nums)} {nums}"
+
+
+def log(fmt: str, *args: str) -> None:
+    print(fmt, args, " ".join(args))
+
+
+class Base:
+    def log_message(self, format: str, *args: str) -> None:
+        print("base", format, args)
+
+    def run(self) -> None:
+        self.log_message("%s %s", "a", "b")
+        self.log_message("none")
+
+
+class Quiet(Base):
+    def log_message(self, format: str, *args: str) -> None:
+        print("quiet", len(args))
+
+
+print(total("a"), total("b", 1), total("c", 1, 2, 3))
+log("x")
+log("y", "p", "q")
+for b in [Base(), Quiet()]:
+    b.run()
+print(total(label="k"))

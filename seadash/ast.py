@@ -521,6 +521,7 @@ class Param(Node):
     name: str
     annotation: TypeExpr | None = None
     default: Expr | None = None
+    star: bool = False  # `*args`: the rest of the positional arguments, as a tuple
 
 
 @dataclass

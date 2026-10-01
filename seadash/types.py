@@ -389,6 +389,7 @@ class Param:
     type: Type
     default: object | None  # ast.Expr
     loc: Loc
+    star: bool = False  # `*args: T`: type is tuple[T, ...], filled from the remaining positional arguments
 
 
 @dataclass(eq=False)

@@ -603,10 +603,12 @@ class Checker:
         resolved: list[Param] = []
         for p in params:
             if p.annotation is None:
+                example = f"*{p.name}: str" if p.star else f"{p.name}: int"
                 raise self.error(
-                    f"parameter '{p.name}' needs a type annotation, e.g. `{p.name}: int`", p
+                    f"parameter '{p.name}' needs a type annotation, e.g. `{example}`", p
                 )
-            resolved.append(Param(p.name, self.resolve_type(p.annotation), p.default, p.loc))
+            t = self.resolve_type(p.annotation)
+            resolved.append(Param(p.name, VarTupleType(t) if p.star else t, p.default, p.loc, p.star))
         ret = self.resolve_type(node.returns) if node.returns else NONE
         info = FuncInfo(node.name, resolved, ret, node, owner, module=self.module_name, kind=kind)
         if has_yield(node.body):
@@ -3590,7 +3592,18 @@ class Checker:
         return params
 
     def match_args(self, e: A.Call, params: list[Param], what: str) -> list[A.Expr | None]:
-        """Match positional and keyword arguments to parameters; returns one slot per parameter."""
+        """Match positional and keyword arguments to parameters; returns one slot per parameter.
+        A `*args` parameter's slot is a tuple of the remaining positional arguments."""
+        rest = None
+        if params and params[-1].star:
+            star, params = params[-1], params[:-1]
+            rest = A.TupleLit(list(e.args[len(params):]), loc=e.loc)
+            rest.ty = star.type
+            for arg in rest.elts:
+                t = self.check_expr(arg, star.type.elem)
+                if not assignable(t, star.type.elem):
+                    raise self.error(f"*{star.name} of {what} takes {star.type.elem} arguments, not {t}", arg)
+            e = A.Call(e.func, e.args[:len(params)], e.keywords, loc=e.loc)
         if len(e.args) > len(params):
             raise self.error(f"{what} takes {plural(len(params), 'argument')} but {len(e.args)} were given", e)
         slots: list[A.Expr | None] = list(e.args) + [None] * (len(params) - len(e.args))
@@ -3609,7 +3622,7 @@ class Checker:
             t = self.check_expr(arg, p.type)
             if not assignable(t, p.type):
                 raise self.error(f"argument '{p.name}' of {what} must be {p.type}, not {t}", arg)
-        return slots
+        return slots if rest is None else [*slots, rest]
 
 
 # ---- helpers ----------------------------------------------------------------

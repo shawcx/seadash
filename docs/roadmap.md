@@ -47,7 +47,7 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
   `int.real`/`imag`/`numerator`/`denominator`/`conjugate`, `tuple * n`, `f.encoding`, `%` formatting.
 - Statements: `del`, assigning to a slice (`xs[1:3] = ...`), unpacking with a star (`a, *rest = xs`,
   `f(*args)`, `[*xs, *ys]`, `{**d}`).
-- Functions: keyword-only and positional-only parameters (`*`, `/`), `*args` and `**kwargs`, default
+- Functions: keyword-only and positional-only parameters (`*`, `/`), `**kwargs`, default
   values in nested functions and lambdas, and keywords or defaults when calling a function held in
   a variable.
 - No tracebacks for uncaught exceptions.
