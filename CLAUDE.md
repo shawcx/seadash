@@ -41,6 +41,10 @@ The name is final (a nod to the author's two kids).
   cache); `cli.py` is the `sd` command.
 - `seadash/runtime/seadash.hpp` is the core runtime; `seadash/runtime/modules/*.hpp` are
   standard-library modules (a module declares its header and libraries in `builtins.py`).
+- A standard-library class without type parameters (`socket`, `Logger`, `date`...) is a
+  `BuiltinClass` in `types.py`, with its C++ type and thread rule; `builtins.py` adds its
+  `methods` and `attributes` next to its module. The checker, `threads.py` and codegen look
+  those up, so only a class that needs special code generation gets a case of its own.
 - `tests/programs/*.sd` are end-to-end tests: `.out` is the expected stdout (and optional
   `.err` / `.exit`). `tests/test_*.py` are unit tests; checker error messages are tested in
   `tests/test_checker.py`.

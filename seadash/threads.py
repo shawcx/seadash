@@ -35,8 +35,8 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     element_type,
-    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, DATETIME_TYPES,
-    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, EXECUTOR, HTTP_HEADERS, HTTP_RESPONSE, HTTP_CONNECTION, URL_PARTS, URL_REQUEST, LOGGER, LOG_HANDLER, LOG_FORMATTER, MatchType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
+    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, IMMUTABLE, LOCKED, VALUE, BuiltinClass,
+    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, MatchType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
 MUTATING_METHODS = frozenset(
@@ -95,8 +95,10 @@ def deeply_immutable(t: Type, seen: frozenset = frozenset()) -> bool:
     copy and no lock: numbers, strings, tuples of those, frozen @value classes (frozen all
     the way down), and frozen classes whose fields (and subclasses' fields) are all like that."""
     match t:
-        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, PATH, *DATETIME_TYPES):
+        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE):
             return True
+        case BuiltinClass():
+            return t.threads == IMMUTABLE
         case TupleType(xs):
             return all(deeply_immutable(x, seen) for x in xs)
         case VarTupleType(x) | OptionalType(x):
@@ -118,18 +120,14 @@ def deeply_immutable(t: Type, seen: frozenset = frozenset()) -> bool:
 def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
     """Why a value of type `t` can't be handed to another thread, or None if it can."""
     match t:
-        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE, PATH, *DATETIME_TYPES):
+        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE):
             return None
         case SyncType():
             return None
-        case _ if t in (SOCKET, EXECUTOR, LOGGER, LOG_HANDLER, LOG_FORMATTER):  # (internally locked)
+        case BuiltinClass() if t.threads:  # shared (it can't change, or locks itself), or copied
             return None
-        case _ if t in (URL_PARTS, URL_REQUEST, HTTP_HEADERS):  # values, copied
-            return None
-        case _ if t == HTTP_CONNECTION:
-            return "an HTTP connection (give each thread its own)"
-        case _ if t == HTTP_RESPONSE:
-            return "a response (reading it from two threads would interleave; pass what you read from it)"
+        case BuiltinClass() if t.unsendable:
+            return t.unsendable
         case FutureType(x):  # its result is copied out
             return unsendable(x, seen)
         case PatternType() | MatchType():  # immutable (a Match holds its own copy of the string)
@@ -164,7 +162,9 @@ def not_a_value(t: Type) -> str | None:
     """Why a @value class can't have a field of type t (it has identity: copying the class
     would share it), or None. A @value class is a value all the way down."""
     match t:
-        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE, PATH, *DATETIME_TYPES, URL_PARTS):
+        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE):
+            return None
+        case BuiltinClass() if t.threads in (IMMUTABLE, VALUE):
             return None
         case ListType(x) | SetType(x) | OptionalType(x) | DequeType(x) | VarTupleType(x):
             return not_a_value(x)
@@ -195,7 +195,7 @@ def not_a_value(t: Type) -> str | None:
 
 def shareable(t: Type) -> bool:
     """Safe to access from several threads at once without copying."""
-    return isinstance(t, (SyncType, FutureType)) or t in (JSON_VALUE, SOCKET, EXECUTOR, LOGGER, LOG_HANDLER, LOG_FORMATTER) or (
+    return isinstance(t, (SyncType, FutureType)) or t == JSON_VALUE or (isinstance(t, BuiltinClass) and t.threads == LOCKED) or (
         isinstance(t, StructType) and is_synchronized(t)
     )
 

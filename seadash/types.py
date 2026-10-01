@@ -32,52 +32,69 @@ BYTES = Prim("bytes")
 NONE = Prim("None")
 JSON_VALUE = Prim("json.Value")  # a dynamically typed JSON value (the json module)
 UNKNOWN = Prim("?")  # only while inferring literals: the element type of an empty []
-SOCKET = Prim("socket")  # socket.socket: a thread-safe handle
-PATH = Prim("Path")  # pathlib.Path: an immutable path value
-TEXT_WRAPPER = Prim("TextWrapper")  # textwrap.TextWrapper
-STR_TEMPLATE = Prim("Template")  # string.Template
-UUID_T = Prim("UUID")  # uuid.UUID: an immutable 16-byte value
-SQLITE_CONNECTION = Prim("sqlite3.Connection")  # handles: copies share the connection / cursor
-SQLITE_CURSOR = Prim("sqlite3.Cursor")
-
-# Incremental (de)compressors: handles (copies share the state) whose methods and attributes
-# are in builtins.CODEC_METHODS and CODEC_ATTRIBUTES. Maps each type to its C++ class.
-CODEC_TYPES: dict[Prim, str] = {}
 
 
-def codec_type(name: str, cpp: str) -> Prim:
-    t = Prim(name)
-    CODEC_TYPES[t] = cpp
-    return t
+@dataclass(frozen=True)
+class BuiltinClass(Prim):
+    """A standard-library class with no type parameters: socket.socket, logging.Logger,
+    datetime.date... Its C++ type and thread rule are declared here, and builtins.py fills
+    in `methods` and `attributes` next to its module; the checker, threads.py and codegen
+    look them up, so a new class needs no case of its own in them. (Compared by name, like
+    any Prim. What only a few classes do is still by name: `with`, iterating, ordering.)"""
+
+    cpp: str = field(compare=False)  # its C++ type
+    # How it crosses to another thread: IMMUTABLE, VALUE, COPIED, LOCKED, or "" if it can't
+    # (then `unsendable` may say why, and what to do instead).
+    threads: str = field(default="", compare=False)
+    unsendable: str = field(default="", compare=False)
+    methods: dict = field(default_factory=dict, compare=False, repr=False)  # name -> checks a call (builtins.sync_method)
+    attributes: dict = field(default_factory=dict, compare=False, repr=False)  # name -> lambda t: its type
 
 
-ZLIB_COMPRESS = codec_type("zlib.Compress", "sd::zlib::Compress")
-ZLIB_DECOMPRESS = codec_type("zlib.Decompress", "sd::zlib::Decompress")
-BZ2_COMPRESSOR = codec_type("bz2.BZ2Compressor", "sd::bz2::BZ2Compressor")
-BZ2_DECOMPRESSOR = codec_type("bz2.BZ2Decompressor", "sd::bz2::BZ2Decompressor")
-LZMA_COMPRESSOR = codec_type("lzma.LZMACompressor", "sd::lzma::LZMACompressor")
-LZMA_DECOMPRESSOR = codec_type("lzma.LZMADecompressor", "sd::lzma::LZMADecompressor")
-HASH = Prim("hash")  # a hashlib hash object
-EXECUTOR = Prim("ThreadPoolExecutor")  # concurrent.futures.ThreadPoolExecutor
-LOGGER = Prim("Logger")  # logging.Logger
-LOG_HANDLER = Prim("Handler")  # logging.StreamHandler / FileHandler / NullHandler
-LOG_FORMATTER = Prim("Formatter")  # logging.Formatter
-CSV_WRITER = Prim("csv.writer")
-CSV_DICT_READER = Prim("csv.DictReader")
-CSV_DICT_WRITER = Prim("csv.DictWriter")
-HTTP_RESPONSE = Prim("http.client.HTTPResponse")
-HTTP_CONNECTION = Prim("http.client.HTTPConnection")  # (HTTPSConnection too)
-HTTP_HEADERS = Prim("http.client.HTTPMessage")
-URL_REQUEST = Prim("urllib.request.Request")
-URL_PARTS = Prim("urllib.parse.ParseResult")
-HMAC_T = Prim("HMAC")  # hmac.HMAC
-TEMPDIR = Prim("TemporaryDirectory")  # tempfile.TemporaryDirectory: removed when done
+IMMUTABLE = "immutable"  # can never change: threads share it, and a @value class may hold it
+VALUE = "value"  # copied to the other thread; a @value class may hold it
+COPIED = "copied"  # copied to the other thread, but it has identity: not for a @value class
+LOCKED = "locked"  # locks itself: every thread uses the same one
 
-DATE = Prim("date")  # the datetime module's value types
-TIME = Prim("time")
-DATETIME = Prim("datetime")
-TIMEDELTA = Prim("timedelta")
-TIMEZONE = Prim("timezone")
+SOCKET = BuiltinClass("socket", "sd::socket::Socket", LOCKED)
+PATH = BuiltinClass("Path", "sd::pathlib::Path", IMMUTABLE)
+TEXT_WRAPPER = BuiltinClass("TextWrapper", "sd::textwrap::TextWrapper")
+STR_TEMPLATE = BuiltinClass("Template", "sd::stringmod::Template")
+UUID_T = BuiltinClass("UUID", "sd::uuid::UUID")  # an immutable 16-byte value
+SQLITE_CONNECTION = BuiltinClass("sqlite3.Connection", "sd::sqlite3::Connection")  # handles: copies share the
+SQLITE_CURSOR = BuiltinClass("sqlite3.Cursor", "sd::sqlite3::Cursor")  # connection / cursor
+# Incremental (de)compressors: handles (copies share the state).
+ZLIB_COMPRESS = BuiltinClass("zlib.Compress", "sd::zlib::Compress")
+ZLIB_DECOMPRESS = BuiltinClass("zlib.Decompress", "sd::zlib::Decompress")
+BZ2_COMPRESSOR = BuiltinClass("bz2.BZ2Compressor", "sd::bz2::BZ2Compressor")
+BZ2_DECOMPRESSOR = BuiltinClass("bz2.BZ2Decompressor", "sd::bz2::BZ2Decompressor")
+LZMA_COMPRESSOR = BuiltinClass("lzma.LZMACompressor", "sd::lzma::LZMACompressor")
+LZMA_DECOMPRESSOR = BuiltinClass("lzma.LZMADecompressor", "sd::lzma::LZMADecompressor")
+HASH = BuiltinClass("hash", "sd::hashlib::Hash")  # a hashlib hash object
+HMAC_T = BuiltinClass("HMAC", "sd::hmac::HMAC")
+EXECUTOR = BuiltinClass("ThreadPoolExecutor", "sd::futures::ThreadPoolExecutor", LOCKED)
+LOGGER = BuiltinClass("Logger", "sd::logging::Logger", LOCKED)
+LOG_HANDLER = BuiltinClass("Handler", "sd::logging::Handler", LOCKED)  # StreamHandler / FileHandler / NullHandler
+LOG_FORMATTER = BuiltinClass("Formatter", "sd::logging::Formatter", LOCKED)
+CSV_WRITER = BuiltinClass("csv.writer", "sd::csv::Writer")
+CSV_DICT_READER = BuiltinClass("csv.DictReader", "sd::csv::DictReader")
+CSV_DICT_WRITER = BuiltinClass("csv.DictWriter", "sd::csv::DictWriter")
+HTTP_RESPONSE = BuiltinClass(
+    "http.client.HTTPResponse", "sd::httpclient::HTTPResponse",
+    unsendable="a response (reading it from two threads would interleave; pass what you read from it)")
+HTTP_CONNECTION = BuiltinClass(  # (HTTPSConnection too)
+    "http.client.HTTPConnection", "sd::httpclient::HTTPConnection",
+    unsendable="an HTTP connection (give each thread its own)")
+HTTP_HEADERS = BuiltinClass("http.client.HTTPMessage", "sd::httpclient::HTTPMessage", COPIED)
+URL_REQUEST = BuiltinClass("urllib.request.Request", "sd::urlrequest::Request", COPIED)
+URL_PARTS = BuiltinClass("urllib.parse.ParseResult", "sd::urlparse::Parts", VALUE)
+TEMPDIR = BuiltinClass("TemporaryDirectory", "sd::tempfile::TemporaryDirectory")  # removed when done
+
+DATE = BuiltinClass("date", "sd::datetime::date", IMMUTABLE)  # the datetime module's value types
+TIME = BuiltinClass("time", "sd::datetime::time", IMMUTABLE)
+DATETIME = BuiltinClass("datetime", "sd::datetime::datetime", IMMUTABLE)
+TIMEDELTA = BuiltinClass("timedelta", "sd::datetime::timedelta", IMMUTABLE)
+TIMEZONE = BuiltinClass("timezone", "sd::datetime::timezone", IMMUTABLE)
 DATETIME_TYPES = (DATE, TIME, DATETIME, TIMEDELTA, TIMEZONE)
 
 PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "None": NONE}

@@ -37,9 +37,9 @@ from . import builtins
 from .checker import CallTarget, Dunder, ModuleInfo
 from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
 from .types import (
-    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, TEMPDIR, SyncType, DATETIME_TYPES, DATETIME,
-    TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T, CODEC_TYPES, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
-    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
+    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
+    BuiltinClass, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
+    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION,
     PARSER, ParserType, SubParsersType,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
@@ -251,58 +251,12 @@ class CodeGen:
                 return "sd::bytes"
             case _ if t == JSON_VALUE:
                 return "sd::json::Value"
-            case _ if t == SOCKET:
-                return "sd::socket::Socket"
-            case _ if t == PATH:
-                return "sd::pathlib::Path"
-            case _ if t == TEMPDIR:
-                return "sd::tempfile::TemporaryDirectory"
-            case _ if t == TEXT_WRAPPER:
-                return "sd::textwrap::TextWrapper"
-            case _ if t == STR_TEMPLATE:
-                return "sd::stringmod::Template"
-            case _ if t == UUID_T:
-                return "sd::uuid::UUID"
-            case _ if t in CODEC_TYPES:
-                return CODEC_TYPES[t]
-            case _ if t == SQLITE_CONNECTION:
-                return "sd::sqlite3::Connection"
-            case _ if t == SQLITE_CURSOR:
-                return "sd::sqlite3::Cursor"
+            case BuiltinClass():
+                return t.cpp
             case StructFormatType():
                 return "sd::structmod::Struct"
-            case _ if t == HASH:
-                return "sd::hashlib::Hash"
-            case _ if t == EXECUTOR:
-                return "sd::futures::ThreadPoolExecutor"
-            case _ if t == LOGGER:
-                return "sd::logging::Logger"
-            case _ if t == CSV_WRITER:
-                return "sd::csv::Writer"
-            case _ if t == HTTP_RESPONSE:
-                return "sd::httpclient::HTTPResponse"
-            case _ if t == HTTP_CONNECTION:
-                return "sd::httpclient::HTTPConnection"
-            case _ if t == HTTP_HEADERS:
-                return "sd::httpclient::HTTPMessage"
-            case _ if t == URL_REQUEST:
-                return "sd::urlrequest::Request"
-            case _ if t == URL_PARTS:
-                return "sd::urlparse::Parts"
-            case _ if t == CSV_DICT_READER:
-                return "sd::csv::DictReader"
-            case _ if t == CSV_DICT_WRITER:
-                return "sd::csv::DictWriter"
-            case _ if t == LOG_HANDLER:
-                return "sd::logging::Handler"
-            case _ if t == LOG_FORMATTER:
-                return "sd::logging::Formatter"
             case FutureType(elem):
                 return f"sd::futures::Future<{self.cpp_type(elem)}>"
-            case _ if t == HMAC_T:
-                return "sd::hmac::HMAC"
-            case _ if t in DATETIME_TYPES:
-                return f"sd::datetime::{t.name}"
             case ParserType() | SubParsersType():
                 return "sd::argparse::ArgumentParser"
             case NamespaceType():
@@ -2703,10 +2657,7 @@ class CodeGen:
                 body_code = f"std::optional<sd::bytes>({self.expr(body)})"
             headers = self.expr(args["headers"]) if "headers" in args else "sd::dict<std::string, std::string>{}"
             return f"{r}.request({self.expr(args['method'])}, {self.expr(args['url'])}, {body_code}, {headers})"
-        if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType)) or recv_type in (EXECUTOR, LOGGER, LOG_HANDLER) or recv_type in (
-            SOCKET, PATH, TEMPDIR, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, *DATETIME_TYPES,
-            HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS, *CODEC_TYPES,
-        ):
+        if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType, BuiltinClass)):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):

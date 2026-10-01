@@ -20,7 +20,7 @@ from .types import (
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
     GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T,
-    CODEC_TYPES, ZLIB_COMPRESS, ZLIB_DECOMPRESS, BZ2_COMPRESSOR, BZ2_DECOMPRESSOR, LZMA_COMPRESSOR, LZMA_DECOMPRESSOR,
+    BuiltinClass, ZLIB_COMPRESS, ZLIB_DECOMPRESS, BZ2_COMPRESSOR, BZ2_DECOMPRESSOR, LZMA_COMPRESSOR, LZMA_DECOMPRESSOR,
     SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
@@ -1026,11 +1026,11 @@ JSON_VALUE_METHODS = {
 def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
     if isinstance(t, SyncType):
         return SYNC_METHODS[t.kind].get(name)
-    if t == SOCKET:
-        return SOCKET_METHODS.get(name)
     match t:
         case _ if t == JSON_VALUE:
             return JSON_VALUE_METHODS.get(name)
+        case BuiltinClass():
+            return t.methods.get(name)
         case FileType():
             return FILE_METHODS.get(name)
         case ListType():
@@ -1039,58 +1039,16 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = DEQUE_METHODS
         case VarTupleType():
             table = {"count": returns(INT, args=(elem_of,)), "index": returns(INT, args=(elem_of,))}
-        case _ if t in DATETIME_METHODS:
-            return DATETIME_METHODS[t].get(name)
         case ParserType():
             return PARSER_METHODS.get(name)
         case SubParsersType():
             return {"add_parser": subparsers_add_parser}.get(name)
-        case _ if t == PATH:
-            return PATH_METHODS.get(name)
-        case _ if t == HASH:
-            return HASH_METHODS.get(name)
-        case _ if t == EXECUTOR:
-            return EXECUTOR_METHODS.get(name)
-        case _ if t == LOGGER:
-            return LOGGER_METHODS.get(name)
-        case _ if t == HTTP_RESPONSE:
-            return RESPONSE_METHODS.get(name)
-        case _ if t == HTTP_CONNECTION:
-            return HTTP_CONNECTION_METHODS.get(name)
-        case _ if t == HTTP_HEADERS:
-            return HEADERS_METHODS.get(name)
-        case _ if t == URL_REQUEST:
-            return REQUEST_METHODS.get(name)
-        case _ if t == URL_PARTS:
-            return {"geturl": sync_method(STR)}.get(name)
         case StructType() if (methods := EXCEPTION_METHODS.get(t.cpp_name)) is not None:
             return methods.get(name)
-        case _ if t == CSV_WRITER:
-            return {"writerow": csv_writerow, "writerows": csv_writerows}.get(name)
-        case _ if t == CSV_DICT_WRITER:
-            return {"writerow": csv_dict_writerow, "writerows": csv_dict_writerows,
-                    "writeheader": sync_method(INT)}.get(name)
-        case _ if t == LOG_HANDLER:
-            return HANDLER_METHODS.get(name)
         case FutureType():
             return FUTURE_METHODS.get(name)
-        case _ if t == HMAC_T:
-            return HMAC_METHODS.get(name)
-        case _ if t == STR_TEMPLATE:
-            return {"substitute": template_substitute, "safe_substitute": template_substitute,
-                    "get_identifiers": sync_method(ListType(STR)), "is_valid": sync_method(BOOL)}.get(name)
-        case _ if t == TEXT_WRAPPER:
-            return {"wrap": sync_method(ListType(STR), ("text", STR)), "fill": sync_method(STR, ("text", STR))}.get(name)
-        case _ if t in CODEC_TYPES:
-            return CODEC_METHODS[t].get(name)
-        case _ if t == SQLITE_CONNECTION:
-            return SQLITE_CONNECTION_METHODS.get(name)
         case StructFormatType():
             return STRUCT_METHODS.get(name)
-        case _ if t == SQLITE_CURSOR:
-            return SQLITE_CURSOR_METHODS.get(name)
-        case _ if t == TEMPDIR:
-            return {"cleanup": sync_method(NONE)}.get(name)
         case ProcessType(kind):
             table = PROCESS_METHODS[kind]
         case PatternType():
@@ -1945,50 +1903,12 @@ MATCH_ATTRIBUTES = {
 
 
 def type_attributes(t: Type) -> dict | None:
-    if t == HTTP_RESPONSE:
-        return {"status": lambda t: INT, "code": lambda t: INT, "reason": lambda t: STR, "url": lambda t: STR,
-                "headers": lambda t: HTTP_HEADERS, "msg": lambda t: HTTP_HEADERS, "version": lambda t: INT,
-                "closed": lambda t: BOOL}
-    if t == HTTP_CONNECTION:
-        return {"host": lambda t: STR, "port": lambda t: INT, "timeout": lambda t: OPT_FLOAT}
-    if t == URL_REQUEST:
-        return {"full_url": lambda t: STR, "data": lambda t: OptionalType(BYTES), "method": lambda t: OptionalType(STR),
-                "headers": lambda t: DictType(STR, STR)}
-    if t == URL_PARTS:
-        return {**{f: (lambda t: STR) for f in ("scheme", "netloc", "path", "params", "query", "fragment")},
-                "hostname": lambda t: OptionalType(STR), "port": lambda t: OptionalType(INT),
-                "username": lambda t: OptionalType(STR), "password": lambda t: OptionalType(STR)}
-    if t == CSV_DICT_READER:
-        return {"fieldnames": lambda t: ListType(STR)}
-    if t == LOGGER:
-        return {"name": lambda t: STR, "level": lambda t: INT, "propagate": lambda t: BOOL,
-                "handlers": lambda t: ListType(LOG_HANDLER), "parent": lambda t: OptionalType(LOGGER)}
-    if t in (HASH, HMAC_T):
-        return {"name": lambda t: STR, "digest_size": lambda t: INT, "block_size": lambda t: INT}
-    if t == STR_TEMPLATE:
-        return {"template": lambda t: STR}
-    if t in CODEC_TYPES:
-        return CODEC_ATTRIBUTES[t]
+    if isinstance(t, BuiltinClass):
+        return t.attributes
     if isinstance(t, StructFormatType):
         return {"size": lambda t: INT, "format": lambda t: STR}
-    if t == SQLITE_CONNECTION:
-        return {"in_transaction": lambda t: BOOL, "total_changes": lambda t: INT, "isolation_level": lambda t: OptionalType(STR)}
-    if t == SQLITE_CURSOR:
-        return {"rowcount": lambda t: INT, "lastrowid": lambda t: OptionalType(INT),
-                "description": lambda t: OptionalType(ListType(TupleType((STR, NONE, NONE, NONE, NONE, NONE, NONE))))}
-    if t == UUID_T:
-        return {"hex": lambda t: STR, "bytes": lambda t: BYTES, "version": lambda t: OptionalType(INT),
-                "variant": lambda t: STR, "urn": lambda t: STR, "fields": lambda t: TupleType((INT,) * 6),
-                **{f: (lambda t: INT) for f in ("time_low", "time_mid", "time_hi_version", "clock_seq_hi_variant",
-                                                "clock_seq_low", "node", "clock_seq", "time")}}
     if isinstance(t, NamespaceType):
         return {name: (lambda _, ft=ft: ft) for name, ft in t.fields}
-    if t in DATETIME_ATTRIBUTES:
-        return DATETIME_ATTRIBUTES[t]
-    if t == PATH:
-        return PATH_ATTRIBUTES
-    if t == TEMPDIR:
-        return {"name": lambda t: STR}
     if isinstance(t, PatternType):
         return PATTERN_ATTRIBUTES
     if isinstance(t, MatchType):
@@ -2002,11 +1922,11 @@ def type_attributes(t: Type) -> dict | None:
 
 PATH_LIKE = object()  # a parameter taking a str or a Path (sync_method checks it)
 
-PATH_ATTRIBUTES = {
+PATH.attributes.update({
     "name": lambda t: STR, "stem": lambda t: STR, "suffix": lambda t: STR, "anchor": lambda t: STR,
     "suffixes": lambda t: ListType(STR), "parts": lambda t: VarTupleType(STR),
     "parent": lambda t: PATH, "parents": lambda t: ListType(PATH),
-}
+})
 
 
 def path_parts(ctx: CallContext) -> Type:
@@ -2027,7 +1947,7 @@ for _field, _t in (("st_size", INT), ("st_mode", INT), ("st_uid", INT), ("st_gid
                    ("st_ino", INT), ("st_mtime", FLOAT), ("st_atime", FLOAT), ("st_ctime", FLOAT)):
     STAT_RESULT.fields[_field] = Field(_field, _t, None, Loc(0, 0))
 
-PATH_METHODS = {
+PATH.methods.update({
     **{name: sync_method(BOOL) for name in ("exists", "is_file", "is_dir", "is_symlink", "is_absolute")},
     **{name: sync_method(PATH) for name in ("absolute", "resolve", "expanduser")},
     "as_posix": sync_method(STR),
@@ -2053,7 +1973,7 @@ PATH_METHODS = {
     "match": sync_method(BOOL, ("pattern", STR)),
     "joinpath": path_parts,
     "open": path_open,
-}
+})
 
 MODULES["pathlib"] = Module("pathlib", {
     "Path": Function("Path", path_parts, "sd::pathlib::Path", as_type=PATH),
@@ -2100,6 +2020,8 @@ MODULES["tempfile"] = module_with_params(runtime_module(
     TemporaryDirectory=(signature(TEMPDIR, *TEMP_PARAMS), "sd::tempfile::TemporaryDirectory"),
 ))
 MODULES["tempfile"].members["TemporaryDirectory"].as_type = TEMPDIR
+TEMPDIR.methods["cleanup"] = sync_method(NONE)
+TEMPDIR.attributes["name"] = lambda t: STR
 
 
 # ---- datetime ---------------------------------------------------------------------------
@@ -2113,14 +2035,11 @@ DATE_FIELDS = (("year", OPT_INT, "std::nullopt"), ("month", OPT_INT, "std::nullo
 TIME_FIELDS = (("hour", OPT_INT, "std::nullopt"), ("minute", OPT_INT, "std::nullopt"),
                ("second", OPT_INT, "std::nullopt"), ("microsecond", OPT_INT, "std::nullopt"))
 
-DATETIME_ATTRIBUTES = {
-    DATE: attrs(INT, "year", "month", "day"),
-    TIME: {**attrs(INT, "hour", "minute", "second", "microsecond"), "tzinfo": lambda t: OPT_TZ},
-    DATETIME: {**attrs(INT, "year", "month", "day", "hour", "minute", "second", "microsecond"),
-               "tzinfo": lambda t: OPT_TZ},
-    TIMEDELTA: attrs(INT, "days", "seconds", "microseconds"),
-    TIMEZONE: {},
-}
+DATE.attributes.update(attrs(INT, "year", "month", "day"))
+TIME.attributes.update({**attrs(INT, "hour", "minute", "second", "microsecond"), "tzinfo": lambda t: OPT_TZ})
+DATETIME.attributes.update({**attrs(INT, "year", "month", "day", "hour", "minute", "second", "microsecond"),
+                            "tzinfo": lambda t: OPT_TZ})
+TIMEDELTA.attributes.update(attrs(INT, "days", "seconds", "microseconds"))
 DATE_METHODS = {
     "isoformat": sync_method(STR),
     "strftime": sync_method(STR, ("format", STR)),
@@ -2129,28 +2048,26 @@ DATE_METHODS = {
     "isoweekday": sync_method(INT),
     "toordinal": sync_method(INT),
 }
-DATETIME_METHODS = {
-    DATE: {**DATE_METHODS, "replace": sync_method(DATE, *DATE_FIELDS)},
-    TIME: {
-        "isoformat": sync_method(STR, ("timespec", STR, '"auto"s')),
-        "strftime": sync_method(STR, ("format", STR)),
-        "replace": sync_method(TIME, *TIME_FIELDS),
-    },
-    DATETIME: {
-        **DATE_METHODS,
-        "isoformat": sync_method(STR, ("sep", STR, '"T"s'), ("timespec", STR, '"auto"s')),
-        "date": sync_method(DATE),
-        "time": sync_method(TIME),
-        "timestamp": sync_method(FLOAT),
-        "utcoffset": sync_method(OptionalType(TIMEDELTA)),
-        "tzname": sync_method(OptionalType(STR)),
-        "astimezone": sync_method(DATETIME, ("tz", OPT_TZ, "std::nullopt")),
-        "replace": sync_method(DATETIME, *DATE_FIELDS, *TIME_FIELDS,
-                               ("tzinfo", OPT_TZ, "std::optional<std::optional<sd::datetime::timezone>>()")),
-    },
-    TIMEDELTA: {"total_seconds": sync_method(FLOAT)},
-    TIMEZONE: {"tzname": sync_method(STR, ("dt", OptionalType(DATETIME), "std::nullopt"))},
-}
+DATE.methods.update({**DATE_METHODS, "replace": sync_method(DATE, *DATE_FIELDS)})
+TIME.methods.update({
+    "isoformat": sync_method(STR, ("timespec", STR, '"auto"s')),
+    "strftime": sync_method(STR, ("format", STR)),
+    "replace": sync_method(TIME, *TIME_FIELDS),
+})
+DATETIME.methods.update({
+    **DATE_METHODS,
+    "isoformat": sync_method(STR, ("sep", STR, '"T"s'), ("timespec", STR, '"auto"s')),
+    "date": sync_method(DATE),
+    "time": sync_method(TIME),
+    "timestamp": sync_method(FLOAT),
+    "utcoffset": sync_method(OptionalType(TIMEDELTA)),
+    "tzname": sync_method(OptionalType(STR)),
+    "astimezone": sync_method(DATETIME, ("tz", OPT_TZ, "std::nullopt")),
+    "replace": sync_method(DATETIME, *DATE_FIELDS, *TIME_FIELDS,
+                           ("tzinfo", OPT_TZ, "std::optional<std::optional<sd::datetime::timezone>>()")),
+})
+TIMEDELTA.methods.update({"total_seconds": sync_method(FLOAT)})
+TIMEZONE.methods.update({"tzname": sync_method(STR, ("dt", OptionalType(DATETIME), "std::nullopt"))})
 
 DT = "sd::datetime::"
 TIME_PARAMS = (("hour", INT, "0"), ("minute", INT, "0"), ("second", INT, "0"), ("microsecond", INT, "0"),
@@ -2678,6 +2595,7 @@ MODULES["textwrap"] = module_with_params(runtime_module(
     TextWrapper=(signature(TEXT_WRAPPER, WIDTH_70, *WRAP_OPTIONS), "sd::textwrap::make"),
 ))
 MODULES["textwrap"].members["TextWrapper"].as_type = TEXT_WRAPPER
+TEXT_WRAPPER.methods.update({"wrap": sync_method(ListType(STR), ("text", STR)), "fill": sync_method(STR, ("text", STR))})
 
 
 # ---- string ---------------------------------------------------------------------------
@@ -2704,6 +2622,9 @@ MODULES["string"] = module_with_params(runtime_module(
         "punctuation", "printable", "whitespace")},
 ))
 MODULES["string"].members["Template"].as_type = STR_TEMPLATE
+STR_TEMPLATE.methods.update({"substitute": template_substitute, "safe_substitute": template_substitute,
+                             "get_identifiers": sync_method(ListType(STR)), "is_valid": sync_method(BOOL)})
+STR_TEMPLATE.attributes["template"] = lambda t: STR
 
 
 # ---- zlib ----------------------------------------------------------------------------
@@ -2722,25 +2643,21 @@ MODULES["zlib"] = module_with_params(runtime_module(
     ZLIB_VERSION=(STR, "std::string(ZLIB_VERSION)"),
 ))
 
-# The incremental (de)compressors' methods and attributes, by type.
-CODEC_METHODS = {
-    ZLIB_COMPRESS: {"compress": sync_method(BYTES, ("data", BYTES)), "flush": sync_method(BYTES, ("mode", INT, "4_i")),
-                    "copy": sync_method(ZLIB_COMPRESS)},
-    ZLIB_DECOMPRESS: {"decompress": sync_method(BYTES, ("data", BYTES), ("max_length", INT, "0_i")),
-                      "flush": sync_method(BYTES, ("length", INT, "16384_i")), "copy": sync_method(ZLIB_DECOMPRESS)},
-    BZ2_COMPRESSOR: {"compress": sync_method(BYTES, ("data", BYTES)), "flush": sync_method(BYTES)},
-    BZ2_DECOMPRESSOR: {"decompress": sync_method(BYTES, ("data", BYTES), ("max_length", INT, "(-1_i)"))},
-    LZMA_COMPRESSOR: {"compress": sync_method(BYTES, ("data", BYTES)), "flush": sync_method(BYTES)},
-    LZMA_DECOMPRESSOR: {"decompress": sync_method(BYTES, ("data", BYTES), ("max_length", INT, "(-1_i)"))},
-}
-CODEC_ATTRIBUTES = {
-    ZLIB_COMPRESS: {},
-    ZLIB_DECOMPRESS: {"eof": lambda t: BOOL, "unused_data": lambda t: BYTES, "unconsumed_tail": lambda t: BYTES},
-    BZ2_COMPRESSOR: {},
-    BZ2_DECOMPRESSOR: {"eof": lambda t: BOOL, "needs_input": lambda t: BOOL, "unused_data": lambda t: BYTES},
-    LZMA_COMPRESSOR: {},
-    LZMA_DECOMPRESSOR: {"eof": lambda t: BOOL, "needs_input": lambda t: BOOL, "unused_data": lambda t: BYTES, "check": lambda t: INT},
-}
+# The incremental (de)compressors' methods and attributes.
+ZLIB_COMPRESS.methods.update({
+    "compress": sync_method(BYTES, ("data", BYTES)), "flush": sync_method(BYTES, ("mode", INT, "4_i")),
+    "copy": sync_method(ZLIB_COMPRESS)})
+ZLIB_DECOMPRESS.methods.update({
+    "decompress": sync_method(BYTES, ("data", BYTES), ("max_length", INT, "0_i")),
+    "flush": sync_method(BYTES, ("length", INT, "16384_i")), "copy": sync_method(ZLIB_DECOMPRESS)})
+ZLIB_DECOMPRESS.attributes.update(
+    {"eof": lambda t: BOOL, "unused_data": lambda t: BYTES, "unconsumed_tail": lambda t: BYTES})
+for _t in (BZ2_COMPRESSOR, LZMA_COMPRESSOR):
+    _t.methods.update({"compress": sync_method(BYTES, ("data", BYTES)), "flush": sync_method(BYTES)})
+for _t in (BZ2_DECOMPRESSOR, LZMA_DECOMPRESSOR):
+    _t.methods.update({"decompress": sync_method(BYTES, ("data", BYTES), ("max_length", INT, "(-1_i)"))})
+    _t.attributes.update({"eof": lambda t: BOOL, "needs_input": lambda t: BOOL, "unused_data": lambda t: BYTES})
+LZMA_DECOMPRESSOR.attributes["check"] = lambda t: INT
 
 
 # ---- binascii ------------------------------------------------------------------------
@@ -2866,6 +2783,12 @@ MODULES["uuid"] = module_with_params(runtime_module(
     RESERVED_FUTURE=(STR, '"reserved for future definition"s'),
 ))
 MODULES["uuid"].members["UUID"].as_type = UUID_T
+UUID_T.attributes.update({
+    "hex": lambda t: STR, "bytes": lambda t: BYTES, "version": lambda t: OptionalType(INT),
+    "variant": lambda t: STR, "urn": lambda t: STR, "fields": lambda t: TupleType((INT,) * 6),
+    **{f: (lambda t: INT) for f in ("time_low", "time_mid", "time_hi_version", "clock_seq_hi_variant",
+                                    "clock_seq_low", "node", "clock_seq", "time")},
+})
 
 
 # ---- errno ---------------------------------------------------------------------------
@@ -2985,7 +2908,7 @@ def sqlite_fetch(kind: str) -> Callable[[CallContext], Type]:
     return handler
 
 
-SQLITE_CURSOR_METHODS = {
+SQLITE_CURSOR.methods.update({
     "execute": sqlite_execute,
     "executemany": sqlite_executemany,
     "executescript": sync_method(SQLITE_CURSOR, ("sql_script", STR)),
@@ -2993,8 +2916,8 @@ SQLITE_CURSOR_METHODS = {
     "fetchmany": sqlite_fetch("many"),
     "fetchall": sqlite_fetch("all"),
     "close": sync_method(NONE),
-}
-SQLITE_CONNECTION_METHODS = {
+})
+SQLITE_CONNECTION.methods.update({
     "cursor": sync_method(SQLITE_CURSOR),
     "execute": sqlite_execute,
     "executemany": sqlite_executemany,
@@ -3002,7 +2925,13 @@ SQLITE_CONNECTION_METHODS = {
     "commit": sync_method(NONE),
     "rollback": sync_method(NONE),
     "close": sync_method(NONE),
-}
+})
+SQLITE_CONNECTION.attributes.update(
+    {"in_transaction": lambda t: BOOL, "total_changes": lambda t: INT, "isolation_level": lambda t: OptionalType(STR)})
+SQLITE_CURSOR.attributes.update({
+    "rowcount": lambda t: INT, "lastrowid": lambda t: OptionalType(INT),
+    "description": lambda t: OptionalType(ListType(TupleType((STR, NONE, NONE, NONE, NONE, NONE, NONE)))),
+})
 
 SQLITE_ERRORS: dict[str, StructType] = {}
 
@@ -3243,18 +3172,20 @@ def compare_digest(ctx: CallContext) -> Type:
     return BOOL
 
 
-HASH_METHODS = {
+HASH.methods.update({
     "update": hash_update,
     "digest": sync_method(BYTES, ("length", OptionalType(INT), "std::nullopt")),
     "hexdigest": sync_method(STR, ("length", OptionalType(INT), "std::nullopt")),
     "copy": sync_method(HASH),
-}
-HMAC_METHODS = {
+})
+HMAC_T.methods.update({
     "update": hash_update,
     "digest": sync_method(BYTES),
     "hexdigest": sync_method(STR),
     "copy": sync_method(HMAC_T),
-}
+})
+for _t in (HASH, HMAC_T):
+    _t.attributes.update({"name": lambda t: STR, "digest_size": lambda t: INT, "block_size": lambda t: INT})
 
 MODULES["hashlib"] = Module("hashlib", {
     **{name: Function(name, hash_constructor(name), as_type=HASH) for name in HASH_NAMES},
@@ -3377,11 +3308,11 @@ def futures_wait(ctx: CallContext) -> Type:
     return TupleType((SetType(f), SetType(f)))
 
 
-EXECUTOR_METHODS = {
+EXECUTOR.methods.update({
     "submit": executor_submit,
     "map": executor_map,
     "shutdown": sync_method(NONE, ("wait", BOOL, "true"), ("cancel_futures", BOOL, "false")),
-}
+})
 FUTURE_METHODS = {
     "result": sync_method(lambda f: f.elem, ("timeout", OptionalType(FLOAT), "std::nullopt")),
     "exception": sync_method(OptionalType(EXCEPTIONS["Exception"]), ("timeout", OptionalType(FLOAT), "std::nullopt")),
@@ -3483,7 +3414,7 @@ def log_basic_config(ctx: CallContext) -> Type:
     return NONE
 
 
-LOGGER_METHODS = {
+LOGGER.methods.update({
     **{name: log_call(name) for name in (*LOG_LEVELS, "log")},
     "setLevel": log_set_level,
     "addHandler": sync_method(NONE, ("hdlr", LOG_HANDLER)),
@@ -3492,13 +3423,17 @@ LOGGER_METHODS = {
     "getEffectiveLevel": sync_method(INT),
     "isEnabledFor": sync_method(BOOL, ("level", INT)),
     "getChild": sync_method(LOGGER, ("suffix", STR)),
-}
-HANDLER_METHODS = {
+})
+LOGGER.attributes.update({
+    "name": lambda t: STR, "level": lambda t: INT, "propagate": lambda t: BOOL,
+    "handlers": lambda t: ListType(LOG_HANDLER), "parent": lambda t: OptionalType(LOGGER),
+})
+LOG_HANDLER.methods.update({
     "setLevel": log_set_level,
     "setFormatter": sync_method(NONE, ("fmt", LOG_FORMATTER)),
     "flush": sync_method(NONE),
     "close": sync_method(NONE),
-}
+})
 LOG = "sd::logging::"
 MODULES["logging"] = module_with_params(runtime_module(
     "logging", "modules/logging.hpp",
@@ -3658,6 +3593,10 @@ MODULES["csv"] = module_with_params(runtime_module(
 ))
 for _name, _t in (("writer", CSV_WRITER), ("DictReader", CSV_DICT_READER), ("DictWriter", CSV_DICT_WRITER)):
     MODULES["csv"].members[_name].as_type = _t
+CSV_WRITER.methods.update({"writerow": csv_writerow, "writerows": csv_writerows})
+CSV_DICT_WRITER.methods.update({"writerow": csv_dict_writerow, "writerows": csv_dict_writerows,
+                                "writeheader": sync_method(INT)})
+CSV_DICT_READER.attributes["fieldnames"] = lambda t: ListType(STR)
 
 
 # ---- ssl ----------------------------------------------------------------------------------
@@ -3685,7 +3624,7 @@ MODULES["ssl"].members["SSLContext"].as_type = SSL_CONTEXT
 # ---- urllib -------------------------------------------------------------------------------
 
 OPT_STR = OptionalType(STR)
-RESPONSE_METHODS = {
+HTTP_RESPONSE.methods.update({
     "read": sync_method(BYTES, ("amt", OptionalType(INT), "std::nullopt")),
     "isclosed": sync_method(BOOL),
     "readline": sync_method(BYTES),
@@ -3696,8 +3635,13 @@ RESPONSE_METHODS = {
     "getcode": sync_method(INT),
     "info": sync_method(HTTP_HEADERS),
     "close": sync_method(NONE),
-}
-HEADERS_METHODS = {
+})
+HTTP_RESPONSE.attributes.update({
+    "status": lambda t: INT, "code": lambda t: INT, "reason": lambda t: STR, "url": lambda t: STR,
+    "headers": lambda t: HTTP_HEADERS, "msg": lambda t: HTTP_HEADERS, "version": lambda t: INT,
+    "closed": lambda t: BOOL,
+})
+HTTP_HEADERS.methods.update({
     "get": sync_method(OPT_STR, ("name", STR), ("failobj", OPT_STR, "std::nullopt")),
     "get_all": sync_method(OptionalType(ListType(STR)), ("name", STR)),
     "items": sync_method(ListType(TupleType((STR, STR)))),
@@ -3705,15 +3649,25 @@ HEADERS_METHODS = {
     "values": sync_method(ListType(STR)),
     "get_content_type": sync_method(STR),
     "get_content_charset": sync_method(OPT_STR),
-}
-REQUEST_METHODS = {
+})
+URL_REQUEST.methods.update({
     "add_header": sync_method(NONE, ("key", STR), ("val", STR)),
     "has_header": sync_method(BOOL, ("header_name", STR)),
     "get_header": sync_method(OPT_STR, ("header_name", STR), ("default", OPT_STR, "std::nullopt")),
     "get_method": sync_method(STR),
     "get_full_url": sync_method(STR),
     "header_items": sync_method(ListType(TupleType((STR, STR)))),
-}
+})
+URL_REQUEST.attributes.update({
+    "full_url": lambda t: STR, "data": lambda t: OptionalType(BYTES), "method": lambda t: OptionalType(STR),
+    "headers": lambda t: DictType(STR, STR),
+})
+URL_PARTS.methods["geturl"] = sync_method(STR)
+URL_PARTS.attributes.update({
+    **{f: (lambda t: STR) for f in ("scheme", "netloc", "path", "params", "query", "fragment")},
+    "hostname": lambda t: OptionalType(STR), "port": lambda t: OptionalType(INT),
+    "username": lambda t: OptionalType(STR), "password": lambda t: OptionalType(STR),
+})
 EXCEPTION_METHODS = {  # methods of built-in classes (by C++ name): HTTPError is also a response
     "sd::ssl::SSLContext": {
         "load_default_certs": sync_method(NONE),
@@ -3834,7 +3788,7 @@ def http_request(ctx: CallContext) -> Type:
     return NONE
 
 
-HTTP_CONNECTION_METHODS = {
+HTTP_CONNECTION.methods.update({
     "request": http_request,
     "getresponse": sync_method(HTTP_RESPONSE),
     "connect": sync_method(NONE),
@@ -3845,7 +3799,8 @@ HTTP_CONNECTION_METHODS = {
     "endheaders": sync_method(NONE, ("message_body", OptionalType(BYTES), "std::nullopt")),
     "send": sync_method(NONE, ("data", BYTES)),
     "set_debuglevel": sync_method(NONE, ("level", INT)),
-}
+})
+HTTP_CONNECTION.attributes.update({"host": lambda t: STR, "port": lambda t: INT, "timeout": lambda t: OPT_FLOAT})
 
 
 def http_exception(name: str, base: StructType) -> StructType:
@@ -4099,7 +4054,7 @@ MODULES["queue"] = Module("queue", {
 BYTES_OR_STR = object()  # a parameter taking bytes, or str (sent as UTF-8)
 ADDRESS = TupleType((STR, INT))
 
-SOCKET_METHODS = {
+SOCKET.methods.update({
     "connect": sync_method(NONE, ("address", ADDRESS)),
     "bind": sync_method(NONE, ("address", ADDRESS)),
     "listen": sync_method(NONE, ("backlog", INT, "128_i")),
@@ -4117,7 +4072,7 @@ SOCKET_METHODS = {
     "shutdown": sync_method(NONE, ("how", INT)),
     "close": sync_method(NONE),
     "fileno": sync_method(INT),
-}
+})
 
 SOCKET_CONSTANTS = [
     "AF_INET", "AF_INET6", "AF_UNSPEC", "SOCK_STREAM", "SOCK_DGRAM", "SOL_SOCKET", "SO_REUSEADDR",
