@@ -447,6 +447,7 @@ class CodeGen:
                 self.generator_declaration(st, m)
         self.line("std::string sd_repr() const;")
         self.protocol_members(st, name)
+        self.class_attr_members(st)
         if st.kind == "struct":
             if st.find_method("__eq__"):
                 self.line(f"bool operator==(const {name}& o) const {{ return const_cast<{name}*>(this)->sd_op_eq(o); }}")
@@ -514,6 +515,7 @@ class CodeGen:
         virtual, override = ("", " override") if st.base else ("virtual ", "")  # (the runtime class, for dataclass __eq__)
         self.line(f'{virtual}std::string sd_class_name() const{override} {{ return {cpp_string(st.origin or st.name)}; }}')
         self.protocol_members(st, name)
+        self.class_attr_members(st)
         if self.json_hooks(st):
             virtual = "" if st.base and self.json_hooks(st.base) else "virtual "
             suffix = " override" if st.base and self.json_hooks(st.base) else ""
@@ -527,6 +529,19 @@ class CodeGen:
         if "__lt__" in st.methods:
             self.line(f"inline bool operator<(const {ptr}& a, const {ptr}& b) {{ return a->sd_op_lt(b); }}")
         self.line()
+
+    def class_attr_members(self, st: StructType) -> None:
+        """`version = "1.0"`: Cls.version is sd_class_version(); obj.version is sd_attr_version(),
+        virtual in a class, so a base class's method sees a subclass's value."""
+        for ca in st.class_attrs.values():
+            t = self.cpp_type(ca.type)
+            self.line(f"static {t} sd_class_{ca.name}() {{ return {self.expr_as(ca.value, ca.type)}; }}")
+            if st.kind != "class":
+                self.line(f"{t} sd_attr_{ca.name}() const {{ return sd_class_{ca.name}(); }}")
+            elif st.base is not None and st.base.find_class_attr(ca.name) is not None:
+                self.line(f"{t} sd_attr_{ca.name}() const override {{ return sd_class_{ca.name}(); }}")
+            else:
+                self.line(f"virtual {t} sd_attr_{ca.name}() const {{ return sd_class_{ca.name}(); }}")
 
     def protocol_members(self, st: StructType, name: str) -> None:
         """Hooks the runtime uses for str(), truthiness and iteration, from __str__,
@@ -1691,6 +1706,13 @@ class CodeGen:
             return self.expr(e.sym)  # `key=str.lower`
         if isinstance(e.sym, tuple) and e.sym[0] == "thread_attr":
             return f"{self.expr(e.value)}.{e.sym[1]}()"
+        if isinstance(e.sym, tuple) and e.sym[0] == "class_attr":  # self.version
+            getter = f"sd_attr_{e.sym[1].name}()"
+            if is_self(e.value):
+                return f"{self.self_prefix(e.value.sym.type)}{getter}"
+            return f"{self.expr(e.value)}{'->' if e.value.ty.kind == 'class' else '.'}{getter}"
+        if isinstance(e.sym, tuple) and e.sym[0] == "class_attr_of":  # Handler.version
+            return f"{class_name(e.sym[1])}::sd_class_{e.sym[2].name}()"
         if isinstance(e.sym, tuple) and e.sym[0] == "builtin_attr":
             obj, vt = self.expr(e.value), e.value.ty
             declared = builtins.type_attributes(vt)[e.sym[1]](vt)

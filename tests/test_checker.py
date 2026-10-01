@@ -494,9 +494,10 @@ def test_struct_body_restrictions():
     e = err("""
         @value
         class P:
-            x = 1
+            print(1)
     """)
-    assert e.message == "a struct body can only contain fields (`x: int`) and methods (`def ...`)"
+    assert e.message == ("a struct body can only contain fields (`x: int`), methods (`def ...`) and class attributes "
+                         '(`version = "1.0"`)')
 
 
 def test_method_needs_self():
@@ -2088,3 +2089,19 @@ def test_string_method_errors(line, msg):
 ])
 def test_builtin_function_and_method_errors(src, msg):
     assert err(src + "\n").message == msg
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("class A:\n    v = [1]\n", "a class attribute must be a constant (a number, string, bytes, bool, None, or a tuple of "
+                                 "those); for anything else, use a field (`v: T = ...`) or a module-level variable"),
+    ("class A:\n    v = 1\n    v = 2\n", "class attribute 'v' is already defined"),
+    ("class A:\n    x: int\n    x = 1\n", "'x' is a field of A; a class attribute can't reuse the name"),
+    ("class A:\n    v = 1\n    def v(self):\n        pass\n", "'v' is both a class attribute and a method of A"),
+    ("class A:\n    v = 1\nclass B(A):\n    v = 'x'\n", "B.v redefines v as str, but it's int in the base class"),
+    ("class A:\n    v = 1\n    def f(self):\n        self.v = 2\n",
+     "'v' is a class attribute of A, a constant, so it can't be set on an object (Python would give this object its own "
+     "'v'). Make it a field to change it per object: `v: int = ...`"),
+    ("class A:\n    v = 1\nA.v = 2\n", "A.v is a class attribute, a constant: it can't be changed"),
+])
+def test_class_attribute_errors(src, msg):
+    assert err(src).message == msg

@@ -40,7 +40,7 @@ from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
-    SYNC_ARITY, ClassRefType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
+    SYNC_ARITY, ClassAttr, ClassRefType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var,
     UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
@@ -513,17 +513,42 @@ class Checker:
                     st.fields[name] = Field(name, self.resolve_type(annotation), default, stmt.loc)
                 case A.FunctionDef(name):
                     self.declare_method(st, stmt)
+                case A.Assign([A.Name(name)], value):
+                    self.declare_class_attr(st, name, value, stmt)
                 case A.Pass() | A.ExprStmt(A.StrLit()):
                     pass  # `pass` or a docstring
                 case _:
                     raise self.error(
-                        f"a {st.kind} body can only contain fields (`x: int`) and methods (`def ...`)", stmt
+                        f"a {st.kind} body can only contain fields (`x: int`), methods (`def ...`) and class "
+                        f"attributes (`version = \"1.0\"`)", stmt
                     )
+        for name, ca in st.class_attrs.items():
+            if st.find_method(name) is not None:
+                raise self.error(f"'{name}' is both a class attribute and a method of {st.name}", ca.loc)
         for d in st.node.decorators:
             self.apply_dataclass(st, d)
         self.check_dunder_signatures(st)
         if st.init is not None and st.init.ret != NONE:
             raise self.error("__init__ must not return a value", st.init.node)
+
+    def declare_class_attr(self, st: StructType, name: str, value: A.Expr, stmt: A.Stmt) -> None:
+        """`version = "1.0"`: a constant of the class, which a subclass may set to its own value."""
+        if not is_constant(value):
+            raise self.error(
+                f"a class attribute must be a constant (a number, string, bytes, bool, None, or a tuple of those); "
+                f"for anything else, use a field (`{name}: T = ...`) or a module-level variable", value,
+            )
+        if name in st.class_attrs:
+            raise self.error(f"class attribute '{name}' is already defined", stmt)
+        if name in st.fields or (st.base and st.base.find_field(name)):
+            raise self.error(f"'{name}' is a field of {st.name}; a class attribute can't reuse the name", stmt)
+        t = self.check_expr(value)
+        if (inherited := st.base.find_class_attr(name) if st.base else None) is not None:
+            if not assignable(t, inherited.type):
+                raise self.error(f"{st.name}.{name} redefines {inherited.name} as {t}, but it's {inherited.type} in the "
+                                 f"base class", value)
+            t = inherited.type
+        st.class_attrs[name] = ClassAttr(name, t, value, stmt.loc)
 
     def check_value_recursion(self, st: StructType) -> None:
         """A struct can't contain itself by value (it would be infinitely large)."""
@@ -1221,6 +1246,9 @@ class Checker:
             case A.Name():
                 self.bind(target, t, value)
             case A.Attribute(obj, attr):
+                if (isinstance(obj, A.Name) and obj.id not in self.state.names and (cls := self.lookup_struct(obj.id))
+                        and cls.find_class_attr(attr) is not None):
+                    raise self.error(f"{cls.name}.{attr} is a class attribute, a constant: it can't be changed", target)
                 owner = self.check_expr(obj)
                 if not isinstance(owner, StructType):
                     raise self.error(f"can't set attribute '{attr}' on {owner}", target)
@@ -1233,6 +1261,12 @@ class Checker:
                     return
                 self.check_not_frozen(owner, attr, target)
                 f = owner.find_field(attr)
+                if f is None and owner.find_class_attr(attr) is not None:
+                    raise self.error(
+                        f"'{attr}' is a class attribute of {owner.name}, a constant, so it can't be set on an object "
+                        f"(Python would give this object its own '{attr}'). Make it a field to change it per object: "
+                        f"`{attr}: {owner.find_class_attr(attr).type} = ...`", target,
+                    )
                 if f is None:
                     raise self.error(f"{owner.name} has no field '{attr}'", target)
                 self.check_synchronized_access(owner, obj, attr, target)
@@ -2641,6 +2675,11 @@ class Checker:
             and value.id not in self.scope.assigned
         ):
             return self.callable_as_value(e, expected, f"{value.id}.{attr}")  # key=str.lower
+        if (isinstance(value, A.Name) and value.id not in self.state.names and value.id not in self.scope.assigned
+                and (cls := self.lookup_struct(value.id)) is not None and (ca := cls.find_class_attr(attr)) is not None):
+            value.ty, value.sym = ClassRefType(cls), cls
+            e.sym = ("class_attr_of", cls, ca)  # Handler.version
+            return ca.type
         vt = self.check_expr(value)
         if isinstance(vt, ModuleType):
             if isinstance(value.sym.members.get(attr), builtins.Function):
@@ -2659,7 +2698,13 @@ class Checker:
             if (method := vt.find_method(attr)) and method.name != "__init__":
                 e.sym = method  # a bound method: remembers its object
                 return FuncType(tuple(p.type for p in method.params), method.ret)
+            if (ca := vt.find_class_attr(attr)) is not None:  # self.version: the object's class's value
+                e.sym = ("class_attr", ca)
+                return ca.type
             raise self.error(f"{vt.name} has no field '{attr}'", e)
+        if isinstance(vt, ClassRefType) and (ca := vt.st.find_class_attr(attr)) is not None:  # Handler.version
+            e.sym = ("class_attr_of", vt.st, ca)
+            return ca.type
         if isinstance(vt, SyncType) and vt.kind == "Thread" and attr in builtins.THREAD_ATTRIBUTES:
             e.sym = ("thread_attr", attr)
             return builtins.THREAD_ATTRIBUTES[attr]
@@ -3830,6 +3875,18 @@ def constant_int(e: A.Expr) -> int | None:
 
 def plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def is_constant(e: A.Expr) -> bool:
+    """A literal number, string, bytes, bool or None (or a negated number), or a tuple of those."""
+    match e:
+        case A.IntLit() | A.FloatLit() | A.StrLit() | A.BytesLit() | A.BoolLit() | A.NoneLit():
+            return True
+        case A.UnaryOp("-" | "+", A.IntLit() | A.FloatLit()):
+            return True
+        case A.TupleLit(elts):
+            return all(is_constant(x) for x in elts)
+    return False
 
 
 def type_family(t: Type) -> str:

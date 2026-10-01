@@ -1,0 +1,70 @@
+# Class attributes: constants of a class (read as self.name or Cls.name), which a subclass can set to its own value.
+from dataclasses import dataclass
+from seadash import value
+
+
+class Base:
+    version = "1.0"
+    limits = (1, 2.5, "x", None, b"z", -3)
+    debug = False
+    name: str
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def show(self) -> str:
+        return f"{self.name} {self.version} {self.debug} {self.limits[1]}"
+
+
+class Child(Base):
+    version = "2.0"
+    debug = True
+
+
+class Grandchild(Child):
+    pass
+
+
+@dataclass
+class Point:
+    origin = 0
+    x: int
+    y: int
+
+    def shifted(self) -> int:
+        return self.x + self.origin
+
+
+@value
+@dataclass
+class Pixel:
+    depth = 8
+    r: int
+
+
+items: list[Base] = [Base("b"), Child("c"), Grandchild("g")]
+for item in items:
+    print(item.show(), item.version)
+print(Base.version, Child.version, Grandchild.version, Grandchild.debug, Base.limits)
+p = Point(3, 4)
+print(p, p.shifted(), Point.origin, Pixel(1).depth, Pixel.depth, Pixel(2))
+
+
+class Counter:
+    step = 2
+    total: int
+
+    def __init__(self):
+        self.total = 0
+
+    def bump(self) -> int:
+        self.total += self.step
+        return self.total
+
+
+class Faster(Counter):
+    step = 5
+
+
+counters: list[Counter] = [Counter(), Faster()]
+print([c.bump() + c.bump() for c in counters], Faster.step, Counter().step)

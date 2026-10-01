@@ -372,6 +372,17 @@ class Field:
     loc: Loc
 
 
+@dataclass
+class ClassAttr:
+    """`version = "1.0"` in a class body: a constant shared by the class and its objects
+    (read as self.version or Cls.version), which a subclass may set to its own value."""
+
+    name: str
+    type: Type
+    value: object  # ast.Expr: a constant
+    loc: Loc
+
+
 @dataclass(eq=False)
 class Param:
     name: str
@@ -425,6 +436,7 @@ class StructType(Type):
     origin: str | None = None
     type_args: tuple = ()
     frozen: bool = False  # @dataclass(frozen=True): fields are read-only after construction
+    class_attrs: dict[str, ClassAttr] = field(default_factory=dict)  # declared here (a subclass may redefine one)
 
     def __str__(self) -> str:
         return self.name
@@ -463,6 +475,12 @@ class StructType(Type):
         for t in self.ancestors():
             if name in t.methods:
                 return t.methods[name]
+        return None
+
+    def find_class_attr(self, name: str) -> ClassAttr | None:
+        for t in self.ancestors():
+            if name in t.class_attrs:
+                return t.class_attrs[name]
         return None
 
 
