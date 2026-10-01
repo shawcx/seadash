@@ -314,6 +314,20 @@ def test_is_none_on_non_optional():
     assert err(fn("print(n is None)", params="n: int")).message == "int can never be None (only T? types can)"
 
 
+def test_is_between_an_optional_and_an_object():
+    ok("""
+    class Node:
+        parent: Node?
+    root = Node(None)
+    child = Node(root)
+    print(child.parent is root, root is child.parent, child.parent is not child, child.parent is root.parent)
+    xs: list[int]? = None
+    print(xs is [1])
+    """)
+    assert err(fn("print(a is b)", params="a: int?, b: int")).message == (
+        "'is' is for None checks, class instances, lists, dicts and sets; use '==' to compare values")
+
+
 # ---- functions --------------------------------------------------------------
 
 

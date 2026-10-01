@@ -2232,6 +2232,8 @@ class CodeGen:
                 return f"sd::contains({rc}, {lc})"
             case "not in":
                 return f"(!sd::contains({rc}, {lc}))"
+            case "is" | "is not" if isinstance(lt, OptionalType) or isinstance(rt, OptionalType):  # node.parent is root
+                return f"(sd::object_identity({lc}) {'==' if op == 'is' else '!='} sd::object_identity({rc}))"
             case "is" | "is not" if not isinstance(left.ty, StructType):  # the same list, dict or set
                 return f"({lc}.identity() {'==' if op == 'is' else '!='} {rc}.identity())"
             case "is":

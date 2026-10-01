@@ -17,7 +17,7 @@ False False False
 True False
 True False
 ['a', 'b', 'c'] ['changed', 'b']
-True False
+True False False
 Shape(name='tri', points=[Point(x=5, y=0), Point(x=1, y=0), Point(x=0, y=1), Point(x=2, y=2)])
 Shape(name='tri', points=[Point(x=0, y=0), Point(x=1, y=0), Point(x=0, y=1)])
 Circle(name='c', points=[Point(x=0, y=0)], radius=1.5) False

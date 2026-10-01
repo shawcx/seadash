@@ -2965,9 +2965,10 @@ class Checker:
                 isinstance(left, A.NoneLit) and isinstance(rt, OptionalType)
             )
             enum_t = strip_optional(lt) if isinstance(strip_optional(lt), StructType) else strip_optional(rt)
-            same_object = (isinstance(enum_t, StructType) and enum_t.enum is not None and join(lt, rt) is not None) or lt == rt and (
-                (isinstance(lt, StructType) and lt.kind == "class")
-                or isinstance(lt, (ListType, DictType, SetType, DequeType, CounterType, DefaultDictType))
+            lo, ro = strip_optional(lt), strip_optional(rt)  # node.parent is root: either may be None
+            same_object = (isinstance(enum_t, StructType) and enum_t.enum is not None and join(lt, rt) is not None) or lo == ro and (
+                (isinstance(lo, StructType) and lo.kind == "class")
+                or isinstance(lo, (ListType, DictType, SetType, DequeType, CounterType, DefaultDictType))
             )
             if not (is_none_check or same_object):
                 if isinstance(right, A.NoneLit):

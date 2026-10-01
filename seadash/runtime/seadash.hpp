@@ -1702,6 +1702,19 @@ inline std::string bin(std::int64_t x) { return int_digits(x, 2, "0b"); }
 inline std::string oct(std::int64_t x) { return int_digits(x, 8, "0o"); }
 inline std::string hex(std::int64_t x) { return int_digits(x, 16, "0x"); }
 
+// What `is` compares: the object (or list, dict, set) itself, and nullptr for None, so an
+// optional on either side works: `node.parent is root`.
+template <class X>
+const void* object_identity(const X& x) {
+    if constexpr (requires { x.has_value(); *x; }) {
+        return x.has_value() ? object_identity(*x) : nullptr;
+    } else if constexpr (requires { x.identity(); }) {
+        return x.identity();
+    } else {
+        return x.get();
+    }
+}
+
 // Whether two objects (pointers to them) are of the same class, as generated dataclass
 // methods ask: Python compares only objects of the same class. (A function, so that typeid
 // sees plain variables and clang doesn't warn that it evaluates its operand.)
