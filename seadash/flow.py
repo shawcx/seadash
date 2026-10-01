@@ -151,22 +151,23 @@ def into_frozen(e: A.Expr) -> bool:
     return False
 
 
-_escaping_params: dict[int, set[int]] = {}
+# Analyses of a function are cached on the function itself. (Not in a dict by id(fn): once a
+# program's functions are freed, another program's can get the same ids, and its stale answers.)
 
 
 def escaping_params(fn) -> set[int]:
     """The parameters (by Var id) a function keeps: stores, returns, captures or passes on."""
     from . import threads
 
-    key = id(fn)
-    if key not in _escaping_params:
+    if (cached := getattr(fn, "_escaping_params", None)) is None:
         params = [p.sym for p in fn.node.params]
         if fn.generator:  # (a generator keeps everything it's given until it's done)
-            _escaping_params[key] = {id(v) for v in params}
+            cached = {id(v) for v in params}
         else:
             escaped = threads.escapes(fn.node.body)
-            _escaping_params[key] = {id(v) for v in params if id(v) in escaped or v.captured}
-    return _escaping_params[key]
+            cached = {id(v) for v in params if id(v) in escaped or v.captured}
+        fn._escaping_params = cached
+    return cached
 
 
 def mark_copy_outs(body) -> None:
@@ -368,17 +369,14 @@ def _fresh_local(var: Var, body_of_function: list) -> bool:
     return var.kind == "local"
 
 
-_harmless: dict[int, bool] = {}
-
-
 def harmless_method(fn) -> bool:
     """Does this method (and what it calls) change nothing but its own locals, and call only
     built-ins? Then a loop can call it without the list it's looping over changing."""
     from . import threads
 
-    if id(fn) in _harmless:
-        return _harmless[id(fn)]
-    _harmless[id(fn)] = False  # (while looking: recursion isn't harmless)
+    if (cached := getattr(fn, "_harmless", None)) is not None:
+        return cached
+    fn._harmless = False  # (while looking: recursion isn't harmless)
     ok = getattr(fn, "node", None) is not None and not fn.generator
     if ok:
         for n in walk(fn.node.body):
@@ -398,7 +396,7 @@ def harmless_method(fn) -> bool:
                 ok = False
             if not ok:
                 break
-    _harmless[id(fn)] = ok
+    fn._harmless = ok
     return ok
 
 

@@ -258,15 +258,13 @@ def direct_changes(nodes) -> dict[int, Loc]:
     return uses(nodes, direct=True)[1]
 
 
-_changes_self: dict[int, bool] = {}
-
-
 def changes_self(fn: FuncInfo) -> bool:
     """Does this method change its object (a field, a list in a field, another method that
-    does)? Syntactic and conservative; used for @value classes' methods."""
-    if id(fn) in _changes_self:
-        return _changes_self[id(fn)]
-    _changes_self[id(fn)] = False  # (recursion: assume not, while looking)
+    does)? Syntactic and conservative; used for @value classes' methods. (Cached on fn, like
+    flow.escaping_params.)"""
+    if (cached := getattr(fn, "_changes_self", None)) is not None:
+        return cached
+    fn._changes_self = False  # (recursion: assume not, while looking)
     result = False
     for n in walk_all(fn.node.body):
         target = None
@@ -285,7 +283,7 @@ def changes_self(fn: FuncInfo) -> bool:
             result = True
         if result:
             break
-    _changes_self[id(fn)] = result
+    fn._changes_self = result
     return result
 
 
