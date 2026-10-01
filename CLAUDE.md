@@ -28,9 +28,11 @@ The name is final (a nod to the author's two kids).
 - **Literal arguments decide types** where Python's result depends on them: `open(p, "rb")`,
   `subprocess.run(..., text=True)`, `permutations(xs, 2)`, `add_argument(type=int)`.
 - **Floats are IEEE doubles**, evaluated as written, with the same result on every platform
-  (hence `-ffp-contract=off`, and never `-ffast-math`). Operators match Python as a
-  consequence; matching Python's library results to the last bit (its compensated `sum()`,
-  libm's last digit) is not a goal.
+  (hence `-ffp-contract=off`, and never `-ffast-math`). Float results don't need to match
+  Python's, in operators or in the library: `1.0 // 0.1` is the floor of the quotient, `10.0`
+  (Python works from the remainder and gives `9.0`), and `sum()` isn't compensated. Don't
+  change float behaviour to agree with Python, and keep such cases out of the
+  Python-comparison tests.
 - "Fast development" means fast to write code; a build step is fine.
 
 ## Layout
