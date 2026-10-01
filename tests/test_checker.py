@@ -2572,8 +2572,16 @@ def test_slice_assignment_of_an_empty_list_to_a_field():
     ("print([*5])\n", "can't unpack int with '*': it isn't iterable"),
     ("print({**[1]})\n", "'**' needs a dict, not list[int]"),
     ("print([*[1], 'a'])\n", "list items have different types: int and str"),
-    ("def f(a: int) -> int:\n    return a\nprint(f(*[1]))\n",
-     "unpacking with '*' here isn't supported yet (it works in assignments, lists, tuples and sets)"),
+    ("xs = [1, 2]\nprint(max(*xs))\n",
+     "unpacking a list with '*' isn't supported in this call yet; unpack a tuple, or pass the items one by one"),
+    ("def f(a: int, b: int = 2) -> int:\n    return a + b\nprint(f(*[1]))\n",
+     "a list unpacked with '*' can't fill 'b' of f(), which has a default (the list's length isn't known until it "
+     "runs); pass it by name, or unpack a tuple"),
+    ("def f(a: int, b: int) -> int:\n    return a + b\nprint(f(*[1], 2))\n",
+     "only the last positional argument of f() can be unpacked from a list (a tuple can be unpacked anywhere)"),
+    ("def f(a: int) -> int:\n    return a\nprint(f(*(1, 2)))\n", "f() takes 1 argument but 2 were given"),
+    ("def f(*a: int) -> int:\n    return len(a)\nprint(f(*['x']))\n", "*a of f() takes int arguments, not str (from *)"),
+    ("print(*5)\n", "can't unpack int with '*': it isn't iterable"),
 ])
 def test_unpacking_errors(src, msg):
     assert err(src).message == msg

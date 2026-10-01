@@ -2605,8 +2605,8 @@ class Checker:
             case A.Slice():
                 raise self.error("a slice can only be used inside [...]", e)
             case A.Starred():
-                raise self.error("unpacking with '*' here isn't supported yet (it works in assignments, lists, "
-                                 "tuples and sets)", e)
+                raise self.error("unpacking a list with '*' isn't supported in this call yet; unpack a tuple, "
+                                 "or pass the items one by one", e)
         raise self.error(f"unsupported expression {type(e).__name__}", e)
 
     def check_name(self, e: A.Name, expected: Type | None = None) -> Type:
@@ -3357,8 +3357,33 @@ class Checker:
     # Calls
     # =========================================================================
 
+    def spread_arguments(self, e: A.Call) -> None:
+        """f(*args): a fixed tuple's items become arguments of their own (`args[0]`, `args[1]`...).
+        Codegen evaluates the arguments as written, in order, once each (`e.spread`); an
+        iterable's length is known only when it runs, so match_args deals with that."""
+        if not any(isinstance(a, A.Starred) for a in e.args):
+            return
+        args: list[A.Expr] = []
+        e.spread = []
+        for a in e.args:
+            if not isinstance(a, A.Starred):
+                args.append(a)
+                e.spread.append(a)
+                continue
+            t = self.check_expr(a.value)
+            a.ty = t
+            e.spread.append(a.value)
+            if isinstance(t, TupleType):
+                args.extend(A.Index(a.value, A.IntLit(i, loc=a.loc), loc=a.loc) for i in range(len(t.elts)))
+            elif element_type(t) is None:
+                raise self.error(f"can't unpack {t} with '*': it isn't iterable", a)
+            else:
+                args.append(a)
+        e.args = args
+
     def check_call(self, e: A.Call, expected: Type | None) -> Type:
         func = e.func
+        self.spread_arguments(e)
         if isinstance(func, A.Index) and (kind := self.sync_kind_of(func.value)) is not None:
             explicit = tuple(self.resolve_type(expr_to_type(x)) for x in type_arg_exprs(func.index))
             return self.construct_sync(e, kind, explicit, expected)  # queue.Queue[int]()
@@ -4158,15 +4183,50 @@ class Checker:
                 raise self.error(f"{st.name}(): field '{p.name}' has no default but comes after a field that does", node)
         return params
 
+    def spread_list_argument(self, e: A.Call, params: list[Param], what: str) -> None:
+        """f(a, *xs) where xs is a list (or another iterable of unknown length): its items fill
+        the parameters after a, up to the first one passed by keyword (or *args). Their number
+        is checked when it runs, with Python's TypeError."""
+        stars = [i for i, a in enumerate(e.args) if isinstance(a, A.Starred)]
+        if not stars:
+            return
+        k = stars[0]
+        if len(stars) > 1 or k != len(e.args) - 1:
+            raise self.error(f"only the last positional argument of {what} can be unpacked from a list "
+                             f"(a tuple can be unpacked anywhere)", e.args[stars[-1] if len(stars) > 1 else k])
+        plain = [p for p in params if not p.star]
+        if k >= len(plain):  # all of it goes to *args (match_args checks that there is one)
+            return
+        keywords = {kw.name for kw in e.keywords}
+        filled = []
+        for p in plain[k:]:
+            if p.name in keywords:
+                break
+            if p.default is not None:
+                raise self.error(f"a list unpacked with '*' can't fill '{p.name}' of {what}, which has a default "
+                                 f"(the list's length isn't known until it runs); pass it by name, or unpack a tuple", e.args[k])
+            filled.append(p)
+        if any(p.star for p in params) and len(filled) < len(plain) - k:
+            raise self.error(f"a list unpacked with '*' can't fill both parameters and *args of {what}", e.args[k])
+        source = e.args[k].value
+        e.args = e.args[:k] + [A.Index(source, A.IntLit(i, loc=e.args[k].loc), loc=e.args[k].loc) for i in range(len(filled))]
+        e.spread_check = (source, len(filled), k, what, [p.name for p in filled])
+
     def match_args(self, e: A.Call, params: list[Param], what: str) -> list[A.Expr | None]:
         """Match positional and keyword arguments to parameters; returns one slot per parameter.
         A `*args` parameter's slot is a tuple of the remaining positional arguments."""
         rest = None
+        self.spread_list_argument(e, params, what)
         if params and params[-1].star:
             star, params = params[-1], params[:-1]
             rest = A.TupleLit(list(e.args[len(params):]), loc=e.loc)
             rest.ty = star.type
             for arg in rest.elts:
+                if isinstance(arg, A.Starred):  # f(*xs) into *args: all of xs
+                    t = element_type(arg.ty)
+                    if not assignable(t, star.type.elem):
+                        raise self.error(f"*{star.name} of {what} takes {star.type.elem} arguments, not {t} (from *)", arg)
+                    continue
                 t = self.check_expr(arg, star.type.elem)
                 if not assignable(t, star.type.elem):
                     raise self.error(f"*{star.name} of {what} takes {star.type.elem} arguments, not {t}", arg)

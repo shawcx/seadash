@@ -1,0 +1,53 @@
+# Unpacking arguments: f(*args) with a tuple (anywhere) or a list (last, its length checked
+# when it runs), into parameters or into *args; print(*xs).
+from dataclasses import dataclass
+
+
+def area(width: int, height: int) -> int:
+    return width * height
+
+
+def describe(label: str, *values: float) -> str:
+    return f"{label}: {', '.join(str(v) for v in values)}"
+
+
+def box(x: int, y: int, z: int) -> str:
+    return f"{x}x{y}x{z}"
+
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+    def moved(self, dx: int, dy: int) -> "Point":
+        return Point(self.x + dx, self.y + dy)
+
+
+size = (3, 4)
+print(area(*size))
+print(box(*size, 5), box(1, *size))
+print(box(*[7, 8, 9]), box(1, *[2, 3]))
+print(describe("nums", *[1.5, 2.5]), describe("none"), describe("mixed", 1.0, *(2.0, 3.0)))
+print(Point(*size), Point(1, 2).moved(*[10, 20]))
+order: list[str] = []
+
+
+def note(word: str) -> int:
+    order.append(word)
+    return len(order)
+
+
+print(box(note("a"), *[note("b"), note("c")]), order)
+rows = [[1, 2, 3], [4, 5]]
+for row in rows:
+    print(*row)
+print(*rows[0], sep=", ")
+print(*"abc", sep="-", end="!\n")
+empty: list[str] = []
+print("start", *empty, "end")
+for bad in [[1], [1, 2, 3]]:
+    try:
+        print(area(*bad))
+    except TypeError as e:
+        print("TypeError:", e)

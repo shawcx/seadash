@@ -1,0 +1,13 @@
+12
+3x4x5 1x3x4
+7x8x9 1x2x3
+nums: 1.5, 2.5 none:  mixed: 1.0, 2.0, 3.0
+Point(x=3, y=4) Point(x=11, y=22)
+1x2x3 ['a', 'b', 'c']
+1 2 3
+4 5
+1, 2, 3
+a-b-c!
+start end
+TypeError: area() missing 1 required positional argument: 'height'
+TypeError: area() takes 2 positional arguments but 3 were given

@@ -1850,6 +1850,8 @@ class CodeGen:
                 return self.in_order(values, lambda: self.fstring(parts))
             case A.Name():
                 return self.name(e)
+            case A.Starred(value):  # print(*xs): the items, where a builtin takes them
+                return f"sd::spread({self.expr(value)})"
             case A.ListLit(elts) | A.SetLit(elts) if any(isinstance(x, A.Starred) for x in elts):  # [*xs, 1]
                 return self.starred_display(self.cpp_type(e.ty), elts, e.ty.elem)
             case A.ListLit(elts) | A.SetLit(elts):
@@ -2394,6 +2396,23 @@ class CodeGen:
     # =========================================================================
 
     def call(self, e: A.Call) -> str:
+        if spread := getattr(e, "spread", None):  # f(*args): each argument as written, once, in order
+            decls = []
+            for x in spread:
+                tmp = self.fresh("a")
+                decls.append(f"auto {tmp} = {self.expr(x)};")
+                self.precomputed[id(x)] = tmp
+            if check := getattr(e, "spread_check", None):  # a list's length, known only now
+                source, want, before, what, names = check
+                quoted = ", ".join(cpp_string(n) for n in names)
+                decls.append(f"sd::check_spread({self.precomputed[id(source)]}.size(), {want}, {before}, "
+                             f"{cpp_string(what)}, {{{quoted}}});")
+            try:
+                inner = self.call_inner(e)
+            finally:
+                for x in spread:
+                    del self.precomputed[id(x)]
+            return f"[&]() -> decltype(auto) {{ {' '.join(decls)} return {inner}; }}()"
         # (arguments like add_argument's type=int or hmac's digestmod=hashlib.sha256 are
         # instructions to the compiler, not values to evaluate)
         operands = [x for x in [*e.args, *(k.value for k in e.keywords)] if not getattr(x, "compile_time", False)]

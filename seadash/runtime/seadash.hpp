@@ -1481,14 +1481,36 @@ std::string fstr(const Ts&... parts) {
     return out;
 }
 
+template <class T>
+decltype(auto) iter(T&& x);  // (below)
+
+// print(*xs): the items of xs, each printed as if passed on its own.
+template <class C>
+struct spread_t {
+    C items;
+};
+template <class C>
+spread_t<C> spread(C&& items) {
+    return {std::forward<C>(items)};
+}
+template <class T> struct is_spread : std::false_type {};
+template <class C> struct is_spread<spread_t<C>> : std::true_type {};
+
 template <class... Ts>
 std::string print_line(std::string_view sep, std::string_view end, const Ts&... xs) {
     std::string out;
     bool first = true;
-    auto add = [&](const auto& x) {
+    auto add_one = [&](const auto& x) {
         if (!first) out += sep;
         first = false;
         out += str(x);
+    };
+    auto add = [&](const auto& x) {
+        if constexpr (is_spread<std::remove_cvref_t<decltype(x)>>::value) {
+            for (auto&& item : iter(x.items)) add_one(item);
+        } else {
+            add_one(x);
+        }
     };
     (add(xs), ...);
     (void)add;  // print() with no arguments
@@ -2316,6 +2338,27 @@ inline void check_unpack_star(std::size_t have, std::size_t want) {
         raise("ValueError", "not enough values to unpack (expected at least " + std::to_string(want) + ", got " +
                                 std::to_string(have) + ")");
 }
+// f(a, *xs) with a list: its items fill `want` parameters after `before` others.
+inline void check_spread(std::size_t got, std::size_t want, std::size_t before, std::string_view what,
+                         std::initializer_list<std::string_view> names) {
+    auto plural = [](std::size_t n, const char* word) {
+        return std::to_string(n) + " " + word + (n == 1 ? "" : "s");
+    };
+    if (got > want) {
+        raise("TypeError", std::string(what) + " takes " + plural(before + want, "positional argument") + " but " +
+                               std::to_string(before + got) + (before + got == 1 ? " was" : " were") + " given");
+    }
+    if (got < want) {
+        std::string missing;
+        std::size_t n = want - got, i = 0;
+        for (auto it = names.begin() + static_cast<std::ptrdiff_t>(got); it != names.end(); ++it, ++i) {
+            if (i > 0) missing += i + 1 == n ? (n > 2 ? ", and " : " and ") : ", ";
+            missing += "'" + std::string(*it) + "'";
+        }
+        raise("TypeError", std::string(what) + " missing " + plural(n, "required positional argument") + ": " + missing);
+    }
+}
+
 inline void check_unpack(std::size_t have, std::size_t want) {
     if (have < want)
         raise("ValueError", "not enough values to unpack (expected " + std::to_string(want) + ", got " + std::to_string(have) + ")");

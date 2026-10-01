@@ -228,7 +228,13 @@ def bytes_like(t: Type) -> bool:
 
 def b_print(ctx: CallContext) -> Type:
     ctx.arity(0, MANY, keywords=("sep", "end", "file", "flush"))
-    for i in range(len(ctx.args)):
+    for i, arg in enumerate(ctx.args):
+        if isinstance(arg, A.Starred):  # print(*xs): each item, separated by sep
+            t = ctx.checker.check_expr(arg.value)
+            arg.ty = t
+            if (items := element_type(t)) is None or not printable(items):
+                raise ctx.error(f"print(*...) needs something iterable whose items can be printed, not {t}", arg)
+            continue
         ctx.need(i, printable, "something printable")
     ctx.keyword("sep", STR)
     ctx.keyword("end", STR)
