@@ -285,7 +285,7 @@ public:
         if (withyear) s += " " + std::to_string(year);
         return str_center(s, width);
     }
-    void prweek(const Week2& week, std::int64_t width) const { print("", "", formatweek(week, width)); }
+    void prweek(const Week2& week, std::int64_t width) const { sd::print("", "", formatweek(week, width)); }
     std::string formatmonth(std::int64_t year, std::int64_t month, std::int64_t w = 0, std::int64_t l = 0) const {
         w = std::max<std::int64_t>(2, w);
         l = std::max<std::int64_t>(1, l);
@@ -295,7 +295,7 @@ public:
         return s;
     }
     void prmonth(std::int64_t year, std::int64_t month, std::int64_t w = 0, std::int64_t l = 0) const {
-        print("", "", formatmonth(year, month, w, l));
+        sd::print("", "", formatmonth(year, month, w, l));
     }
     static std::string formatstring(const std::vector<std::string>& cols, std::int64_t colwidth, std::int64_t spacing) {
         std::string out;
@@ -335,7 +335,7 @@ public:
         return v;
     }
     void pryear(std::int64_t year, std::int64_t w = 0, std::int64_t l = 0, std::int64_t c = 6, std::int64_t m = 3) const {
-        print("", "", formatyear(year, w, l, c, m));
+        sd::print("", "", formatyear(year, w, l, c, m));
     }
 };
 

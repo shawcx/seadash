@@ -1,0 +1,10 @@
+# calendar's printing functions: prmonth, prcal, prweek, pryear.
+import calendar
+
+calendar.prmonth(2024, 2)
+calendar.prcal(2023, m=4)
+tc = calendar.TextCalendar(6)
+tc.prmonth(2025, 1, w=3)
+tc.prweek(tc.monthdays2calendar(2025, 1)[1], 2)
+print()
+tc.pryear(2026, l=2, c=3, m=2)
