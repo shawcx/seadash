@@ -2618,3 +2618,18 @@ def test_bool_arithmetic():
         "a: int", "b: int", "c: bool", "d: int", "e: float"]
     assert err("print(~True)\n").message == (
         "'~' on a bool is deprecated in Python (it gives -2 for True); use 'not' to negate it, or ~int(x) for the int's bits")
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("rows = [[1], [2]]\nx = zip([0], *rows)\n", "zip() can unpack a list with '*' only when it's the only argument"),
+    ("rows = [1, 2]\nx = zip(*rows)\n", "zip() needs iterables, not int"),
+    ("import os\nparts = [1]\nx = os.path.join('a', *parts)\n", "os.path.join() needs strs, not list[int] unpacked"),
+])
+def test_star_builtin_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_star_builtin_types():
+    assert variables(ok("import itertools\nrows = [[1], [2]]\nz = list(zip(*rows))\np = list(itertools.product(*rows))\n"
+                        "c = list(itertools.chain(*rows))\n")) == [
+        "rows: list[list[int]]", "z: list[tuple[int, ...]]", "p: list[tuple[int, ...]]", "c: list[int]"]

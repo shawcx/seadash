@@ -48,8 +48,9 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - Built-in types: printing a `range` or a dict view (`print(d.keys())`), keeping a `range` in a
   variable or indexing it, `float.as_integer_ratio` (the ratio often needs more than 64 bits),
   `int.real`/`imag`/`numerator`/`denominator`/`conjugate`, `tuple * n`, `f.encoding`, `%` formatting.
-- Statements: augmented assignment to a slice (`xs[1:3] += ys`); unpacking a list into a builtin other than
-  `print` (`zip(*rows)`, `os.path.join(*parts)`; a tuple works), or into parameters with defaults; `f(**kwargs)`.
+- Statements: augmented assignment to a slice (`xs[1:3] += ys`); unpacking a list into other builtins
+  (`max(*xs)`; a tuple works), into parameters with defaults, or into zip/chain/product alongside other
+  arguments (`zip(a, *rows)`); `f(**kwargs)`.
 - Decorators on nested functions (other than `@functools.wraps`).
 - `contextlib`: `chdir`, `redirect_stdout`/`redirect_stderr`, `ContextDecorator`, `ExitStack.push`, async
   context managers. Generators can't `yield` in an `except`/`finally` block (C++ can't suspend there).

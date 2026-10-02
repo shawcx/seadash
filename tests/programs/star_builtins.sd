@@ -1,0 +1,24 @@
+# A list unpacked into builtins that take any number of iterables: zip(*rows), chain(*lists),
+# product(*lists), and os.path.join(root, *parts).
+import itertools
+import os
+
+grid = [[1, 2, 3], [4, 5, 6]]
+print(list(zip(*grid)))
+print([list(col) for col in zip(*[[1, 2], [3, 4], [5, 6]])])
+print(list(itertools.chain(*grid)))
+print(list(itertools.product(*[[0, 1], [7, 8]])))
+print(list(itertools.product(*[["a", "b"]], repeat=2)))
+parts = ["usr", "local", "bin"]
+none: list[str] = []
+print(os.path.join(*parts), os.path.join("/", *parts), os.path.join("root", *none))
+empty: list[list[int]] = []
+print(list(zip(*empty)), list(itertools.product(*empty)))
+try:
+    print(list(zip(*[[1, 2], [3]], strict=True)))
+except ValueError as e:
+    print("ValueError:", e)
+try:
+    os.path.join(*none)
+except TypeError as e:
+    print("TypeError:", e)

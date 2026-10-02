@@ -248,6 +248,34 @@ Generator<R> product_impl(std::index_sequence<I...>, Pools... pools) {
         if (sizeof...(I) == 0) co_return;
     }
 }
+// product(*lists, repeat=n): as many pools as lists has, so tuples of any length.
+template <class T, class Lists>
+Generator<vtuple<T>> product_spread(Lists lists, std::int64_t repeat) {
+    std::vector<std::vector<T>> pools;
+    for (auto&& xs : iter(lists)) {
+        std::vector<T> pool;
+        for (auto&& x : iter(xs)) pool.push_back(static_cast<T>(x));
+        pools.push_back(std::move(pool));
+    }
+    std::vector<std::vector<T>> all;
+    for (std::int64_t r = 0; r < repeat; ++r) all.insert(all.end(), pools.begin(), pools.end());
+    for (auto& pool : all)
+        if (pool.empty()) co_return;
+    std::vector<std::size_t> at(all.size(), 0);
+    while (true) {
+        list<T> items;
+        for (std::size_t k = 0; k < all.size(); ++k) items.push_back(all[k][at[k]]);
+        co_yield vtuple<T>(items);
+        std::size_t k = all.size();  // odometer: the rightmost position turns fastest
+        while (k > 0) {
+            --k;
+            if (++at[k] < all[k].size()) break;
+            at[k] = 0;
+            if (k == 0) co_return;
+        }
+        if (all.empty()) co_return;
+    }
+}
 template <class R, class... Pools>
 Generator<R> product(Pools... pools) {
     return product_impl<R>(std::index_sequence_for<Pools...>{}, std::move(pools)...);

@@ -2337,6 +2337,33 @@ bool contains(const vtuple<T>& t, const X& x) {
     return std::find(t.items.begin(), t.items.end(), x) != t.items.end();
 }
 // `a, b = t`: the number of values must match, like Python.
+// zip(*rows): as many iterables as rows has, so tuples of any length (each row read first).
+template <class T, class Rows>
+Generator<vtuple<T>> zip_spread(Rows rows, bool strict) {
+    std::vector<std::vector<T>> cols;
+    for (auto&& row : iter(rows)) {
+        std::vector<T> col;
+        for (auto&& x : iter(row)) col.push_back(static_cast<T>(x));
+        cols.push_back(std::move(col));
+    }
+    if (cols.empty()) co_return;
+    std::size_t n = cols[0].size();
+    for (auto& c : cols) n = std::min(n, c.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        list<T> items;
+        for (auto& c : cols) items.push_back(c[i]);
+        co_yield vtuple<T>(items);
+    }
+    if (strict) {  // as zip(..., strict=True) says it: the first to run out, and who had more
+        auto before = [](std::size_t i) { return i == 1 ? std::string("argument 1") : "arguments 1-" + std::to_string(i); };
+        std::size_t stopped = 0;
+        while (cols[stopped].size() > n) ++stopped;
+        if (stopped > 0)
+            raise("ValueError", "zip() argument " + std::to_string(stopped + 1) + " is shorter than " + before(stopped));
+        for (std::size_t i = 1; i < cols.size(); ++i)
+            if (cols[i].size() > n) raise("ValueError", "zip() argument " + std::to_string(i + 1) + " is longer than " + before(i));
+    }
+}
 // a, *rest, z = xs: at least as many items as the names around the star.
 inline void check_unpack_star(std::size_t have, std::size_t want) {
     if (have < want)

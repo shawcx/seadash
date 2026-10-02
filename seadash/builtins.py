@@ -556,9 +556,27 @@ def b_enumerate(ctx: CallContext) -> Type:
     return GeneratorType(TupleType((INT, elem)))
 
 
+def spread_items(ctx: CallContext, what: str) -> Type | None:
+    """f(*rows) where f takes any number of iterables: the type of the rows' items, or None
+    if the call has no starred list. (Only on its own: zip(*rows), not zip(a, *rows).)"""
+    if not any(isinstance(a, A.Starred) for a in ctx.args):
+        return None
+    if len(ctx.args) != 1:
+        raise ctx.error(f"{ctx.what} can unpack a list with '*' only when it's the only {what}", ctx.call)
+    star = ctx.args[0]
+    inner = element_type(star.ty)
+    items = element_type(inner) if inner is not None else None
+    if items is None:
+        raise ctx.error(f"{ctx.what} needs iterables, not {inner}", star)
+    return items
+
+
 def b_zip(ctx: CallContext) -> Type:
-    n = ctx.arity(1, MANY, keywords=("strict",))
     ctx.keyword("strict", BOOL)
+    if (items := spread_items(ctx, "argument")) is not None:  # zip(*rows): tuples as long as rows
+        ctx.call.spread_zip = True
+        return GeneratorType(VarTupleType(items))
+    n = ctx.arity(1, MANY, keywords=("strict",))
     return GeneratorType(TupleType(tuple(ctx.iterable(i) for i in range(n))))
 
 
@@ -1518,8 +1536,15 @@ def os_getenv(ctx: CallContext) -> Type:
 
 
 def path_join(ctx: CallContext) -> Type:
-    for i in range(ctx.arity(1, MANY)):
-        ctx.expect(i, STR)
+    for i, arg in enumerate(ctx.args):
+        if isinstance(arg, A.Starred):  # os.path.join(root, *parts)
+            if element_type(arg.ty) != STR:
+                raise ctx.error(f"os.path.join() needs strs, not {arg.ty} unpacked", arg)
+            ctx.call.spread_join = True
+        else:
+            ctx.expect(i, STR)
+    if not ctx.args:
+        ctx.arity(1, MANY)
     return STR
 
 
@@ -2841,6 +2866,8 @@ def itertools_function(name: str) -> Callable[[CallContext], Type]:
                     ctx.checker.expect_type(args["initial"], elem, "accumulate() initial")
                 info["args"] = args
                 return GeneratorType(elem)
+            case "chain" if (items := spread_items(ctx, "iterable")) is not None:  # chain(*lists)
+                return GeneratorType(items)
             case "chain":
                 ctx.arity(1, MANY)
                 elem = None
@@ -2919,8 +2946,10 @@ def itertools_function(name: str) -> Callable[[CallContext], Type]:
                 info["elems"] = elems
                 return GeneratorType(TupleType(tuple(joined)))
             case "product":
-                ctx.arity(1, MANY, keywords=("repeat",))
-                elems = [iterable_of(ctx, a) for a in ctx.args]
+                spread = spread_items(ctx, "iterable")
+                if spread is None:
+                    ctx.arity(1, MANY, keywords=("repeat",))
+                    elems = [iterable_of(ctx, a) for a in ctx.args]
                 rep = ctx.keyword_arg("repeat")
                 n = 1
                 if rep is not None:
@@ -2929,6 +2958,9 @@ def itertools_function(name: str) -> Callable[[CallContext], Type]:
                         raise ctx.error("product()'s repeat must be a number written out (it decides the tuple size)", rep)
                     ctx.checker.check_expr(rep)
                 info["repeat"] = n
+                if spread is not None:  # product(*lists): tuples as long as lists (times repeat)
+                    info["spread"] = True
+                    return GeneratorType(VarTupleType(spread))
                 return GeneratorType(TupleType(tuple(elems) * n))
             case "permutations":
                 args = it_bind(ctx, (("iterable", None), ("r", None, True)))

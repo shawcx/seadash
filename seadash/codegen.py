@@ -2635,6 +2635,8 @@ class CodeGen:
                 func = self.expr(args["func"]) if present("func") else "[](const auto& x, const auto& y) { return x + y; }"
                 initial = f"std::optional<{T}>({self.expr_as(args['initial'], out)})" if present("initial") else "std::nullopt"
                 return f"{ns}accumulate<{T}>({self.expr(args['iterable'])}, {func}, {initial})"
+            case "chain" if e.args and isinstance(e.args[0], A.Starred):  # chain(*lists)
+                return f"{ns}from_iterable<{T}>({self.expr(e.args[0].value)})"
             case "chain":
                 parts = ", ".join(f"{ns}as_generator<{T}>({x})" for x in a)
                 return f"{ns}chain<{T}>({{{parts}}})"
@@ -2662,6 +2664,8 @@ class CodeGen:
                 fill_code = self.expr(fill) if fill is not None and not isinstance(fill, A.NoneLit) else "std::nullopt"
                 gens = ", ".join(f"{ns}as_generator<{self.cpp_type(t)}>({x})" for t, x in zip(info["elems"], a))
                 return f"{ns}zip_longest<{T}>({fill_code}, {gens})"
+            case "product" if info.get("spread"):  # product(*lists)
+                return f"{ns}product_spread<{self.cpp_type(out.elem)}>({self.expr(e.args[0].value)}, {info['repeat']})"
             case "product":
                 pools = ", ".join(f"sd::to_list({x})" for x in a)
                 repeated = ", ".join(["sd_pools..."] * info["repeat"])
@@ -2986,6 +2990,10 @@ class CodeGen:
             case "sum" if len(e.args) == 2 or e.keywords:
                 start = e.args[1] if len(e.args) == 2 else self.keyword(e, "start")
                 return f"sd::sum({self.expr(e.args[0])}, {self.expr_as(start, e.ty)})"
+            case "zip" if getattr(e, "spread_zip", False):  # zip(*rows)
+                strict = self.keyword(e, "strict")
+                return (f"sd::zip_spread<{self.cpp_type(e.ty.elem.elem)}>({self.expr(e.args[0].value)}, "
+                        f"{self.expr(strict) if strict is not None else 'false'})")
             case "zip" if (strict := self.keyword(e, "strict")) is not None:
                 return f"sd::zip_strict<{self.cpp_type(e.ty.elem)}>({', '.join([self.expr(strict), *args])})"
             case "zip":
@@ -3450,6 +3458,8 @@ class CodeGen:
             when = e.args[2] if len(e.args) > 2 else self.keyword(e, "return_when")
             return (f"sd::futures::wait<{elem}>({self.expr(e.args[0])}, {timeout}, "
                     f"{self.expr(when) if when is not None else chr(34) + 'ALL_COMPLETED' + chr(34) + 's'})")
+        if getattr(e, "spread_join", False):  # os.path.join(root, *parts)
+            return f"sd::os::path::join_list({self.starred_display('sd::list<std::string>', e.args, STR)})"
         if mod == "functools" and name == "partial":
             return self.partial_code(e)
         if mod == "contextlib":

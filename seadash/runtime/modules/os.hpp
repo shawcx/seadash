@@ -75,6 +75,14 @@ std::string join(const std::string& first, const Parts&... rest) {
     return out.string();
 }
 
+// os.path.join(*parts), or (a, *parts): the parts in a list.
+inline std::string join_list(const list<std::string>& parts) {
+    if (parts.empty()) raise("TypeError", "join() missing 1 required positional argument: 'a'");
+    fs::path out(parts[0]);
+    for (std::size_t i = 1; i < parts.size(); ++i) out /= fs::path(parts[i]);
+    return out.string();
+}
+
 inline std::string basename(const std::string& p) {
     auto slash = p.find_last_of('/');
     return slash == std::string::npos ? p : p.substr(slash + 1);
