@@ -38,11 +38,11 @@ from . import builtins, flow, threads
 from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
-    BINARY_FILE, BOOL, BuiltinClass, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
+    BINARY_FILE, BOOL, BuiltinClass, BYTEARRAY, BYTES, FLOAT, TYPE_OBJECT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
     SYNC_ARITY, SelectorType, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
-    SetType, StructType, TupleType, Type, Var, EnumInfo, EnumMember, bool_decays, enum_decays, enum_flag_op, enum_mixin,
+    Prim, SetType, StructType, TupleType, Type, Var, EnumInfo, EnumMember, bool_decays, enum_decays, enum_flag_op, enum_mixin,
     Signature, UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional,
     filled_for, strip_sig, widen,
 )
@@ -302,6 +302,7 @@ class Checker:
     # =========================================================================
 
     def check_module(self, module: A.Module) -> ModuleInfo:
+        self.module = module
         top_level: list[A.Stmt] = []
         struct_nodes: list[A.ClassDef] = []
         func_nodes: list[A.FunctionDef] = []
@@ -1426,8 +1427,23 @@ class Checker:
     # =========================================================================
 
     def check_block(self, stmts: list[A.Stmt]) -> None:
-        for stmt in stmts:
+        for i, stmt in enumerate(stmts):
+            if (isinstance(stmt, A.ExprStmt) and isinstance(stmt.value, A.Call)
+                    and self.is_builtin_name(stmt.value.func, "setattr")):
+                lowered = stmts[i] = self.lower_setattr(stmt.value)  # (an assignment, for every analysis after this)
+                body = self.module.body  # (the top level is checked from a list of its own)
+                body[:] = [lowered if s is stmt else s for s in body]
+                stmt = lowered
             self.check_stmt(stmt)
+
+    def lower_setattr(self, call: A.Call) -> A.Assign:
+        """setattr(obj, "name", v) is obj.name = v."""
+        if len(call.args) != 3 or call.keywords:
+            raise self.error("setattr() takes 3 arguments (an object, the attribute's name, the value)", call)
+        obj, name, value = call.args
+        if not isinstance(name, A.StrLit):
+            raise self.error(reflection_name_error("setattr"), name)
+        return A.Assign([A.Attribute(obj, name.value, loc=call.loc)], value, loc=call.loc)
 
     def check_stmt(self, stmt: A.Stmt) -> None:
         match stmt:
@@ -3234,6 +3250,11 @@ class Checker:
         e.dunder = []
         for op, right in zip(e.ops, e.comparators):
             hint = lt if op in ("==", "!=", "<", "<=", ">", ">=") else None  # xs == []: the same type
+            if lt == TYPE_OBJECT and op in ("is", "is not", "==", "!=") and (named := self.named_type_object(right)):
+                right.type_literal, right.ty = named, TYPE_OBJECT  # type(x) is Point, type(x) == int
+                left, lt = right, TYPE_OBJECT
+                e.dunder.append(None)
+                continue
             rt = self.check_expr(right, hint)
             # N.ONE < 2: an IntEnum member compares as its value (codegen decays it the same way)
             lv = enum_mixin(lt) if enum_decays(op, lt, rt) else lt
@@ -3558,6 +3579,8 @@ class Checker:
             return self.call_generic(e, gen, explicit, expected)
         if self.is_builtin_name(func, "isinstance"):
             return self.check_isinstance(e)
+        if isinstance(func, A.Name) and func.id in REFLECTION and self.is_builtin_name(func, func.id):
+            return self.check_reflection(e, func.id)
         if (isinstance(func, A.Attribute) and isinstance(func.value, A.Name)
                 and (func.value.id, func.attr) in builtins.TYPE_FUNCTIONS and self.is_builtin_name(func.value, func.value.id)):
             # str.maketrans(...), bytes.fromhex(...): called on the type itself
@@ -3968,6 +3991,90 @@ class Checker:
         for arg in t.args:
             if reason := threads.unsendable(arg):
                 raise self.error(f"a {t.kind} can only hold values that can be copied between threads: {reason}", node)
+
+    # ---- reflection: type(), getattr/hasattr/setattr, callable(), id() --------------
+
+    def named_type_object(self, e: A.Expr) -> tuple | None:
+        """`Point` or `int` where a type(x) is compared with it: (module, name)."""
+        if not isinstance(e, A.Name) or e.id in self.state.names or e.id in self.scope.assigned:
+            return None
+        if e.id in BUILTIN_TYPE_NAMES:
+            return ("builtins", "NoneType" if e.id == "None" else e.id)
+        st = self.lookup_struct(e.id)
+        if st is not None and st.enum is not None:
+            return (st.module, st.name, "enum")
+        return None if st is None else (("builtins" if st.builtin and "." not in st.name else st.module), st.name)
+
+    def check_reflection(self, e: A.Call, name: str) -> Type:
+        ctx = builtins.CallContext(self, e, f"{name}()", None)
+        e.sym = CallTarget("builtin", name)
+        if name == "setattr":
+            raise self.error("setattr() can only be a statement here (`setattr(obj, \"name\", value)` on its own line)", e)
+        if name in ("type", "callable", "id"):
+            ctx.arity(1)
+            arg = e.args[0]
+            if name == "callable":
+                arg.compile_time = True  # (known now: nothing to evaluate)
+                if isinstance(arg, A.Name) and arg.id not in self.state.names and (
+                        arg.id in builtins.FUNCTIONS or arg.id in self.functions or self.lookup_struct(arg.id)):
+                    e.constant = True  # callable(len), callable(Point)
+                    return BOOL
+            t = ctx.arg(0)
+            if name == "type":
+                if type_object_name(t) is None and not runtime_type_object(t):
+                    raise self.error(f"type() of a {t} isn't supported (only of numbers, strings, bytes, containers, None "
+                                     f"and classes)", e.args[0])
+                return TYPE_OBJECT
+            if name == "callable":
+                e.constant = isinstance(t, (FuncType, ClassRefType)) or bool(self.dunder(t, "__call__"))
+                return BOOL
+            if not has_identity(t):
+                raise self.error(f"id() needs an object with identity (a class instance, list, dict, set or bytearray), "
+                                 f"not {with_article(t)}: in seadash {with_article(t)} is a value, copied when it's assigned",
+                                 e.args[0])
+            return INT
+        # getattr(obj, "name"[, default]) / hasattr(obj, "name")
+        ctx.arity(2, 3 if name == "getattr" else 2)
+        obj, attr = e.args[0], e.args[1]
+        if not isinstance(attr, A.StrLit):
+            raise self.error(reflection_name_error(name), attr)
+        owner = self.check_expr(obj)
+        node = A.Attribute(obj, attr.value, loc=e.loc)
+        if self.has_attribute(owner, attr.value):
+            t = self.check_expr(node)  # (obj is checked again: an attribute's value is always checked with it)
+            e.reflected = ("static", node)
+            if name == "hasattr":
+                return BOOL
+            if len(e.args) == 3:
+                self.check_expr(e.args[2])  # (evaluated, as Python does, but not needed)
+            return t
+        subclasses = [c for c in threads.ALL_CLASSES if c is not owner and isinstance(owner, StructType)
+                      and c.is_subclass_of(owner) and c.find_field(attr.value) is not None]
+        default = e.args[2] if len(e.args) == 3 else None
+        if subclasses:  # only some subclasses have it: which one this is, is checked when it runs
+            types = {c.find_field(attr.value).type for c in subclasses}
+            if name == "getattr":
+                if len(types) > 1:
+                    raise self.error(f"'{attr.value}' has different types in {owner.name}'s subclasses "
+                                     f"({', '.join(sorted(map(str, types)))}), so getattr() can't give one type", attr)
+                [t] = types
+                if default is not None:
+                    self.expect_type(default, t, "getattr() default")
+            e.reflected = ("subclasses", subclasses)
+            return BOOL if name == "hasattr" else next(iter(types))
+        if name == "hasattr":
+            e.constant = False  # (a type that can't have it)
+            return BOOL
+        if default is None:
+            self.check_expr(node)  # (its error: no such attribute)
+        e.reflected = ("default", default)
+        return self.check_expr(default)
+
+    def has_attribute(self, t: Type, attr: str) -> bool:
+        if isinstance(t, StructType):
+            return bool(t.find_field(attr) or t.find_method(attr) or t.find_class_attr(attr))
+        attrs = builtins.type_attributes(t)
+        return attrs is not None and attr in attrs
 
     def is_builtin_name(self, e: A.Expr, name: str) -> bool:
         return (
@@ -4622,6 +4729,58 @@ def count_assignments(stmts: list[A.Stmt]) -> dict[str, int]:
             for name in assigned_targets([stmt]):
                 counts[name] = counts.get(name, 0) + 1
     return counts
+
+
+REFLECTION = ("type", "getattr", "hasattr", "setattr", "callable", "id")
+BUILTIN_TYPE_NAMES = ("int", "float", "bool", "str", "bytes", "bytearray", "list", "dict", "set", "tuple", "None")
+
+
+def reflection_name_error(name: str) -> str:
+    return (f"{name}() needs the attribute's name as a string literal, as seadash's types are fixed when compiling "
+            f"(for names chosen at run time, use a dict)")
+
+
+def type_object_name(t: Type) -> tuple | None:
+    """type(x) when it's known when compiling: (module, name[, "enum"]), as Python names the class."""
+    match t:
+        case Prim():
+            names = {"int": "int", "float": "float", "bool": "bool", "str": "str", "bytes": "bytes",
+                     "bytearray": "bytearray", "None": "NoneType"}
+            return ("builtins", names[t.name]) if t.name in names else None
+        case CounterType():
+            return ("collections", "Counter")
+        case DefaultDictType():
+            return ("collections", "defaultdict")
+        case DictType():
+            return ("builtins", "dict")
+        case ListType():
+            return ("builtins", "list")
+        case SetType():
+            return ("builtins", "set")
+        case TupleType() | VarTupleType():
+            return ("builtins", "tuple")
+        case DequeType():
+            return ("collections", "deque")
+        case StructType() if t.enum is not None:
+            return (t.module, t.name, "enum")
+        case StructType() if t.kind == "struct":
+            return (t.module, t.name)
+        case BuiltinClass() if "." in t.name:
+            module, _, name = t.name.rpartition(".")
+            return (module, name)
+    return None
+
+
+def runtime_type_object(t: Type) -> bool:
+    """type(x) found when it runs: a class instance's (or exception's) own class, or None or not."""
+    if isinstance(t, OptionalType):
+        return type_object_name(t.inner) is not None or runtime_type_object(t.inner)
+    return isinstance(t, StructType) and t.kind == "class"
+
+
+def has_identity(t: Type) -> bool:
+    return (isinstance(t, StructType) and t.kind == "class") or t == BYTEARRAY or isinstance(
+        t, (ListType, DictType, SetType, DequeType, FileType))
 
 
 def is_scalar(t: Type) -> bool:

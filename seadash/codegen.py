@@ -36,13 +36,13 @@ from dataclasses import dataclass
 
 from . import ast as A
 from . import builtins
-from .checker import CallTarget, Dunder, ModuleInfo, has_yield
+from .checker import CallTarget, Dunder, ModuleInfo, has_yield, type_object_name
 from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
 from .flow import walk as walk_nodes
 from .threads import MUTATING_METHODS  # (a parameter changed by one of these is passed by value)
 from .types import (
     SYNC_CPP, BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
-    BuiltinClass, COPIED, SelectorKeyType, SelectorType, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
+    BuiltinClass, COPIED, TYPE_OBJECT, SelectorKeyType, SelectorType, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION, SIGNAL_HANDLER,
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
@@ -688,6 +688,9 @@ class CodeGen:
         self.line("std::string sd_repr() const override;" if st.base else "virtual std::string sd_repr() const;")
         virtual, override = ("", " override") if st.base else ("virtual ", "")  # (the runtime class, for dataclass __eq__)
         self.line(f'{virtual}std::string sd_class_name() const{override} {{ return {cpp_string(st.origin or st.name)}; }}')
+        user_base = st.base is not None and not st.base.builtin  # (a runtime base, like Synchronized, has none to override)
+        self.line(f"{'' if user_base else 'virtual '}sd::type_object sd_type_object() const{' override' if user_base else ''} "
+                  f"{{ return {self.type_object_literal(st)}; }}")  # type(x)
         self.protocol_members(st, name)
         self.class_attr_members(st)
         self.lazy_members(st)
@@ -723,6 +726,54 @@ class CodeGen:
         tests = " ".join(f"if (sd_command == {cpp_string(m.name[3:])}) {{ this->{fn_name(m)}(); return true; }}" for m in handlers)
         self.line(f"bool sd_dispatch(const std::string& sd_command) override {{ {tests} "
                   f"return {class_name(st.base)}::sd_dispatch(sd_command); }}")
+
+    def reflection_call(self, name: str, e: A.Call) -> str:
+        if name == "type":
+            return self.type_object_code(e.args[0])
+        if name == "callable":
+            return "true" if e.constant else "false"
+        return self.reflected_attribute(name, e)
+
+    def type_object_literal(self, st: StructType | tuple) -> str:
+        """(module, name[, "enum"]), or a class: its sd::type_object."""
+        module, name, *enum = st if isinstance(st, tuple) else (st.module, st.name)
+        return f"sd::type_object{{{cpp_string(module)}, {cpp_string(name)}{', true' if enum else ''}}}"
+
+    def type_object_code(self, node: A.Expr) -> str:
+        """type(x): known when compiling, or (a class instance's, None or not) when it runs."""
+        t = node.ty
+        if (known := type_object_name(t)) is not None:
+            literal = self.type_object_literal(known)
+            return literal if is_simple(node) else f"([&] {{ (void)({self.expr(node)}); return {literal}; }}())"
+        if isinstance(t, OptionalType):
+            inner = self.type_object_literal(known) if (known := type_object_name(t.inner)) else "(*sd_v)->sd_type_object()"
+            none = self.type_object_literal(("builtins", "NoneType"))
+            return f"([&] {{ auto&& sd_v = {self.expr(node)}; return sd_v ? {inner} : {none}; }}())"
+        return f"{self.expr(node)}->sd_type_object()"
+
+    def reflected_attribute(self, name: str, e: A.Call) -> str:
+        """getattr(obj, "n"[, default]) / hasattr(obj, "n"), resolved by the checker (e.reflected)."""
+        if getattr(e, "constant", None) is not None:  # hasattr on a type that can't have it
+            return "false"
+        kind, data = e.reflected
+        if kind == "static":
+            return "true" if name == "hasattr" else self.expr(data)
+        if kind == "default":
+            return self.expr(data)
+        obj = self.expr(e.args[0])  # only some subclasses have it: which one is it?
+        attr = e.args[1].value
+        if name == "hasattr":
+            tests = " || ".join(f"std::dynamic_pointer_cast<{class_name(c)}>(sd_o)" for c in data)
+            return f"([&] {{ auto&& sd_o = {obj}; return bool({tests}); }}())"
+        t = e.ty
+        steps = " ".join(f"if (auto sd_p = std::dynamic_pointer_cast<{class_name(c)}>(sd_o)) return {self.cpp_type(t)}(sd_p->{ident(attr)});"
+                         for c in data)
+        if len(e.args) == 3:
+            last = f"return {self.expr_as(e.args[2], t)};"
+        else:
+            message = f"{cpp_string(' object has no attribute ' + repr(attr))}"
+            last = f'throw sd::Thrown{{std::make_shared<sd::AttributeError>("\'" + sd_o->sd_type_object().name + "\'" + {message})}};'
+        return f"([&]() -> {self.cpp_type(t)} {{ auto&& sd_o = {obj}; {steps} {last} }}())"
 
     def class_attr_members(self, st: StructType) -> None:
         """`version = "1.0"`: Cls.version is sd_class_version(); obj.version is sd_attr_version(),
@@ -781,6 +832,7 @@ class CodeGen:
             if m.name != "__init__":
                 self.line(f"{self.cpp_type(m.ret)} {ident(m.name)}({', '.join(self.params(m))});")
         self.line(f'std::string sd_type() const override {{ return "{st.name}"; }}')
+        self.line(f"sd::type_object sd_type_object() const override {{ return {self.type_object_literal(st)}; }}")
         self.close(";")
         self.line()
 
@@ -1924,6 +1976,8 @@ class CodeGen:
         return f"[&](auto&& sd_tup) {{ return {self.cpp_type(ListType(elem))}{{{items}}}; }}({code})"
 
     def expr_code(self, e: A.Expr) -> str:
+        if (named := getattr(e, "type_literal", None)) is not None:  # `Point` in type(x) is Point
+            return self.type_object_literal(named)
         match e:
             case A.IntLit(v):
                 return f"{v}_i"
@@ -2228,6 +2282,8 @@ class CodeGen:
             return code
         if isinstance(e.sym, tuple) and e.sym[0] == "class_attr_of":  # Handler.version
             return f"{class_name(e.sym[1])}::sd_class_{e.sym[2].name}()"
+        if isinstance(e.sym, tuple) and e.sym[0] == "builtin_attr" and e.value.ty == TYPE_OBJECT:  # type(x).__name__
+            return f"{self.expr(e.value)}.{'attr_module' if e.sym[1] == '__module__' else 'attr_name'}()"
         if isinstance(e.sym, tuple) and e.sym[0] == "builtin_attr":
             obj, vt = self.expr(e.value), e.value.ty
             declared = builtins.type_attributes(vt)[e.sym[1]](vt)
@@ -2419,6 +2475,8 @@ class CodeGen:
                 return f"(!sd::contains({rc}, {lc}))"
             case "is" | "is not" if isinstance(lt, OptionalType) or isinstance(rt, OptionalType):  # node.parent is root
                 return f"(sd::object_identity({lc}) {'==' if op == 'is' else '!='} sd::object_identity({rc}))"
+            case "is" | "is not" if lt == TYPE_OBJECT:  # type(x) is Point: the same class
+                return f"({lc} {'==' if op == 'is' else '!='} {rc})"
             case "is" | "is not" if isinstance(lt, FileType):  # f is sys.stdout: the same file object
                 return f"({lc}.get() {'==' if op == 'is' else '!='} {rc}.get())"
             case "is" | "is not" if not isinstance(left.ty, StructType):  # the same list, dict or set
@@ -3003,6 +3061,8 @@ class CodeGen:
         return None
 
     def builtin_call(self, name: str, e: A.Call) -> str:
+        if name in ("type", "callable", "getattr", "hasattr"):  # (their arguments aren't all values)
+            return self.reflection_call(name, e)
         args = [self.expr(a) for a in e.args]
         a = args[0] if args else None
         match name:
@@ -3053,6 +3113,11 @@ class CodeGen:
                 return f"sd::same_class({args[0]}, {args[1]})"
             case "__class_name__":
                 return f"{a}->sd_class_name()"
+            case "id":  # (its address: the object's identity)
+                t = e.args[0].ty
+                at = f"{a}.identity()" if isinstance(t, (ListType, DictType, SetType, DequeType)) or t == BYTEARRAY else f"{a}.get()"
+                return f"reinterpret_cast<std::int64_t>({at})"
+
             case "format" if len(e.args) == 1 or (isinstance(e.args[1], A.StrLit) and not e.args[1].value):
                 return f"sd::str({a})"
             case "format" if isinstance(e.args[1], A.StrLit):

@@ -3004,6 +3004,29 @@ def test_pprint_takes_any_value():
         "pprint.pprint() argument 'stream' must be TextIO?, not str")
 
 
+def test_reflection_builtins():
+    assert variables(ok("class A:\n    v: int = 0\na = A()\nt = type(a)\nn = type(a).__name__\nh = hasattr(a, 'v')\n"
+                        "g = getattr(a, 'v')\nd = getattr(a, 'w', 'none')\nc = callable(len)\ni = id(a)\n")) == [
+        "a: A", "t: type", "n: str", "h: bool", "g: int", "d: str", "c: bool", "i: int"]
+    cases = [
+        ("class A:\n    v: int = 0\nn = 'v'\nprint(getattr(A(), n))",
+         "getattr() needs the attribute's name as a string literal, as seadash's types are fixed when compiling "
+         "(for names chosen at run time, use a dict)"),
+        ("class A:\n    v: int = 0\nb = setattr(A(), 'v', 1)",
+         'setattr() can only be a statement here (`setattr(obj, "name", value)` on its own line)'),
+        ("class A:\n    v: int = 0\nsetattr(A(), 'v', 's')", "field 'v' is int, can't assign str"),
+        ("print(id(3))", "id() needs an object with identity (a class instance, list, dict, set or bytearray), "
+                         "not an int: in seadash an int is a value, copied when it's assigned"),
+        ("class A:\n    v: int = 0\nprint(getattr(A(), 'w'))", "A has no field 'w'"),
+        ("import socket\nprint(type(socket.socket()))",
+         "type() of a socket isn't supported (only of numbers, strings, bytes, containers, None and classes)"),
+        ("class A:\n    pass\nclass B(A):\n    v: int = 0\nclass C(A):\n    v: str = ''\nprint(getattr(A(), 'v'))",
+         "'v' has different types in A's subclasses (int, str), so getattr() can't give one type"),
+    ]
+    for source, message in cases:
+        assert err(source + "\n").message == message, source
+
+
 def test_bytearray_types_and_errors():
     assert variables(ok("b = bytearray(b'x')\nn = b[0]\nc = b[1:]\nu = b.upper()\nparts = b.split()\nd = b + b'y'\n"
                         "e = b'y' + b\nk = b.pop()\n")) == [

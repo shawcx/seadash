@@ -151,6 +151,26 @@ inline std::vector<Record> capture() {
 #define SD_LINE_ON_EXIT(n) ((void)0)
 #endif
 
+// type(x): a class, as far as seadash's programs can see one: its module and name, shown as
+// Python shows it (<class 'int'>, <class '__main__.Point'>) and compared by both.
+struct type_object {
+    std::string module, name;
+    bool is_enum = false;  // (shown as <enum 'Color'>)
+    std::string attr_name() const { return name; }  // t.__name__ (and __qualname__)
+    std::string attr_module() const { return module; }
+    bool operator==(const type_object&) const = default;
+    std::string sd_repr() const {
+        if (is_enum) return "<enum '" + name + "'>";
+        return "<class '" + (module == "builtins" ? "" : module + ".") + name + "'>";
+    }
+};
+// The type_object a runtime type name gives: "zipfile.BadZipFile", or a built-in's "ValueError".
+inline type_object type_from_name(const std::string& qualified) {
+    auto dot = qualified.rfind('.');
+    if (dot == std::string::npos) return {"builtins", qualified};
+    return {qualified.substr(0, dot), qualified.substr(dot + 1)};
+}
+
 struct BaseException : std::enable_shared_from_this<BaseException> {
     std::string message;
     std::vector<trace::Record> traceback;  // where it was raised (debug builds)
@@ -160,6 +180,7 @@ struct BaseException : std::enable_shared_from_this<BaseException> {
     virtual std::string sd_type() const { return "BaseException"; }
     virtual std::string sd_repr() const;  // e.g. ValueError('bad input')
     virtual std::string sd_str() const { return message; }  // str(e)
+    virtual type_object sd_type_object() const { return type_from_name(sd_type()); }  // type(e)
 };
 
 #define SD_EXCEPTION(Name, Base)                                  \

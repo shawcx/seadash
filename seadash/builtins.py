@@ -15,7 +15,7 @@ from . import ast as A
 from .errors import CheckError
 from .errors import Loc
 from .types import (
-    BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
+    BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, TYPE_OBJECT,
     BINARY_FILE, TEXT_FILE, STRING_IO, BYTES_IO,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
@@ -3494,6 +3494,10 @@ MODULES["lzma"] = module_with_params(runtime_module(
         "FORMAT_AUTO", "FORMAT_XZ", "FORMAT_ALONE", "FORMAT_RAW", "CHECK_NONE", "CHECK_CRC32", "CHECK_CRC64", "CHECK_SHA256",
         "CHECK_UNKNOWN", "PRESET_DEFAULT", "PRESET_EXTREME")},
 ))
+
+
+# type(x): its name (and module), compared with classes in the checker (Checker.named_type_object)
+TYPE_OBJECT.attributes.update({"__name__": lambda t: STR, "__qualname__": lambda t: STR, "__module__": lambda t: STR})
 
 
 # ---- zipfile -------------------------------------------------------------------------

@@ -59,6 +59,7 @@ COPIED = "copied"  # copied to the other thread, but it has identity: not for a 
 LOCKED = "locked"  # locks itself: every thread uses the same one
 
 SOCKET = BuiltinClass("socket", "sd::socket::Socket", LOCKED)
+TYPE_OBJECT = BuiltinClass("type", "sd::type_object", IMMUTABLE)  # type(x): its __name__, compared with classes
 PATH = BuiltinClass("Path", "sd::pathlib::Path", IMMUTABLE)
 TEXT_WRAPPER = BuiltinClass("TextWrapper", "sd::textwrap::TextWrapper")
 STR_TEMPLATE = BuiltinClass("Template", "sd::stringmod::Template")
@@ -113,7 +114,7 @@ TIMEDELTA = BuiltinClass("timedelta", "sd::datetime::timedelta", IMMUTABLE)
 TIMEZONE = BuiltinClass("timezone", "sd::datetime::timezone", IMMUTABLE)
 DATETIME_TYPES = (DATE, TIME, DATETIME, TIMEDELTA, TIMEZONE)
 
-PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "bytearray": BYTEARRAY, "None": NONE}
+PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "bytearray": BYTEARRAY, "None": NONE, "type": TYPE_OBJECT}
 
 
 @dataclass(frozen=True)

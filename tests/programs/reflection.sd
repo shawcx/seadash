@@ -1,0 +1,83 @@
+# type(), getattr/hasattr/setattr, callable() and id(): the runtime class of an instance or
+# exception, names compared with classes and built-in types, attributes only some subclasses
+# have, and Python's AttributeError.
+import io
+import zipfile
+from collections import Counter, deque
+from dataclasses import dataclass
+from enum import Enum
+
+
+class Shape:
+    name: str
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def area(self) -> float:
+        return 0.0
+
+
+class Square(Shape):
+    side: float
+
+    def __init__(self, side: float) -> None:
+        super().__init__("square")
+        self.side = side
+
+    def area(self) -> float:
+        return self.side * self.side
+
+
+class Circle(Shape):
+    radius: float
+
+    def __init__(self, r: float) -> None:
+        super().__init__("circle")
+        self.radius = r
+
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+
+class MyError(ValueError):
+    pass
+
+
+class Color(Enum):
+    RED = 1
+
+
+shapes: list[Shape] = [Shape("blob"), Square(2.0), Circle(1.0)]
+for s in shapes:
+    print(type(s).__name__, type(s), type(s) is Square, type(s) == Shape, hasattr(s, "side"), getattr(s, "side", -1.0))
+    print(hasattr(s, "name"), getattr(s, "name"), hasattr(s, "nope"), getattr(s, "nope", "default"))
+print(type(1), type(1.5), type("s"), type(b"b"), type(True), type([1]), type({1: 2}), type({1}), type((1, "a")))
+print(type(None), type(Counter("ab")), type(deque([1])), type(bytearray()), type(Point(1, 2)), type(Point(1, 2)).__name__)
+print(type(3) is int, type("x") == str, type(3) is not float, type(Point(1, 2)) is Point, type(1) == type(2), type(1) != type(""))
+for exc in (ValueError("v"), KeyError("k"), MyError("m")):
+    try:
+        raise exc
+    except Exception as e:
+        print(type(e).__name__, type(e), type(e).__qualname__, type(e).__module__)
+maybe: Shape | None = None
+print(type(maybe), type(shapes[1]).__module__)
+p = Point(1, 2)
+setattr(p, "x", 10)
+print(p, getattr(p, "y"), callable(len), callable(p), callable(Point), callable(lambda: 1))
+xs = [1]
+ys = xs
+print(id(xs) == id(ys), id(xs) == id([1]), id(shapes[0]) == id(shapes[0]))
+try:
+    print(getattr(shapes[0], "radius"))
+except AttributeError as e:
+    print("AttributeError:", e)
+print(getattr(shapes[2], "radius"))
+print(type(Color.RED), type(Color.RED) is Color, type(Color.RED).__name__)
+try:
+    zipfile.ZipFile(io.BytesIO(b"not a zip"))
+except zipfile.BadZipFile as e:
+    print(type(e), type(e).__name__, type(e).__module__)

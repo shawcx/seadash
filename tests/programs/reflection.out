@@ -1,0 +1,19 @@
+Shape <class '__main__.Shape'> False True False -1.0
+True blob False default
+Square <class '__main__.Square'> True False True 2.0
+True square False default
+Circle <class '__main__.Circle'> False False False -1.0
+True circle False default
+<class 'int'> <class 'float'> <class 'str'> <class 'bytes'> <class 'bool'> <class 'list'> <class 'dict'> <class 'set'> <class 'tuple'>
+<class 'NoneType'> <class 'collections.Counter'> <class 'collections.deque'> <class 'bytearray'> <class '__main__.Point'> Point
+True True True True True True
+ValueError <class 'ValueError'> ValueError builtins
+KeyError <class 'KeyError'> KeyError builtins
+MyError <class '__main__.MyError'> MyError __main__
+<class 'NoneType'> __main__
+Point(x=10, y=2) 2 True False True True
+True False True
+AttributeError: 'Shape' object has no attribute 'radius'
+1.0
+<enum 'Color'> True Color
+<class 'zipfile.BadZipFile'> BadZipFile zipfile
