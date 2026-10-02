@@ -1,0 +1,5 @@
+# str.splitlines breaks at every line boundary Python's does; bytes only at \n, \r and \r\n.
+for s in ["a\x0bb\x0cc\x1cd\x1de\x1ef\x85g h i\r\nj\rk\nl", "x\n\n", "\n", "", "a\x85", "é ", "\r\r\n\n"]:
+    print(s.splitlines(), s.splitlines(True))
+for b in [b"a\x0bb\x0cc\x1cd\r\ne\rf\ng\x85", b"x\n\n", b"", b"\r"]:
+    print(b.splitlines(), b.splitlines(keepends=True), bytearray(b).splitlines())

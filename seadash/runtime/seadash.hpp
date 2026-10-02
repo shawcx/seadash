@@ -2989,20 +2989,35 @@ inline std::vector<std::string> str_split(const std::string& s, const std::strin
     out.push_back(s.substr(start));
     return out;
 }
-inline std::vector<std::string> str_splitlines(const std::string& s, bool keepends = false) {
+// The line break at s[i] (its length in bytes), or 0. bytes break only at \n, \r and \r\n; a str also at
+// \v, \f, \x1c-\x1e, \x85, \u2028 and \u2029, as Python's str.splitlines() does.
+inline std::size_t line_break_at(const std::string& s, std::size_t i, bool text) {
+    auto at = [&](std::size_t k) { return k < s.size() ? static_cast<unsigned char>(s[k]) : 0; };
+    unsigned char c = at(i);
+    if (c == '\r') return at(i + 1) == '\n' ? 2 : 1;
+    if (c == '\n') return 1;
+    if (!text) return 0;
+    if (c == 0x0B || c == 0x0C || (c >= 0x1C && c <= 0x1E)) return 1;
+    if (c == 0xC2 && at(i + 1) == 0x85) return 2;
+    if (c == 0xE2 && at(i + 1) == 0x80 && (at(i + 2) == 0xA8 || at(i + 2) == 0xA9)) return 3;
+    return 0;
+}
+inline std::vector<std::string> split_lines(const std::string& s, bool keepends, bool text) {
     std::vector<std::string> out;
     std::size_t start = 0;
-    while (start < s.size()) {
-        std::size_t pos = s.find_first_of("\r\n", start);
-        if (pos == std::string::npos) {
-            out.push_back(s.substr(start));
-            break;
+    for (std::size_t i = 0; i < s.size();) {
+        if (std::size_t width = line_break_at(s, i, text)) {
+            out.push_back(s.substr(start, (keepends ? i + width : i) - start));
+            start = i += width;
+        } else {
+            ++i;
         }
-        std::size_t end = pos + ((s[pos] == '\r' && pos + 1 < s.size() && s[pos + 1] == '\n') ? 2 : 1);
-        out.push_back(s.substr(start, (keepends ? end : pos) - start));
-        start = end;
     }
+    if (start < s.size()) out.push_back(s.substr(start));
     return out;
+}
+inline std::vector<std::string> str_splitlines(const std::string& s, bool keepends = false) {
+    return split_lines(s, keepends, true);
 }
 template <class It>
 std::string str_join(const std::string& sep, It&& it) {
@@ -3748,7 +3763,7 @@ inline std::vector<bytes> as_bytes_list(const std::vector<std::string>& parts) {
 inline std::vector<bytes> bytes_split(const bytes& b) { return as_bytes_list(str_split(b.data)); }
 inline std::vector<bytes> bytes_split(const bytes& b, const bytes& sep) { return as_bytes_list(str_split(b.data, sep.data)); }
 inline std::vector<bytes> bytes_splitlines(const bytes& b, bool keepends = false) {
-    return as_bytes_list(str_splitlines(b.data, keepends));
+    return as_bytes_list(split_lines(b.data, keepends, false));
 }
 inline std::tuple<bytes, bytes, bytes> bytes_partition(const bytes& b, const bytes& sep) {
     auto [x, y, z] = str_partition(b.data, sep.data);
