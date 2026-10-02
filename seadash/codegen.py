@@ -41,7 +41,7 @@ from .threads import MUTATING_METHODS  # (a parameter changed by one of these is
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
     BuiltinClass, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
-    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION,
+    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION, SIGNAL_HANDLER,
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
@@ -3414,6 +3414,11 @@ class CodeGen:
                 return f"sd::urlrequest::Request({self.expr(args['url'])}, {opt('data', BYTES)}, {headers}, {opt('method', STR)})"
             ctx = self.expr_as(args["context"], OptionalType(builtins.SSL_CONTEXT)) if "context" in args else "std::nullopt"
             return f"sd::urlrequest::urlopen({self.expr(args['url'])}, {opt('data', BYTES)}, {opt('timeout', FLOAT)}, {ctx})"
+        if mod == "signal" and name == "signal":  # a function handler becomes a Handler holding it
+            handler = self.expr(e.args[1])
+            if e.args[1].ty != SIGNAL_HANDLER:
+                handler = f"sd::signal::Handler::function({handler})"
+            return f"sd::signal::signal({self.expr_as(e.args[0], INT)}, {handler})"
         if mod == "os" and name == "fdopen":
             return self.open_call(self.expr(e.args[0]), e.args[1] if len(e.args) > 1 else self.keyword(e, "mode"), e)
         if mod == "copy" and name in ("copy", "deepcopy"):

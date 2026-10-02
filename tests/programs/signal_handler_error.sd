@@ -1,0 +1,14 @@
+# An exception escaping a signal handler ends the program. (Python raises it in the main thread,
+# where the program could catch it; seadash runs handlers on a thread of their own.)
+import signal
+from types import FrameType
+
+
+def fail(signum: int, frame: FrameType | None) -> None:
+    raise ValueError(f"no handling {signal.Signals(signum).name}")
+
+
+signal.signal(signal.SIGUSR1, fail)
+print("before")
+signal.raise_signal(signal.SIGUSR1)
+print("not reached")

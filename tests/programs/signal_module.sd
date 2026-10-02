@@ -1,0 +1,191 @@
+# The signal module. Python runs handlers on the main thread; seadash runs them on a thread of
+# their own, and raise_signal() and os.kill() of this process wait for them, so a handler's
+# output comes where it does in Python. (No signal numbers are printed: they differ between
+# platforms, apart from a few POSIX fixes.)
+import os
+import queue
+import signal
+import sys
+import threading
+from types import FrameType
+
+from seadash import Atomic
+
+# ---- Signals, an IntEnum ----
+
+print(repr(signal.SIGINT), signal.SIGINT, signal.SIGTERM.name, signal.SIGTERM.value)
+print(signal.Signals(15), repr(signal.Signals(9)), signal.Signals["SIGHUP"].name, signal.SIGIOT.name)
+print(signal.SIGINT == 2, signal.SIGINT + 1, signal.SIGKILL == signal.Signals.SIGKILL)
+print(f"{signal.SIGTERM:>4}|{signal.SIGTERM!r}|{signal.SIGHUP!s}")
+print(sorted(s.name for s in [signal.SIGUSR2, signal.SIGUSR1, signal.SIGALRM]))
+names = [s.name for s in signal.Signals]
+print("SIGUSR1" in names, "SIGCHLD" in names, "SIGIOT" in names, len(names) > 20)
+numbers = [s.value for s in signal.Signals]
+print(numbers == sorted(numbers))
+by_signal = {signal.SIGINT: "interrupt", signal.SIGTERM: "terminate"}
+print(by_signal[signal.Signals(2)], signal.SIGTERM in by_signal, signal.SIGINT in {signal.SIGINT})
+try:
+    signal.Signals(0)
+except ValueError as e:
+    print("ValueError:", e)
+try:
+    signal.Signals["SIGNOPE"]
+except KeyError as e:
+    print("KeyError:", e)
+valid = signal.valid_signals()
+print(signal.SIGINT in valid, signal.SIGKILL in valid, 0 in valid, signal.NSIG > signal.SIGTERM)
+text = signal.strsignal(signal.SIGTERM)
+print(text is not None and text.startswith("Terminated"))
+
+# ---- what's there before a handler is set ----
+
+print(signal.getsignal(signal.SIGUSR1), repr(signal.getsignal(signal.SIGUSR2)))
+print(signal.SIG_IGN, repr(signal.SIG_IGN), repr(signal.default_int_handler))
+print(signal.SIG_DFL == signal.SIG_DFL, signal.SIG_DFL != signal.SIG_IGN, signal.SIG_IGN is signal.SIG_IGN)
+
+
+# ---- a handler ----
+
+
+def on_signal(signum: int, frame: FrameType | None) -> None:
+    print("handler:", signal.Signals(signum).name)
+
+
+old = signal.signal(signal.SIGUSR1, on_signal)
+print(old is signal.SIG_DFL, signal.getsignal(signal.SIGUSR1) is not signal.SIG_DFL)
+signal.raise_signal(signal.SIGUSR1)
+print("after raise_signal")
+os.kill(os.getpid(), signal.SIGUSR1)
+print("after os.kill")
+
+# what signal() gives back can be set again
+mine = signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+signal.raise_signal(signal.SIGUSR1)
+print("ignored")
+print(signal.signal(signal.SIGUSR1, mine) is signal.SIG_IGN)
+print(signal.getsignal(signal.SIGUSR1) == mine, mine == signal.SIG_IGN, mine is signal.getsignal(signal.SIGUSR1))
+signal.raise_signal(signal.SIGUSR1)
+
+# a lambda, and thread-safe state
+done = threading.Event()
+signal.signal(signal.SIGUSR2, lambda signum, frame: done.set())
+signal.raise_signal(signal.SIGUSR2)
+print("event set:", done.wait(5))
+
+got: queue.Queue[int] = queue.Queue()
+
+
+def remember(signum: int, frame: FrameType | None) -> None:
+    got.put(signum)
+
+
+signal.signal(signal.SIGHUP, remember)
+signal.signal(signal.SIGTERM, remember)
+signal.raise_signal(signal.SIGTERM)
+signal.raise_signal(signal.SIGHUP)
+print(got.get() == signal.SIGTERM, got.get() == signal.SIGHUP, got.empty())
+
+
+def count_signals(times: int) -> int:
+    count = Atomic()
+
+    def bump(signum: int, frame: FrameType | None) -> None:
+        count.add(1)
+
+    previous = signal.signal(signal.SIGHUP, bump)
+    for _ in range(times):
+        signal.raise_signal(signal.SIGHUP)
+    signal.signal(signal.SIGHUP, previous)
+    return count.get()
+
+
+print("counted:", count_signals(3))
+
+
+# a handler may set handlers too (it runs where Python's main thread would)
+def once(signum: int, frame: FrameType | None) -> None:
+    print("once")
+    signal.signal(signum, signal.SIG_IGN)
+    print("now ignored")
+
+
+signal.signal(signal.SIGUSR1, once)
+signal.raise_signal(signal.SIGUSR1)
+signal.raise_signal(signal.SIGUSR1)
+print(signal.getsignal(signal.SIGUSR1) is signal.SIG_IGN)
+
+# ---- alarm and pause ----
+
+rang = threading.Event()
+signal.signal(signal.SIGALRM, lambda signum, frame: rang.set())
+print("alarm:", signal.alarm(1))
+print("rang:", rang.wait(10))
+print("alarm:", signal.alarm(100), signal.alarm(0) in (99, 100))
+
+woke = threading.Event()
+
+
+def nudge(pid: int) -> None:
+    while not woke.wait(0.05):
+        os.kill(pid, signal.SIGUSR2)
+
+
+nudger = threading.Thread(target=nudge, args=(os.getpid(),))
+nudger.start()
+signal.pause()
+woke.set()
+nudger.join()
+print("pause returned")
+
+# ---- errors ----
+
+for bad in (0, -1, signal.NSIG):
+    try:
+        signal.signal(bad, signal.SIG_IGN)
+    except ValueError as e:
+        print("ValueError:", e)
+try:
+    signal.getsignal(0)
+except ValueError as e:
+    print("ValueError:", e)
+try:
+    signal.raise_signal(signal.NSIG)
+except OSError as e:
+    print("OSError:", e)
+signal.raise_signal(0)  # (only checks the signal could be sent)
+try:
+    signal.strsignal(-1)
+except ValueError as e:
+    print("ValueError:", e)
+try:
+    signal.signal(signal.SIGKILL, signal.SIG_IGN)
+except OSError as e:
+    print("OSError:", e)
+
+errors: queue.Queue[str] = queue.Queue()
+
+
+def install() -> None:
+    try:
+        signal.signal(signal.SIGUSR1, signal.SIG_DFL)
+    except ValueError as e:
+        errors.put(str(e))
+
+
+worker = threading.Thread(target=install)
+worker.start()
+worker.join()
+print("from a thread:", errors.get())
+
+
+# ---- sys.exit() in a handler ends the program ----
+
+
+def stop(signum: int, frame: FrameType | None) -> None:
+    print("stopping")
+    sys.exit(3)
+
+
+signal.signal(signal.SIGTERM, stop)
+signal.raise_signal(signal.SIGTERM)
+print("not reached")

@@ -2770,3 +2770,50 @@ def test_kwargs_errors(src, msg):
 def test_kwargs_types():
     info = ok(KWARGS_K + "def g(**opts: str) -> int:\n    return len(opts)\n")
     assert [str(f) for f in info.functions] == ["def k(a: int, **rest: int) -> int", "def g(**opts: str) -> int"]
+
+
+SIGNAL = "import signal\nfrom types import FrameType\n"
+HANDLER_HINT = ("a function like `def handler(signum: int, frame: FrameType | None) -> None:` (from types import "
+                "FrameType; the frame is always None in seadash)")
+
+
+def test_signal_types():
+    info = ok(SIGNAL + "def h(signum: int, frame: FrameType | None) -> None:\n    print(frame)\n"
+              "old = signal.signal(signal.SIGTERM, h)\nnow = signal.getsignal(signal.SIGTERM)\n"
+              "member = signal.Signals(15)\nname = signal.SIGINT.name\nleft = signal.alarm(0)\n"
+              "text = signal.strsignal(signal.SIGINT)\nvalid = signal.valid_signals()\n"
+              "same = now is signal.SIG_DFL\n")
+    assert variables(info) == ["old: signal handler", "now: signal handler", "member: Signals", "name: str",
+                               "left: int", "text: str?", "valid: set[int]", "same: bool"]
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("def h(signum: int) -> None:\n    pass\nsignal.signal(signal.SIGTERM, h)\n",
+     f"a signal handler takes (int, FrameType | None), the signal's number and the frame: {HANDLER_HINT}, "
+     f"not (int) -> None"),
+    ("def h(signum: int, frame: FrameType) -> None:\n    pass\nsignal.signal(signal.SIGTERM, h)\n",
+     f"a signal handler takes (int, FrameType | None), the signal's number and the frame: {HANDLER_HINT}, "
+     f"not (int, FrameType) -> None"),
+    ("signal.signal(signal.SIGTERM, 'ignore')\n",
+     f"signal.signal() needs SIG_DFL, SIG_IGN, a handler that signal.signal() or signal.getsignal() gave, or "
+     f"{HANDLER_HINT}, not str"),
+    ("signal.signal('TERM', signal.SIG_IGN)\n", "signal.signal() argument must be int, not str"),
+    ("signal.signal(signal.SIGEMT, signal.SIG_IGN)\n", "module 'signal' has no member 'SIGEMT'"),
+    ("print(signal.SIG_DFL is 0)\n",
+     "'is' is for None checks, class instances, lists, dicts and sets; use '==' to compare values"),
+])
+def test_signal_errors(src, msg):
+    assert err(SIGNAL + src).message == msg
+
+
+def test_signals_table_matches_the_runtime():
+    # codegen writes signal.SIGTERM as sd::signal::Signals::sd_at(i): i is its place in both lists
+    import re
+    from pathlib import Path
+
+    from seadash import builtins
+    header = (Path(builtins.__file__).parent / "runtime/modules/signal.hpp").read_text()
+    table = header[header.index("sd::enums::Table<std::int64_t> t{"):]
+    names = re.findall(r'"(SIG\w+)"', table[:table.index("}")])
+    values = re.findall(r"\b(SIG\w+)\b", table[table.index("}") + 1:table.index("},", table.index("}") + 1)])
+    assert names == values == builtins.SIGNAL_NAMES

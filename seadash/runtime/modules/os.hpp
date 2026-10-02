@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
 
 namespace sd::os {
@@ -46,6 +47,23 @@ inline std::tuple<std::int64_t, std::int64_t> pipe() {
     int fds[2];
     if (::pipe(fds) != 0) raise_os(errno, std::nullopt);
     return {fds[0], fds[1]};
+}
+
+// ---- processes ----------------------------------------------------------------
+
+inline std::int64_t getpid() { return ::getpid(); }
+
+// Set by the signal module (modules/signal.hpp): sends a signal to this process and waits
+// until its handler has run, as Python's os.kill() does (it runs pending handlers before it
+// returns).
+inline void (*kill_self)(std::int64_t sig) = nullptr;
+
+inline void kill(std::int64_t pid, std::int64_t sig) {
+    if (kill_self != nullptr && pid == ::getpid()) {
+        kill_self(sig);
+        return;
+    }
+    if (::kill(static_cast<pid_t>(pid), static_cast<int>(sig)) != 0) raise_os(errno, std::nullopt);
 }
 
 namespace fs = std::filesystem;

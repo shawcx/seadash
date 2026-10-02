@@ -705,3 +705,68 @@ def test_simple_handler_errors(src, msg):
 def test_simple_handler_on_threads():
     compile_ok("from functools import partial\nfrom http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler\n"
                "ThreadingHTTPServer(('', 0), partial(SimpleHTTPRequestHandler, directory='.')).serve_forever()\n")
+
+
+# A signal handler runs on a signal-handling thread, so it's checked like a thread's work.
+SIGNAL = "import signal\nfrom types import FrameType\n"
+SIGNAL_GLOBAL = ("seadash runs signal handlers on a thread of their own, so they can't share it safely: use a "
+                 "threading.Event for a flag (stop.set() in the handler, stop.is_set() elsewhere), a seadash.Atomic "
+                 "for a count, or a seadash.Mutex or queue.Queue for other data")
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("stop = False\ndef h(signum: int, frame: FrameType | None) -> None:\n    global stop\n    stop = True\n"
+     "signal.signal(signal.SIGTERM, h)\n",
+     f"the signal handler uses the module-level 'stop' (bool), but it's reassigned. {SIGNAL_GLOBAL}"),
+    ("seen: list[int] = []\ndef h(signum: int, frame: FrameType | None) -> None:\n    seen.append(signum)\n"
+     "signal.signal(signal.SIGTERM, h)\n",
+     f"the signal handler uses the module-level 'seen' (list[int]), but it's modified (line 8). {SIGNAL_GLOBAL}"),
+    ("def main() -> None:\n    seen: list[int] = []\n    def h(signum: int, frame: FrameType | None) -> None:\n"
+     "        seen.append(signum)\n    signal.signal(signal.SIGTERM, h)\n",
+     "the signal handler changes 'seen', but seadash runs signal handlers on a thread of their own, with their own "
+     "copy of the variables they use from the enclosing function (made when the handler is set), so the change is "
+     "lost. Use a threading.Event for a flag, a seadash.Atomic for a count, or a seadash.Mutex"),
+    ("class Box:\n    n: int\ndef main() -> None:\n    b = Box(0)\n    signal.signal(signal.SIGTERM, lambda s, f: print(b.n))\n",
+     "the signal handler uses 'b' from the enclosing function, but a Box is a class instance, shared by reference"),
+    ("class Server:\n    n: int\n    def on_term(self, signum: int, frame: FrameType | None) -> None:\n"
+     "        print(self.n)\ns = Server(1)\nsignal.signal(signal.SIGTERM, s.on_term)\n",
+     "a signal handler can't be a method of a Server: seadash runs signal handlers on a thread of their own, so the "
+     "object would be shared by two threads. Make Server a seadash.Synchronized class"),
+    ("from typing import Callable\ndef install(h: Callable[[int, FrameType | None], None]) -> None:\n"
+     "    signal.signal(signal.SIGTERM, h)\n",
+     "pass the signal handler directly (a def, a nested def, or a lambda), so seadash can check what it shares"),
+    ("names = ['a']\ndef h(signum: int, frame: FrameType | None) -> None:\n    print(names)\n"
+     "signal.signal(signal.SIGTERM, h)\nnames.append('b')\n",
+     "the signal handler uses the module-level 'names' (list[str]), but it's modified (line 10)"),
+])
+def test_signal_handlers_are_thread_code(src, msg):
+    assert compile_error(SIGNAL + src).message.startswith(msg)
+
+
+def test_signal_handlers_that_share_safely():
+    compile_ok(SIGNAL + textwrap.dedent("""
+        names = ["a"]
+        names.append("b")  # (built before the handler is set)
+        stop = threading.Event()
+        hits = Atomic()
+        q: queue.Queue[int] = queue.Queue()
+        class Stats(Synchronized):
+            n: int
+            def on_signal(self, signum: int, frame: FrameType | None) -> None:
+                self.n += 1
+        stats = Stats(0)
+        def h(signum: int, frame: FrameType | None) -> None:
+            print(names)
+            hits.add(1)
+            q.put(signum)
+            stop.set()
+        def main() -> None:
+            done = threading.Event()
+            signal.signal(signal.SIGUSR2, lambda s, f: done.set())
+        signal.signal(signal.SIGTERM, h)
+        signal.signal(signal.SIGHUP, stats.on_signal)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        main()
+        while not stop.is_set():
+            stop.wait(0.1)
+    """))

@@ -8,7 +8,8 @@ The rule: a thread may only reach
 
 Values are copied (all the way down: sd::value_copy) when they cross into a thread, so
 the only ways to *share* memory are class instances, closure-captured variables, and
-module globals. This module checks each Thread(...) call:
+module globals. This module checks each Thread(...) call (and the other code that runs on
+another thread: executor work and callbacks, a threaded server's handlers, signal handlers):
 
   * its args must be sendable (copyable values or thread-safe objects);
   * its target is followed through every function/method it can call, and every module
@@ -659,6 +660,7 @@ class Spawn:
         self.module = module
         # threading.Thread(...) keeps its details in its call target; executor.submit()/map() on the call
         self.extra = getattr(call, "spawn_extra", None) or call.sym.target[1]
+        self.signal_handler = bool(self.extra.get("signal_handler"))  # signal.signal(s, handler): run on a thread
 
     def fail(self, message: str, node: A.Node) -> ThreadSafetyError:
         return ThreadSafetyError(message, node.loc, self.module)
@@ -823,6 +825,12 @@ class Spawn:
                 obj_type = target.value.ty
                 if (isinstance(obj_type, StructType) and obj_type.kind == "class" and not is_synchronized(obj_type)
                         and not deeply_immutable(obj_type)):
+                    if self.signal_handler:
+                        raise self.fail(
+                            f"a signal handler can't be a method of a {obj_type.name}: seadash runs signal handlers on "
+                            f"a thread of their own, so the object would be shared by two threads. Make "
+                            f"{obj_type.name} a seadash.Synchronized class", target,
+                        )
                     raise self.fail(
                         f"a thread can't run a method of a {obj_type.name}: the object would be shared by both "
                         f"threads. Make {obj_type.name} a seadash.Synchronized class", target,
@@ -832,8 +840,9 @@ class Spawn:
             fn = self.nested_def(sym)
             if fn is not None:
                 return list(fn.body), [fn]
+        what = "signal handler" if self.signal_handler else "thread's function"
         raise self.fail(
-            "pass the thread's function directly (a def, a nested def, or a lambda), "
+            f"pass the {what} directly (a def, a nested def, or a lambda), "
             "so seadash can check what it shares", target,
         )
 
@@ -919,11 +928,24 @@ class Spawn:
                     snapshot.append(var)
                 if shareable(var.type):
                     continue
-                if reason := unsendable(var.type):
+                if (reason := unsendable(var.type)) and self.signal_handler:
+                    raise self.fail(
+                        f"the signal handler uses '{var.name}' from the enclosing function, but {reason}. "
+                        f"seadash runs signal handlers on a thread of their own, so use a thread-safe type "
+                        f"(threading.Event, queue.Queue, seadash.Atomic, seadash.Mutex)", n,
+                    )
+                if reason:
                     raise self.fail(
                         f"the thread's function uses '{var.name}' from the enclosing function, but {reason}. "
                         f"Pass it in args= instead, or use a thread-safe type "
                         f"(queue.Queue, seadash.Mutex, seadash.Atomic)", n,
+                    )
+                if (inside_assigned.get(id(var), 0) or lost_change(body, var) is not None) and self.signal_handler:
+                    raise self.fail(
+                        f"the signal handler changes '{var.name}', but seadash runs signal handlers on a thread of "
+                        f"their own, with their own copy of the variables they use from the enclosing function "
+                        f"(made when the handler is set), so the change is lost. Use a threading.Event for a flag, a "
+                        f"seadash.Atomic for a count, or a seadash.Mutex", n,
                     )
                 if inside_assigned.get(id(var), 0) or lost_change(body, var) is not None:
                     raise self.fail(
@@ -970,6 +992,13 @@ class Spawn:
         if reason is None and loc is None and not reassigned:
             return  # a value nothing changes once threads can run: reading it is fine
         why = reason or (f"it's modified (line {loc.line})" if loc else "it's reassigned")
+        if self.signal_handler:
+            raise self.fail(
+                f"the signal handler uses the module-level '{var.name}' ({var.type}), but {why}. seadash runs signal "
+                f"handlers on a thread of their own, so they can't share it safely: use a threading.Event for a flag "
+                f"(stop.set() in the handler, stop.is_set() elsewhere), a seadash.Atomic for a count, or a "
+                f"seadash.Mutex or queue.Queue for other data", use,
+            )
         raise self.fail(
             f"thread code uses the module-level '{var.name}' ({var.type}), but {why}. Threads can't share "
             f"it safely: wrap it in a seadash.Mutex, send data through a queue.Queue, or pass a copy in args=", use,

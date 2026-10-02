@@ -60,6 +60,9 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - Functions: default values in nested functions and lambdas, and keywords or defaults when
   calling a function held in a parameter, field or container (its signature isn't known there).
 - No tracebacks for uncaught exceptions.
+- `signal`: `KeyboardInterrupt` and other exceptions raised in the main thread by a handler (handlers run
+  on their own thread); `setitimer`, `siginterrupt`, `set_wakeup_fd`, `sigwait`, `pthread_sigmask`,
+  `pthread_kill`, `Handlers`; signal names only one platform has (`SIGINFO`, `SIGRTMIN`...).
 
 ## Open questions
 

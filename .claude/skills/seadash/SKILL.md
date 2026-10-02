@@ -90,6 +90,8 @@ class Stats(Synchronized):               # every method holds the object's lock
 through a `queue.Queue` is often simplest. Threads may read module globals that nothing
 changes. Writing to a global from a thread is an error, and the error message names the fix.
 `Mutex(data)` moves `data` in, so using `data` afterwards is an error until it's reassigned.
+Signal handlers (`signal.signal`) run on a thread of their own and are checked the same way: to
+stop the main loop, set a `threading.Event` rather than a global flag.
 
 ## Types that come from what you write
 

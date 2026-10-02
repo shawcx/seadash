@@ -1,0 +1,43 @@
+<Signals.SIGINT: 2> 2 SIGTERM 15
+15 <Signals.SIGKILL: 9> SIGHUP SIGABRT
+True 3 True
+  15|<Signals.SIGTERM: 15>|1
+['SIGALRM', 'SIGUSR1', 'SIGUSR2']
+True True False True
+True
+interrupt True True
+ValueError: 0 is not a valid Signals
+KeyError: 'SIGNOPE'
+True True False True
+True
+0 <Handlers.SIG_DFL: 0>
+1 <Handlers.SIG_IGN: 1> <built-in function default_int_handler>
+True True True
+True True
+handler: SIGUSR1
+after raise_signal
+handler: SIGUSR1
+after os.kill
+ignored
+True
+True False True
+handler: SIGUSR1
+event set: True
+True True True
+counted: 3
+once
+now ignored
+True
+alarm: 0
+rang: True
+alarm: 0 True
+pause returned
+ValueError: signal number out of range
+ValueError: signal number out of range
+ValueError: signal number out of range
+ValueError: signal number out of range
+OSError: [Errno 22] Invalid argument
+ValueError: signal number out of range
+OSError: [Errno 22] Invalid argument
+from a thread: signal only works in main thread of the main interpreter
+stopping

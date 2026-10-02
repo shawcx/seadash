@@ -94,6 +94,10 @@ LINEAR_REGRESSION = BuiltinClass("LinearRegression", "sd::statistics::LinearRegr
 EXIT_STACK = BuiltinClass(  # contextlib.ExitStack: copies share the stack of exits
     "ExitStack", "sd::contextlib::ExitStack",
     unsendable="an ExitStack (the exits it holds belong to this thread's code)")
+# signal: what signal.signal() and getsignal() give (SIG_DFL, SIG_IGN, default_int_handler or a
+# function, which the checker has checked as thread code), and a handler's frame (always None).
+SIGNAL_HANDLER = BuiltinClass("signal handler", "sd::signal::Handler", IMMUTABLE)
+FRAME = BuiltinClass("FrameType", "sd::signal::Frame", IMMUTABLE)
 
 DATE = BuiltinClass("date", "sd::datetime::date", IMMUTABLE)  # the datetime module's value types
 TIME = BuiltinClass("time", "sd::datetime::time", IMMUTABLE)

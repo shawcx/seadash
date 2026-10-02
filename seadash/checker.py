@@ -3169,6 +3169,7 @@ class Checker:
             same_object = (isinstance(enum_t, StructType) and enum_t.enum is not None and join(lt, rt) is not None) or lo == ro and (
                 (isinstance(lo, StructType) and lo.kind == "class")
                 or isinstance(lo, (ListType, DictType, SetType, DequeType, CounterType, DefaultDictType))
+                or lo == builtins.SIGNAL_HANDLER  # getsignal(s) is signal.SIG_DFL
             )
             if not (is_none_check or same_object):
                 if isinstance(right, A.NoneLit):
