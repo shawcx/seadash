@@ -10,6 +10,7 @@
 #include <coroutine>
 #include <charconv>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cerrno>
@@ -1523,10 +1524,12 @@ std::string print_line(std::string_view sep, std::string_view end, const Ts&... 
     return out;
 }
 
+[[noreturn]] void stdout_failed();  // (below: raises OSError, e.g. BrokenPipeError)
+
 template <class... Ts>
 void print(std::string_view sep, std::string_view end, const Ts&... xs) {
     std::string out = print_line(sep, end, xs...);
-    std::fwrite(out.data(), 1, out.size(), stdout);
+    if (std::fwrite(out.data(), 1, out.size(), stdout) != out.size()) stdout_failed();
 }
 
 // ============================================================================
@@ -3925,7 +3928,9 @@ struct FileBase {
         if (fp && owned) std::fclose(fp);
         fp = nullptr;
     }
-    virtual void flush() { std::fflush(handle()); }
+    virtual void flush() {
+        if (std::fflush(handle()) != 0) raise_os(errno, path);
+    }
     // f.closed, f.name, f.mode
     virtual bool is_closed() const { return !fp; }
     virtual std::string get_name() const { return path; }
@@ -4437,8 +4442,17 @@ inline std::vector<std::function<void()>>& exit_hooks() {
     return hooks;
 }
 
+[[noreturn]] inline void stdout_failed() {
+    int err = errno;
+    std::clearerr(stdout);
+    raise_os(err, std::nullopt);
+}
+
 inline int run_main(int argc, char** argv_, void (*module_main)()) {
     for (int i = 0; i < argc; ++i) argv().emplace_back(argv_[i]);
+    // As in Python: writing to a closed pipe is a BrokenPipeError, not a SIGPIPE that kills
+    // the program (so `prog | head` ends the way it would in Python).
+    std::signal(SIGPIPE, SIG_IGN);
     int code = 0;
     try {
         module_main();
@@ -4452,7 +4466,12 @@ inline int run_main(int argc, char** argv_, void (*module_main)()) {
         code = 1;
     }
     for (auto& hook : exit_hooks()) hook();
-    std::fflush(stdout);
+    if (std::fflush(stdout) != 0) {  // Python's report when the last of the output can't be written
+        int err = errno;
+        std::fprintf(stderr, "Exception ignored while flushing sys.stdout:\n%s: [Errno %d] %s\n",
+                     err == EPIPE ? "BrokenPipeError" : "OSError", err, std::strerror(err));
+        code = 120;
+    }
     return code;
 }
 

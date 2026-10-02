@@ -61,3 +61,24 @@ def test_formatdate_localtime_follows_tz(tmp_path):
     for tz, out in expected.items():
         r = sd(["run"], program, tmp_path, env={"TZ": tz})
         assert (r.returncode, r.stdout, r.stderr) == (0, out, "")
+
+
+def test_a_closed_pipe_is_a_broken_pipe_error(tmp_path):
+    # As in Python: SIGPIPE is ignored, writing to a closed pipe raises BrokenPipeError, and output
+    # that can't be flushed at exit is reported, with exit code 120. Children get SIGPIPE back.
+    (tmp_path / "many.sd").write_text("for i in range(500000):\n    print(i)\n")
+    r = sd(["build", "many.sd", "-o", "many"], "", tmp_path)
+    assert r.returncode == 0, r.stderr
+    p = subprocess.Popen([str(tmp_path / "many")], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert p.stdout.readline() == b"0\n"
+    p.stdout.close()
+    err = p.stderr.read().decode()
+    assert p.wait() == 120
+    assert err == ("BrokenPipeError: [Errno 32] Broken pipe\n"
+                   "Exception ignored while flushing sys.stdout:\nBrokenPipeError: [Errno 32] Broken pipe\n")
+    (tmp_path / "child.sd").write_text(  # (`yes` ignoring SIGPIPE would say "yes: stdout: Broken pipe")
+        "import subprocess\n"
+        "r = subprocess.run(['sh', '-c', 'yes | head -1'], capture_output=True, text=True)\n"
+        "print(repr(r.stdout), repr(r.stderr))\n")
+    r = sd(["run", "child.sd"], "", tmp_path)
+    assert r.stdout == "'y\\n' ''\n"

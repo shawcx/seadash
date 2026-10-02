@@ -209,7 +209,16 @@ inline Child spawn(const Args& args, const Options& o) {
         cenv.push_back(nullptr);
     }
     std::fflush(nullptr);  // our buffered output comes first
-    int rc = posix_spawnp(&c.pid, cargv[0], &fa, nullptr, cargv.data(), o.env ? cenv.data() : environ);
+    // seadash ignores SIGPIPE (as Python does); the child gets the default back, as Python's do.
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    sigset_t defaults;
+    sigemptyset(&defaults);
+    sigaddset(&defaults, SIGPIPE);
+    posix_spawnattr_setsigdefault(&attr, &defaults);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGDEF);
+    int rc = posix_spawnp(&c.pid, cargv[0], &fa, &attr, cargv.data(), o.env ? cenv.data() : environ);
+    posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&fa);
     for (int fd : to_close) ::close(fd);
     if (rc != 0) {
