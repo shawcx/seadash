@@ -1,0 +1,7 @@
+# str.replace and bytes.replace, with a count (by keyword from Python 3.13) and an empty pattern.
+print("aaaa".replace("a", "b"), "aaaa".replace("a", "b", 2), "aaaa".replace("a", "b", count=1))
+print("aaaa".replace("a", "b", -1), "aaaa".replace("a", "b", 0), "abab".replace("ab", "", 1))
+print("abc".replace("", "-"), "abc".replace("", "-", 2), "".replace("", "x"), "".replace("", "x", 0))
+print("héé".replace("", "|"), "héllo".replace("é", "e"), "x".replace("x", "yy", count=5))
+print(b"aaa".replace(b"a", b"c", 1), b"abc".replace(b"", b"-"), b"\xc3\xa9".replace(b"", b"|", 2))
+print(bytearray(b"abc").replace(b"b", b"B", 1), bytearray(b"ab").replace(b"", b"."))

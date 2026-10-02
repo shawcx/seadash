@@ -25,6 +25,7 @@ NEEDS_PYTHON = {
     "zipfile_module": (3, 13),  # (ZipInfo.compress_level, ZipExtFile.mode)
     "fnmatch_glob": (3, 14),  # (fnmatch.filterfalse)
     "tarfile_module": (3, 14),  # (extraction filters are the default)
+    "str_replace": (3, 13),  # (replace's count by keyword)
 }
 
 

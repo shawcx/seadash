@@ -3489,6 +3489,8 @@ class CodeGen:
                 if name == "insert":
                     return f"{r}.insert({args[0]}, {self.expr_as(e.args[1], elem)})"
                 return f"{r}.{name}({', '.join(args)})"
+            case CounterType() if name == "most_common" and (n := e.args[0] if e.args else self.keyword(e, "n")):
+                return f"{r}.most_common({self.expr_as(n, OptionalType(INT))})"
             case CounterType() if name in ("most_common", "elements", "total"):
                 return f"{r}.{name}({', '.join(args)})"
             case CounterType() if name in ("update", "subtract"):

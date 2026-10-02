@@ -2989,7 +2989,7 @@ inline std::vector<std::string> str_split(const std::string& s, const std::strin
     out.push_back(s.substr(start));
     return out;
 }
-inline std::vector<std::string> str_splitlines(const std::string& s) {
+inline std::vector<std::string> str_splitlines(const std::string& s, bool keepends = false) {
     std::vector<std::string> out;
     std::size_t start = 0;
     while (start < s.size()) {
@@ -2998,8 +2998,9 @@ inline std::vector<std::string> str_splitlines(const std::string& s) {
             out.push_back(s.substr(start));
             break;
         }
-        out.push_back(s.substr(start, pos - start));
-        start = pos + ((s[pos] == '\r' && pos + 1 < s.size() && s[pos + 1] == '\n') ? 2 : 1);
+        std::size_t end = pos + ((s[pos] == '\r' && pos + 1 < s.size() && s[pos + 1] == '\n') ? 2 : 1);
+        out.push_back(s.substr(start, (keepends ? end : pos) - start));
+        start = end;
     }
     return out;
 }
@@ -3053,15 +3054,33 @@ inline std::tuple<std::string, std::string, std::string> str_rpartition(const st
     if (at == std::string::npos) return {"", "", s};
     return {s.substr(0, at), sep, s.substr(at + sep.size())};
 }
-inline std::string str_replace(const std::string& s, const std::string& from, const std::string& to) {
-    if (from.empty()) return s;
+// s.replace(old, new, count): the first `count` occurrences (all of them if count < 0). An empty `from`
+// matches before each character and at the end ("abc".replace("", "-") is "-a-b-c-"): a str's characters
+// are code points, a bytes' are bytes.
+inline std::string replace_text(const std::string& s, const std::string& from, const std::string& to,
+                                std::int64_t count, bool code_points) {
     std::string out;
-    std::size_t start = 0, pos;
-    while ((pos = s.find(from, start)) != std::string::npos) {
-        out += s.substr(start, pos - start) + to;
+    std::size_t start = 0;
+    if (from.empty()) {
+        for (; count != 0; --count) {
+            out += to;
+            if (start >= s.size()) return out;
+            unsigned char c = static_cast<unsigned char>(s[start]);
+            std::size_t width = !code_points || c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+            out.append(s, start, width);
+            start += width;
+        }
+        return out + s.substr(start);
+    }
+    for (std::size_t pos; count != 0 && (pos = s.find(from, start)) != std::string::npos; --count) {
+        out.append(s, start, pos - start);
+        out += to;
         start = pos + from.size();
     }
     return out + s.substr(start);
+}
+inline std::string str_replace(const std::string& s, const std::string& from, const std::string& to, std::int64_t count = -1) {
+    return replace_text(s, from, to, count, true);
 }
 
 template <class Pred>
@@ -3728,7 +3747,9 @@ inline std::vector<bytes> as_bytes_list(const std::vector<std::string>& parts) {
 }
 inline std::vector<bytes> bytes_split(const bytes& b) { return as_bytes_list(str_split(b.data)); }
 inline std::vector<bytes> bytes_split(const bytes& b, const bytes& sep) { return as_bytes_list(str_split(b.data, sep.data)); }
-inline std::vector<bytes> bytes_splitlines(const bytes& b) { return as_bytes_list(str_splitlines(b.data)); }
+inline std::vector<bytes> bytes_splitlines(const bytes& b, bool keepends = false) {
+    return as_bytes_list(str_splitlines(b.data, keepends));
+}
 inline std::tuple<bytes, bytes, bytes> bytes_partition(const bytes& b, const bytes& sep) {
     auto [x, y, z] = str_partition(b.data, sep.data);
     return {bytes(x), bytes(y), bytes(z)};
@@ -3737,7 +3758,9 @@ inline std::tuple<bytes, bytes, bytes> bytes_rpartition(const bytes& b, const by
     auto [x, y, z] = str_rpartition(b.data, sep.data);
     return {bytes(x), bytes(y), bytes(z)};
 }
-inline bytes bytes_replace(const bytes& b, const bytes& from, const bytes& to) { return bytes(str_replace(b.data, from.data, to.data)); }
+inline bytes bytes_replace(const bytes& b, const bytes& from, const bytes& to, std::int64_t count = -1) {
+    return bytes(replace_text(b.data, from.data, to.data, count, false));
+}
 template <class It>
 bytes bytes_join(const bytes& sep, It&& parts) {
     std::string out;

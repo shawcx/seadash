@@ -1,0 +1,6 @@
+['a', 'b', 'c', 'd'] ['a\n', 'b\r\n', 'c\r', 'd'] ['a\n', 'b\r\n', 'c\r', 'd'] ['x']
+[b'a\n', b'b\r\n'] [bytearray(b'a\n'), bytearray(b'b\r\n')] [b'a', b'b']
+b'\xc3\xa9' b'\xe9' b'x'
+é é hi
+[('a', 5), ('b', 2)] [('a', 5)] [('a', 5), ('b', 2)] [('a', 5)]
+b'ac' **abc** ['a', 'b c'] b'\x05\x00'

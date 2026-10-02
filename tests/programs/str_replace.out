@@ -1,0 +1,6 @@
+bbbb bbaa baaa
+bbbb aaaa ab
+-a-b-c- -a-bc x 
+|h|é|é| hello yy
+b'caa' b'-a-b-c-' b'|\xc3|\xa9'
+bytearray(b'aBc') bytearray(b'.a.b.')

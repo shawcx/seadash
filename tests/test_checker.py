@@ -3117,3 +3117,17 @@ def test_compressed_file_classes_are_types():
     info = ok("import gzip, bz2, lzma\n"
               "def f(a: gzip.GzipFile, b: bz2.BZ2File, c: lzma.LZMAFile, d: lzma.LZMACompressor) -> None:\n    pass\n")
     assert info is not None
+
+
+@pytest.mark.parametrize("src, msg", [
+    ('x = "x".center(width=5)', "str.center() takes no keyword arguments"),
+    ('x = "abc".find(sub="b")', "str.find() takes no keyword arguments"),
+    ("xs = [3, 1]\nx = xs.pop(index=0)", "list.pop() takes no keyword arguments"),
+    ('x = b"abc".translate(table=None)',
+     "bytes.translate() got some positional-only arguments passed as keyword arguments: 'table' (pass it by position)"),
+    ('x = (1).to_bytes(1, "big", True)', "int.to_bytes() takes at most 2 positional arguments (3 given)"),
+    ("xs = [3, 1]\nxs.sort(None)", "list.sort() takes no positional arguments"),
+    ('x = "a".encode(errors="strict")', "str.encode() got an unexpected keyword argument 'errors'"),
+])
+def test_method_keyword_errors(src, msg):
+    assert err(src).message == msg

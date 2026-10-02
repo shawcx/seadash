@@ -39,6 +39,8 @@ in the README and in the design docs, not here.
 - `copy`: `__deepcopy__` and `deepcopy(x, memo)` (they need a type for the memo); copying exceptions.
 - Built-in functions: `issubclass`, `frozenset`, `memoryview`, `complex`, `slice`; `getattr`/`hasattr`/`setattr`
   with a name chosen at run time, and calling `type(x)(...)`; `isinstance` on anything but class instances.
+- `str.splitlines` splits only at `\n`, `\r` and `\r\n` (Python also splits at `\v`, `\f`, `\x1c`-`\x1e`, `\x85`,
+  `\u2028`, `\u2029`); `encode`/`decode`'s `errors=`, `bytes.hex(sep, bytes_per_sep)`.
 - Built-in types: printing a `range` or a dict view (`print(d.keys())`), keeping a `range` in a
   variable or indexing it, `float.as_integer_ratio` (the ratio often needs more than 64 bits),
   `int.real`/`imag`/`numerator`/`denominator`/`conjugate`, `tuple * n`, `f.encoding`, `%` formatting.
@@ -54,11 +56,6 @@ in the README and in the design docs, not here.
 - `signal`: `KeyboardInterrupt` and other exceptions raised in the main thread by a handler (handlers run
   on their own thread); `setitimer`, `siginterrupt`, `set_wakeup_fd`, `sigwait`, `pthread_sigmask`,
   `pthread_kill`, `Handlers`; signal names only one platform has (`SIGINFO`, `SIGRTMIN`...).
-
-## Open questions
-
-- **Keywords on built-in methods.** Some accept keywords Python doesn't (`"x".center(width=5)`), others
-  take none at all (`xs.pop(index=0)`): the built-ins declare their parameters in three different ways.
 
 ## Decided against
 

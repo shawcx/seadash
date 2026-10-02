@@ -209,7 +209,7 @@ match shape:                         # a json.Value
 - **Classes:** class attributes (`version = "1.0"`: constants a subclass can set to its own value), inheritance and dunder methods (`__add__`, `__eq__`, `__lt__`, `__hash__`, `__getitem__`, `__iter__`, `__str__`...).
 - **Decorators:** `@dataclass`, `@property`, `@staticmethod`, `@classmethod`, `@functools.cache`, and your own decorators.
 - **Modules:** `import` of your own `.sd` files and packages.
-- **Built-ins:** Python's built-in functions (`print`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `sorted`, `min`/`max`, `sum`, `divmod`, `round`, `bin`/`hex`/`oct`, `int`/`float`/`str`/`bytes`/`bytearray`, `type`, `getattr`/`hasattr`/`setattr`, `callable`, `id`...) with their keyword arguments (`min(xs, default=0)`, `zip(a, b, strict=True)`, `int("ff", 16)`), and the methods of `str`, `bytes`, `bytearray`, `int`, `float`, `list`, `dict`, `set`, `tuple` and files.
+- **Built-ins:** Python's built-in functions (`print`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `sorted`, `min`/`max`, `sum`, `divmod`, `round`, `bin`/`hex`/`oct`, `int`/`float`/`str`/`bytes`/`bytearray`, `type`, `getattr`/`hasattr`/`setattr`, `callable`, `id`...) with their keyword arguments (`min(xs, default=0)`, `zip(a, b, strict=True)`, `int("ff", 16)`), and the methods of `str`, `bytes`, `bytearray`, `int`, `float`, `list`, `dict`, `set`, `tuple` and files, which take keywords where Python's do (`s.split(maxsplit=1)`, `s.encode(encoding="ascii")`, `xs.sort(key=f)`) and only there (a test checks them against Python's signatures).
 
 **Threads without a GIL, checked for data races.** Threads are real OS threads running in
 parallel. Anything that crosses into another thread (`Thread` arguments, `queue.Queue`

@@ -53,6 +53,8 @@ class CallContext:
             if kw.name not in keywords:
                 raise self.error(f"{self.what} got an unexpected keyword argument '{kw.name}'", kw)
         n = len(self.args)
+        if hi == 0 and n and keywords:  # (keywords only: xs.sort(key=f))
+            raise self.error(f"{self.what} takes no positional arguments")
         if not lo <= n <= hi:
             if lo == hi:
                 want = f"exactly {lo}"
@@ -837,10 +839,124 @@ def prefix_method(t: Type) -> Callable[[CallContext], Type]:
     return handler
 
 
+class OneOf:
+    """A parameter taking any of these types, which C++ overloads (or a template) take each:
+    ZipFile(file) is a str, a Path or a binary file."""
+
+    def __init__(self, *types: Type, what: str):
+        self.types, self.what = types, what
+
+    def check(self, ctx: CallContext, name: str, node: A.Expr) -> None:
+        functions = [t for t in self.types if isinstance(t, FuncType)]  # (a lambda's parameter types come from it)
+        actual = ctx.checker.check_expr(node, functions[0] if functions else None)
+        if not any(assignable(actual, t) for t in self.types):
+            raise ctx.error(f"{ctx.what} argument '{name}' must be {self.what}, not {actual}", node)
+
+
+def plural_args(n: int) -> str:
+    return "1 argument" if n == 1 else f"{n} arguments"
+
+
+def plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+PATH_LIKE = object()  # a parameter taking a str or a Path (sync_method checks it)
+
+
+BYTES_OR_STR = object()  # a parameter taking bytes, or str (sent as UTF-8)
+
+
+FILE_LIKE = object()  # a parameter taking a file descriptor (int), a socket or a file
+
+
+SELECTABLE = "a file descriptor (int), a socket or a file"
+
+
+def selectable(t: Type) -> bool:
+    """What select(), poll() and selectors watch: an int, or something with fileno()."""
+    return t in (INT, SOCKET) or isinstance(t, FileType)
+
+
+def sync_method(result, *params):
+    """A function or method taking `params`: (name, type) or (name, type, C++ default), where a
+    type (and the result) may depend on the receiver, e.g. Queue[T].put takes a T. As in Python,
+    "/" ends the positional-only parameters and "*" starts the keyword-only ones:
+    sync_method(STR, ("width", INT), ("fillchar", STR, '" "s'), "/") is str.center. Codegen fills
+    the parameters in order (handler.params, without the markers)."""
+    positional_only = params.index("/") if "/" in params else 0
+    params = tuple(p for p in params if p != "/")
+    keyword_only = params.index("*") if "*" in params else len(params)
+    params = tuple(p for p in params if p != "*")
+
+    def resolve(t, receiver):
+        return t(receiver) if callable(t) else t
+
+    def handler(ctx: CallContext) -> Type:
+        names = [p[0] for p in params]
+        if len(ctx.args) > keyword_only:
+            if keyword_only == 0:
+                raise ctx.error(f"{ctx.what} takes no positional arguments")
+            most = plural_args(keyword_only).replace("argument", "positional argument") if keyword_only < len(params) \
+                else plural_args(keyword_only)
+            raise ctx.error(f"{ctx.what} takes at most {most} ({len(ctx.args)} given)")
+        for kw in ctx.call.keywords:
+            if positional_only == len(params):
+                raise ctx.error(f"{ctx.what} takes no keyword arguments", kw)
+            if kw.name in names[:positional_only]:
+                raise ctx.error(f"{ctx.what} got some positional-only arguments passed as keyword arguments: "
+                                f"'{kw.name}' (pass it by position)", kw)
+            if kw.name in names[positional_only:] and names.index(kw.name) < len(ctx.args):
+                raise ctx.error(f"{ctx.what} got multiple values for argument '{kw.name}'", kw)
+        for kw in ctx.call.keywords:
+            if kw.name not in names[positional_only:]:
+                raise ctx.error(f"{ctx.what} got an unexpected keyword argument '{kw.name}'", kw)
+        for i, p in enumerate(params):
+            node = ctx.args[i] if i < len(ctx.args) else ctx.keyword_arg(p[0])
+            if node is None:
+                if len(p) < 3:
+                    raise ctx.error(f"{ctx.what} is missing argument '{p[0]}'")
+                continue
+            want = resolve(p[1], ctx.receiver)
+            if want is None:  # any value (PrettyPrinter.pformat(object))
+                ctx.checker.check_expr(node)
+                continue
+            if want is PATH_LIKE:
+                actual = ctx.checker.check_expr(node)
+                if actual not in (STR, PATH):
+                    raise ctx.error(f"{ctx.what} argument '{p[0]}' must be a str or Path, not {actual}", node)
+                continue
+            if want is BYTES_OR_STR:
+                actual = ctx.checker.check_expr(node)
+                if not bytes_like(actual):
+                    raise ctx.error(f"{ctx.what} argument '{p[0]}' must be bytes (or str), not {actual}", node)
+                continue
+            if want is FILE_LIKE:
+                actual = ctx.checker.check_expr(node)
+                if not selectable(actual):
+                    raise ctx.error(f"{ctx.what} argument '{p[0]}' must be {SELECTABLE}, not {actual}", node)
+                continue
+            if isinstance(want, OneOf):
+                want.check(ctx, p[0], node)
+                continue
+            actual = ctx.checker.check_expr(node, want)
+            if not assignable(actual, want):
+                raise ctx.error(f"{ctx.what} argument '{p[0]}' must be {want}, not {actual}", node)
+        return resolve(result, ctx.receiver)
+
+    handler.params = params
+    handler.positional_only = positional_only
+    handler.keyword_only = keyword_only
+    handler.resolve = resolve
+    return handler
+
+
 def returns(t: Type | Callable[[Type], Type], lo: int = 0, hi: int | None = None, args: tuple = ()):
     """A method taking `args` (types, or functions of the receiver type) and returning `t`."""
 
     def handler(ctx: CallContext) -> Type:
+        if ctx.call.keywords:  # (like Python's own methods with positional-only parameters)
+            raise ctx.error(f"{ctx.what} takes no keyword arguments", ctx.call.keywords[0])
         n = ctx.arity(lo, len(args) if hi is None else hi)
         for i in range(n):
             want = args[i](ctx.receiver) if callable(args[i]) else args[i]
@@ -987,14 +1103,14 @@ def text_methods(t: Type, fill_default: str) -> dict:
     """The methods str and bytes share (t is STR or BYTES): searching with start/end,
     split/rsplit with maxsplit, padding..."""
     search = lambda: sync_method(INT, ("sub", t), ("start", OptionalType(INT), "std::nullopt"),
-                                 ("end", OptionalType(INT), "std::nullopt"))
+                                 ("end", OptionalType(INT), "std::nullopt"), "/")
     splits = lambda: sync_method(ListType(t), ("sep", OptionalType(t), "std::nullopt"), ("maxsplit", INT, "-1_i"))
     return {
         **{name: search() for name in ("find", "rfind", "index", "rindex", "count")},
         "split": splits(),
         "rsplit": splits(),
-        **{name: sync_method(t, ("width", INT), ("fillchar", t, fill_default)) for name in ("ljust", "rjust", "center")},
-        "zfill": sync_method(t, ("width", INT)),
+        **{name: sync_method(t, ("width", INT), ("fillchar", t, fill_default), "/") for name in ("ljust", "rjust", "center")},
+        "zfill": sync_method(t, ("width", INT), "/"),
         "expandtabs": sync_method(t, ("tabsize", INT, "8_i")),
         **{name: returns(t, args=(t,)) for name in ("removeprefix", "removesuffix")},
         "swapcase": returns(t),
@@ -1060,12 +1176,12 @@ STR_METHODS = {
     **{name: prefix_method(STR) for name in ("startswith", "endswith")},
     "translate": str_translate,
     "format_map": str_format_map,
-    "splitlines": returns(ListType(STR)),
+    "splitlines": sync_method(ListType(STR), ("keepends", BOOL, "false")),
     **{name: returns(TupleType((STR, STR, STR)), args=(STR,)) for name in ("partition", "rpartition")},
-    "replace": returns(STR, args=(STR, STR)),
+    "replace": sync_method(STR, ("old", STR), ("new", STR), "/", ("count", INT, "-1_i")),
     "join": str_join,
     "format": str_format,
-    "encode": returns(BYTES, 0, 1, (STR,)),
+    "encode": sync_method(BYTES, ("encoding", STR, '"utf-8"s')),
 }
 
 def bytes_join(ctx: CallContext) -> Type:
@@ -1077,15 +1193,15 @@ def bytes_join(ctx: CallContext) -> Type:
 
 
 BYTES_METHODS = {
-    "decode": returns(STR, 0, 1, (STR,)),
+    "decode": sync_method(STR, ("encoding", STR, '"utf-8"s')),
     "hex": returns(STR),
     **{name: prefix_method(BYTES) for name in ("startswith", "endswith")},
     **{name: returns(BYTES) for name in ("upper", "lower", "title", "capitalize")},
     **{name: returns(BYTES, 0, 1, (BYTES,)) for name in ("strip", "lstrip", "rstrip")},
     **{name: returns(BOOL) for name in ("isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower")},
-    "splitlines": returns(ListType(BYTES)),
+    "splitlines": sync_method(ListType(BYTES), ("keepends", BOOL, "false")),
     **{name: returns(TupleType((BYTES, BYTES, BYTES)), args=(BYTES,)) for name in ("partition", "rpartition")},
-    "replace": returns(BYTES, args=(BYTES, BYTES)),
+    "replace": sync_method(BYTES, ("old", BYTES), ("new", BYTES), ("count", INT, "-1_i"), "/"),
     "join": bytes_join,
 }
 
@@ -1180,7 +1296,7 @@ def counter_counts(ctx: CallContext) -> Type:
 
 COUNTER_METHODS = {
     **DICT_METHODS,
-    "most_common": returns(lambda c: ListType(TupleType((c.key, INT))), 0, 1, (INT,)),
+    "most_common": sync_method(lambda c: ListType(TupleType((c.key, INT))), ("n", OptionalType(INT), "std::nullopt")),
     "elements": returns(lambda c: ListType(c.key)),
     "total": returns(INT),
     "update": counter_counts,
@@ -1309,6 +1425,77 @@ JSON_VALUE_METHODS = {
     "items": returns(ListType(TupleType((STR, JSON_VALUE)))),
     "get": json_value_get,
 }
+
+
+# (these use sync_method, for keywords and defaults: s.split(maxsplit=1), s.find(x, 2))
+STR_METHODS.update(text_methods(STR, '" "s'))
+BYTES_METHODS.update(text_methods(BYTES, 'sd::bytes(" "s)'))
+BYTES_METHODS["translate"] = sync_method(BYTES, ("table", OptionalType(BYTES)), "/", ("delete", BYTES, "sd::bytes()"))
+
+
+def as_bytearray_type(t: Type) -> Type:
+    """What a bytes method gives as a bytearray method: bytearrays where it gave bytes."""
+    if t == BYTES:
+        return BYTEARRAY
+    if isinstance(t, ListType):
+        return ListType(as_bytearray_type(t.elem))
+    if isinstance(t, TupleType):
+        return TupleType(tuple(as_bytearray_type(e) for e in t.elts))
+    return t
+
+
+def bytearray_method(handler):
+    """A bytes method on a bytearray (codegen converts its result with sd::as_bytearray)."""
+    def wrapped(ctx: CallContext) -> Type:
+        return as_bytearray_type(handler(ctx))
+    for attr in ("params", "positional_only", "keyword_only", "resolve"):  # (keywords and defaults)
+        if hasattr(handler, attr):
+            setattr(wrapped, attr, getattr(handler, attr))
+    return wrapped
+
+
+def bytearray_extend(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    t = ctx.arg(0)
+    if t not in (BYTES, BYTEARRAY) and element_type(t) != INT:
+        raise ctx.error(f"bytearray.extend() takes bytes or ints (0-255), not {t}", ctx.args[0])
+    mark_tuple_iterable(ctx.args[0], t, INT)
+    return NONE
+
+
+# The methods bytearray has of its own (members of sd::bytearray), then those it shares with bytes.
+BYTEARRAY_OWN_METHODS = {
+    "append": returns(NONE, args=(INT,)),
+    "extend": bytearray_extend,
+    "insert": returns(NONE, args=(INT, INT)),
+    "pop": returns(INT, 0, 1, (INT,)),
+    "remove": returns(NONE, args=(INT,)),
+    "clear": returns(NONE),
+    "reverse": returns(NONE),
+    "copy": returns(BYTEARRAY),
+}
+BYTEARRAY_METHODS = {
+    **{name: bytearray_method(h) for name, h in BYTES_METHODS.items()},
+    **BYTEARRAY_OWN_METHODS,
+    # (`del b[i]` and `del b[a:b:c]`, as the checker writes them)
+    "__delitem__": returns(NONE, args=(INT,)),
+    "__delslice__": returns(NONE, args=(OptionalType(INT), OptionalType(INT), OptionalType(INT))),
+}
+
+
+INT_METHODS = {
+    "bit_length": sync_method(INT),
+    "bit_count": sync_method(INT),
+    "to_bytes": sync_method(BYTES, ("length", INT, "1_i"), ("byteorder", STR, '"big"s'), "*", ("signed", BOOL, "false")),
+    "is_integer": sync_method(BOOL),
+    "as_integer_ratio": sync_method(TupleType((INT, INT))),
+}
+FLOAT_METHODS = {
+    "is_integer": sync_method(BOOL),
+    "hex": sync_method(STR),
+}
+TYPE_FUNCTIONS[("int", "from_bytes")] = sync_method(INT, ("bytes", BYTES), ("byteorder", STR, '"big"s'), "*", ("signed", BOOL, "false"))
+TYPE_FUNCTIONS[("float", "fromhex")] = sync_method(FLOAT, ("string", STR), "/")
 
 
 # The methods and attributes of the types a standard-library module defines, by the type's class:
@@ -1544,20 +1731,6 @@ def exception_class(name: str, cpp: str, base: str | StructType = "Exception") -
                       cpp_name=cpp)
 
 
-class OneOf:
-    """A parameter taking any of these types, which C++ overloads (or a template) take each:
-    ZipFile(file) is a str, a Path or a binary file."""
-
-    def __init__(self, *types: Type, what: str):
-        self.types, self.what = types, what
-
-    def check(self, ctx: CallContext, name: str, node: A.Expr) -> None:
-        functions = [t for t in self.types if isinstance(t, FuncType)]  # (a lambda's parameter types come from it)
-        actual = ctx.checker.check_expr(node, functions[0] if functions else None)
-        if not any(assignable(actual, t) for t in self.types):
-            raise ctx.error(f"{ctx.what} argument '{name}' must be {self.what}, not {actual}", node)
-
-
 def signature(result: Type, *params: tuple) -> Callable[[CallContext], Type]:
     """A module function with named parameters: each is (name, type) or (name, type, C++ default).
     Keyword arguments work; codegen passes every parameter in order (see Function.params)."""
@@ -1623,138 +1796,6 @@ def needing(module: str, handler):
     return check
 
 
-def sync_method(result, *params):
-    """A method on a threading/queue type. Types (and the result) may depend on the receiver,
-    e.g. Queue[T].put takes a T. Keyword arguments work; codegen fills parameters in order."""
-
-    def resolve(t, receiver):
-        return t(receiver) if callable(t) else t
-
-    def handler(ctx: CallContext) -> Type:
-        names = [p[0] for p in params]
-        if len(ctx.args) > len(params):
-            raise ctx.error(f"{ctx.what} takes at most {plural_args(len(params))} ({len(ctx.args)} given)")
-        for kw in ctx.call.keywords:
-            if kw.name in names and names.index(kw.name) < len(ctx.args):
-                raise ctx.error(f"{ctx.what} got multiple values for argument '{kw.name}'", kw)
-        for kw in ctx.call.keywords:
-            if kw.name not in names:
-                raise ctx.error(f"{ctx.what} got an unexpected keyword argument '{kw.name}'", kw)
-        for i, p in enumerate(params):
-            node = ctx.args[i] if i < len(ctx.args) else ctx.keyword_arg(p[0])
-            if node is None:
-                if len(p) < 3:
-                    raise ctx.error(f"{ctx.what} is missing argument '{p[0]}'")
-                continue
-            want = resolve(p[1], ctx.receiver)
-            if want is None:  # any value (PrettyPrinter.pformat(object))
-                ctx.checker.check_expr(node)
-                continue
-            if want is PATH_LIKE:
-                actual = ctx.checker.check_expr(node)
-                if actual not in (STR, PATH):
-                    raise ctx.error(f"{ctx.what} argument '{p[0]}' must be a str or Path, not {actual}", node)
-                continue
-            if want is BYTES_OR_STR:
-                actual = ctx.checker.check_expr(node)
-                if not bytes_like(actual):
-                    raise ctx.error(f"{ctx.what} argument '{p[0]}' must be bytes (or str), not {actual}", node)
-                continue
-            if want is FILE_LIKE:
-                actual = ctx.checker.check_expr(node)
-                if not selectable(actual):
-                    raise ctx.error(f"{ctx.what} argument '{p[0]}' must be {SELECTABLE}, not {actual}", node)
-                continue
-            if isinstance(want, OneOf):
-                want.check(ctx, p[0], node)
-                continue
-            actual = ctx.checker.check_expr(node, want)
-            if not assignable(actual, want):
-                raise ctx.error(f"{ctx.what} argument '{p[0]}' must be {want}, not {actual}", node)
-        return resolve(result, ctx.receiver)
-
-    handler.params = params
-    handler.resolve = resolve
-    return handler
-
-
-# (these use sync_method, for keywords and defaults: s.split(maxsplit=1), s.find(x, 2))
-STR_METHODS.update(text_methods(STR, '" "s'))
-BYTES_METHODS.update(text_methods(BYTES, 'sd::bytes(" "s)'))
-BYTES_METHODS["translate"] = sync_method(BYTES, ("table", OptionalType(BYTES)), ("delete", BYTES, "sd::bytes()"))
-
-
-def as_bytearray_type(t: Type) -> Type:
-    """What a bytes method gives as a bytearray method: bytearrays where it gave bytes."""
-    if t == BYTES:
-        return BYTEARRAY
-    if isinstance(t, ListType):
-        return ListType(as_bytearray_type(t.elem))
-    if isinstance(t, TupleType):
-        return TupleType(tuple(as_bytearray_type(e) for e in t.elts))
-    return t
-
-
-def bytearray_method(handler):
-    """A bytes method on a bytearray (codegen converts its result with sd::as_bytearray)."""
-    def wrapped(ctx: CallContext) -> Type:
-        return as_bytearray_type(handler(ctx))
-    for attr in ("params", "resolve"):  # (keywords and defaults)
-        if hasattr(handler, attr):
-            setattr(wrapped, attr, getattr(handler, attr))
-    return wrapped
-
-
-def bytearray_extend(ctx: CallContext) -> Type:
-    ctx.arity(1)
-    t = ctx.arg(0)
-    if t not in (BYTES, BYTEARRAY) and element_type(t) != INT:
-        raise ctx.error(f"bytearray.extend() takes bytes or ints (0-255), not {t}", ctx.args[0])
-    mark_tuple_iterable(ctx.args[0], t, INT)
-    return NONE
-
-
-# The methods bytearray has of its own (members of sd::bytearray), then those it shares with bytes.
-BYTEARRAY_OWN_METHODS = {
-    "append": returns(NONE, args=(INT,)),
-    "extend": bytearray_extend,
-    "insert": returns(NONE, args=(INT, INT)),
-    "pop": returns(INT, 0, 1, (INT,)),
-    "remove": returns(NONE, args=(INT,)),
-    "clear": returns(NONE),
-    "reverse": returns(NONE),
-    "copy": returns(BYTEARRAY),
-}
-BYTEARRAY_METHODS = {
-    **{name: bytearray_method(h) for name, h in BYTES_METHODS.items()},
-    **BYTEARRAY_OWN_METHODS,
-    # (`del b[i]` and `del b[a:b:c]`, as the checker writes them)
-    "__delitem__": returns(NONE, args=(INT,)),
-    "__delslice__": returns(NONE, args=(OptionalType(INT), OptionalType(INT), OptionalType(INT))),
-}
-INT_METHODS = {
-    "bit_length": sync_method(INT),
-    "bit_count": sync_method(INT),
-    "to_bytes": sync_method(BYTES, ("length", INT, "1_i"), ("byteorder", STR, '"big"s'), ("signed", BOOL, "false")),
-    "is_integer": sync_method(BOOL),
-    "as_integer_ratio": sync_method(TupleType((INT, INT))),
-}
-FLOAT_METHODS = {
-    "is_integer": sync_method(BOOL),
-    "hex": sync_method(STR),
-}
-TYPE_FUNCTIONS[("int", "from_bytes")] = sync_method(INT, ("bytes", BYTES), ("byteorder", STR, '"big"s'), ("signed", BOOL, "false"))
-TYPE_FUNCTIONS[("float", "fromhex")] = sync_method(FLOAT, ("string", STR))
-
-
-def plural_args(n: int) -> str:
-    return "1 argument" if n == 1 else f"{n} arguments"
-
-
-def plural(n: int, word: str) -> str:
-    return f"{n} {word}" if n == 1 else f"{n} {word}s"
-
-
 def elem0(t) -> Type:
     return t.args[0]
 
@@ -1810,9 +1851,6 @@ def type_attributes(t: Type) -> dict | None:
     return None
 
 
-PATH_LIKE = object()  # a parameter taking a str or a Path (sync_method checks it)
-
-
 def strip_optional_type(t: Type) -> Type:
     return t.inner if isinstance(t, OptionalType) else t
 
@@ -1857,16 +1895,6 @@ MODULES["sys"].members.update({
 
 class AttributeUnavailable(Exception):
     """An attribute that exists, but not for this value (the checker adds the location)."""
-
-
-BYTES_OR_STR = object()  # a parameter taking bytes, or str (sent as UTF-8)
-FILE_LIKE = object()  # a parameter taking a file descriptor (int), a socket or a file
-SELECTABLE = "a file descriptor (int), a socket or a file"
-
-
-def selectable(t: Type) -> bool:
-    """What select(), poll() and selectors watch: an int, or something with fileno()."""
-    return t in (INT, SOCKET) or isinstance(t, FileType)
 
 
 @dataclass

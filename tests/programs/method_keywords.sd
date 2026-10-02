@@ -1,0 +1,12 @@
+# Keywords on built-in types' methods, where Python takes them (and only there: see test_method_keywords.py).
+import collections
+
+s = "a\nb\r\nc\rd"
+print(s.splitlines(), s.splitlines(True), s.splitlines(keepends=True), "x\n".splitlines(keepends=False))
+b = b"a\nb\r\n"
+print(b.splitlines(keepends=True), bytearray(b).splitlines(True), b.splitlines())
+print("é".encode(encoding="utf-8"), "é".encode("latin-1"), "x".encode())
+print(b"\xc3\xa9".decode(encoding="utf-8"), b"\xe9".decode("latin-1"), bytearray(b"hi").decode(encoding="ascii"))
+c = collections.Counter("abracadabra")
+print(c.most_common(n=2), c.most_common(1), c.most_common()[:2], c.most_common(n=None)[:1])
+print(b"abc".translate(None, delete=b"b"), "abc".center(7, "*"), "a b c".split(maxsplit=1), (5).to_bytes(2, byteorder="little"))
