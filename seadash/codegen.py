@@ -29,6 +29,7 @@ Conventions:
 
 from __future__ import annotations
 
+import copy
 import threading
 from dataclasses import dataclass
 
@@ -2344,6 +2345,12 @@ class CodeGen:
             return f"{'' if op == 'in' else '!'}sd::enums::flag_contains({rc}, {lc})"  # P.R in perms
         if isinstance(right, A.NoneLit) or isinstance(left, A.NoneLit):
             subject = lc if isinstance(right, A.NoneLit) else rc
+            node = left if isinstance(right, A.NoneLit) else right
+            declared = getattr(node.sym, "type", None) if isinstance(node, (A.Name, A.Attribute)) else None
+            if isinstance(declared, OptionalType) and not isinstance(node.ty, OptionalType):
+                raw = copy.copy(node)  # narrowed, checked again: test the optional itself, not its value
+                raw.ty = declared
+                subject = self.expr(raw)
             is_none = op in ("is", "==")
             return f"(!{subject}.has_value())" if is_none else f"{subject}.has_value()"
         match op:

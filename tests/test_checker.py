@@ -248,14 +248,13 @@ def test_narrowing_with_and_and_not():
     """)
 
 
-def test_redundant_none_check_after_narrowing_is_reported():
-    e = err("""
+def test_redundant_none_check_after_narrowing_is_allowed():
+    ok("""
         def f(n: int?) -> bool:
             if not n:
                 return False
             return n is not None
-    """)
-    assert e.message == "int can never be None (only T? types can)"
+    """)  # (redundant, but valid Python: only a variable that can never be None is an error)
 
 
 def test_narrowing_with_walrus():

@@ -3253,8 +3253,9 @@ class Checker:
             if not ok:
                 raise self.error(f"a {lt} can never be in a {rt}", e)
         elif op in ("is", "is not"):
-            is_none_check = (isinstance(right, A.NoneLit) and (isinstance(lt, OptionalType) or lt == NONE)) or (
-                isinstance(left, A.NoneLit) and isinstance(rt, OptionalType)
+            is_none_check = (isinstance(right, A.NoneLit) and (isinstance(lt, OptionalType) or lt == NONE
+                                                                or declared_optional(left))) or (
+                isinstance(left, A.NoneLit) and (isinstance(rt, OptionalType) or declared_optional(right))
             )
             enum_t = strip_optional(lt) if isinstance(strip_optional(lt), StructType) else strip_optional(rt)
             lo, ro = strip_optional(lt), strip_optional(rt)  # node.parent is root: either may be None
@@ -4620,6 +4621,12 @@ DUNDER_SIGNATURES = {
 
 def accepts(m: FuncInfo, t: Type) -> bool:
     return len(m.params) == 1 and assignable(t, m.params[0].type)
+
+
+def declared_optional(e: A.Expr) -> bool:
+    """Is e a variable or field declared T? that's known not to be None here? (Checking it again
+    is redundant, but fine, as in Python: `o = 5` then `if o is not None:`.)"""
+    return isinstance(e, (A.Name, A.Attribute)) and isinstance(getattr(e.sym, "type", None), OptionalType)
 
 
 def implicit_type_params(node: A.FunctionDef) -> None:

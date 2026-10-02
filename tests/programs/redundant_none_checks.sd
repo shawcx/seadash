@@ -1,0 +1,30 @@
+# Checking a T? variable or field for None again, after it's known not to be, is redundant but fine.
+from dataclasses import dataclass
+
+
+@dataclass
+class Node:
+    name: str
+    parent: "Node | None" = None
+
+
+o: int | None = None
+o = 5
+if o is not None:
+    print(o + 1)
+print(o is None, None is o)
+n = Node("leaf", Node("root"))
+if n.parent is not None:
+    if n.parent is not None:  # (again: still fine)
+        print(n.parent.name)
+
+
+def pick(x: str | None) -> str:
+    if x is None:
+        return "none"
+    if x is None:  # (redundant, as in Python)
+        return "never"
+    return x
+
+
+print(pick(None), pick("a"))
