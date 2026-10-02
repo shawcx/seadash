@@ -2473,6 +2473,20 @@ DISK_USAGE = builtin_struct("usage", "sd::shutil::DiskUsage", {"total": INT, "us
 SHUTIL_ERROR = StructType("Error", "class", None, base=EXCEPTIONS["OSError"], builtin=True, cpp_name="sd::shutil::Error")
 SRC_DST = (("src", PATH_LIKE), ("dst", PATH_LIKE))
 
+def shutil_copyfileobj(ctx: CallContext) -> Type:
+    """copyfileobj(fsrc, fdst, length=64 KiB): both text files or both binary (StringIO too)."""
+    if not ctx.args:
+        raise ctx.error("shutil.copyfileobj() missing required argument 'fsrc'")
+    src = ctx.checker.check_expr(ctx.args[0])
+    if not isinstance(src, FileType):
+        raise ctx.error(f"shutil.copyfileobj() needs a file to read, not {src}", ctx.args[0])
+    kind = BINARY_FILE if src.binary else TEXT_FILE
+    return signature(NONE, ("fsrc", kind), ("fdst", kind), ("length", INT, "64 * 1024"))(ctx)
+
+
+# (codegen passes the files as they are: their exact types vary)
+shutil_copyfileobj.params = (("fsrc", None), ("fdst", None), ("length", INT, "64 * 1024"))
+
 MODULES["shutil"] = module_with_params(runtime_module(
     "shutil", "modules/shutil.hpp",
     copyfile=(signature(STR, *SRC_DST), "sd::shutil::copyfile"),
@@ -2485,6 +2499,7 @@ MODULES["shutil"] = module_with_params(runtime_module(
     move=(signature(STR, *SRC_DST), "sd::shutil::move"),
     which=(signature(OptionalType(STR), ("cmd", STR), ("path", OptionalType(STR), "std::nullopt")), "sd::shutil::which"),
     disk_usage=(signature(DISK_USAGE, ("path", PATH_LIKE)), "sd::shutil::disk_usage"),
+    copyfileobj=(shutil_copyfileobj, "sd::shutil::copyfileobj"),
     Error=SHUTIL_ERROR,
     SameFileError=StructType("SameFileError", "class", None, base=SHUTIL_ERROR, builtin=True,
                              cpp_name="sd::shutil::SameFileError"),

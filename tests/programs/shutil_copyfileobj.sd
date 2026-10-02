@@ -1,0 +1,23 @@
+# shutil.copyfileobj between text files, binary files and in-memory ones.
+import io
+import os
+import shutil
+import tempfile
+
+src = io.StringIO("line one\nline two\n" * 3)
+dst = io.StringIO()
+shutil.copyfileobj(src, dst)
+print(repr(dst.getvalue()[:20]), len(dst.getvalue()))
+with tempfile.TemporaryDirectory() as tmp:
+    a, b = os.path.join(tmp, "a.bin"), os.path.join(tmp, "b.bin")
+    with open(a, "wb") as f:
+        f.write(bytes(range(256)) * 300)
+    with open(a, "rb") as fsrc, open(b, "wb") as fdst:
+        shutil.copyfileobj(fsrc, fdst, length=1000)
+    with open(b, "rb") as f:
+        data = f.read()
+    print(len(data), data[:4], data[-2:])
+    out = io.BytesIO()
+    with open(b, "rb") as f:
+        shutil.copyfileobj(f, out, 4096)
+    print(len(out.getvalue()))

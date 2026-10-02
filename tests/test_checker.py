@@ -2972,3 +2972,10 @@ def test_unannotated_function_types():
               "def shout(word, times=1):\n    return word * times\n"
               "x = add(1, 2.5)\ny = first(['a'])\nz = shout('a')\n")
     assert variables(info) == ["x: float", "y: str?", "z: str"]
+
+
+def test_copyfileobj_needs_files_of_one_kind():
+    assert err("import io\nimport shutil\nshutil.copyfileobj(io.StringIO('a'), io.BytesIO())\n").message == (
+        "shutil.copyfileobj() argument 'fdst' must be TextIO, not BytesIO")
+    assert err("import shutil\nshutil.copyfileobj('a', 'b')\n").message == (
+        "shutil.copyfileobj() needs a file to read, not str")

@@ -182,4 +182,15 @@ inline DiskUsage disk_usage(const Path& path) {
     return {total, used, free};
 }
 
+// copyfileobj(fsrc, fdst, length): read and write in chunks until fsrc runs out.
+template <class Src, class Dst>
+void copyfileobj(const Src& src, const Dst& dst, std::int64_t length) {
+    if (length <= 0) length = 64 * 1024;  // (Python reads it all then; chunks give the same result)
+    while (true) {
+        auto chunk = src->read(length);
+        if (chunk.empty()) break;
+        dst->write(chunk);
+    }
+}
+
 }  // namespace sd::shutil

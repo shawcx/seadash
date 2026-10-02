@@ -1,0 +1,3 @@
+'line one\nline two\nli' 54
+76800 b'\x00\x01\x02\x03' b'\xfe\xff'
+76800
