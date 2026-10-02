@@ -43,7 +43,7 @@ from .threads import MUTATING_METHODS  # (a parameter changed by one of these is
 from .types import (
     SYNC_CPP, BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
     BuiltinClass, COPIED, TYPE_OBJECT, SelectorKeyType, SelectorType, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
-    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION, SIGNAL_HANDLER,
+    CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION, SIGNAL_HANDLER, NORMAL_DIST,
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
@@ -2375,7 +2375,7 @@ class CodeGen:
             if op in ("//", "%"):
                 return f"sd::datetime::{'floordiv' if op == '//' else 'mod'}({lc}, {rc})"
             return f"({lc} {op} {rc})"
-        if builtins.NORMAL_DIST in (lt, rt):  # C++ operators on statistics.NormalDist
+        if NORMAL_DIST in (lt, rt):  # C++ operators on statistics.NormalDist
             lc, rc = (self.coerce(code, ct, FLOAT) if ct == INT else code for code, ct in ((lc, lt), (rc, rt)))
             return f"({lc} {op} {rc})"
         if dunder is not None:  # a + b -> a.__add__(b), or 2 * v -> v.__rmul__(2)

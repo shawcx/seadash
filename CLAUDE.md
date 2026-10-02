@@ -42,14 +42,20 @@ The name is final (a nod to the author's two kids).
 
 ## Layout
 
-- `seadash/lexer.py` → `parser.py` (`ast.py`) → `checker.py` (types in `types.py`, builtins
-  and standard-library typing in `builtins.py`, thread safety in `threads.py`) →
+- `seadash/lexer.py` → `parser.py` (`ast.py`) → `checker.py` (types in `types.py`, built-in
+  functions and types in `builtins.py`, each standard-library module's typing in its own file in
+  `seadash/stdlib/`, thread safety in `threads.py`) →
   `codegen.py` → C++. `driver.py` runs the pipeline and the C++ compiler (with the build
   cache); `cli.py` is the `sd` command.
 - `seadash/runtime/seadash.hpp` is the core runtime; `seadash/runtime/modules/*.hpp` are
-  standard-library modules (a module declares its header and libraries in `builtins.py`).
+  standard-library modules (a module declares its header and libraries in its `seadash/stdlib/` file).
+- A new standard-library module: a file in `seadash/stdlib/` that imports what it uses from
+  `..builtins` (the helpers: `runtime_module`, `signature`, `sync_method`, `bind_args`...) and
+  `..types`, registers itself in `MODULES`, and is added to `seadash/stdlib/__init__.py`. Its
+  names are re-exported as `builtins.NAME` (the end of `builtins.py`), which the checker and
+  codegen use.
 - A standard-library class without type parameters (`socket`, `Logger`, `date`...) is a
-  `BuiltinClass` in `types.py`, with its C++ type and thread rule; `builtins.py` adds its
+  `BuiltinClass` in `types.py`, with its C++ type and thread rule; its module's file adds its
   `methods` and `attributes` next to its module. The checker, `threads.py` and codegen look
   those up, so only a class that needs special code generation gets a case of its own.
 - `tests/programs/*.sd` are end-to-end tests: `.out` is the expected stdout (and optional

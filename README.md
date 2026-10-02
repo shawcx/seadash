@@ -353,6 +353,7 @@ source.sd → lexer → parser → type checker → C++23 codegen → g++ → na
 |---|---|
 | `seadash/lexer.py`, `parser.py`, `ast.py` | Python-style syntax, `INDENT`/`DEDENT` tokens |
 | `seadash/checker.py`, `types.py`, `builtins.py` | type inference and checking; built-in functions and modules |
+| `seadash/stdlib/` | each standard-library module's typing (what its functions take and return, what codegen calls) |
 | `seadash/threads.py` | which values threads may share |
 | `seadash/codegen.py` | C++ generation |
 | `seadash/runtime/` | the header-only runtime (`seadash.hpp`, plus `modules/*.hpp`) |

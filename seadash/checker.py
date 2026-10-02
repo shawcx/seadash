@@ -44,7 +44,7 @@ from .types import (
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     Prim, SetType, StructType, TupleType, Type, Var, EnumInfo, EnumMember, bool_decays, enum_decays, enum_flag_op, enum_mixin,
     Signature, UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional,
-    filled_for, strip_sig, widen,
+    filled_for, strip_sig, widen, EXECUTOR, HTTP_HEADERS, HTTP_RESPONSE, NORMAL_DIST, SIGNAL_HANDLER, SSL_SOCKET, TARFILE,
 )
 
 INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
@@ -1650,7 +1650,7 @@ class Checker:
                     raise self.error(f"{owner.name} is an enum: its members can't be changed (cannot set attribute "
                                      f"'{attr}')", target)
                 if isinstance(owner, HTTPServerType) and attr == "socket":  # httpd.socket = ctx.wrap_socket(httpd.socket, ...)
-                    if t != builtins.SSL_SOCKET:
+                    if t != SSL_SOCKET:
                         raise self.error("httpd.socket can only be set to the server's socket wrapped for TLS: "
                                          "`httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)`", value)
                     target.sym, target.ty = ("server_socket", attr), t
@@ -2060,19 +2060,19 @@ class Checker:
             return WithInfo("file", t, None, False)
         if isinstance(t, SyncType) and t.kind in ("Lock", "RLock"):
             return WithInfo("lock", BOOL, None, False)
-        if t in (SOCKET, builtins.SSL_SOCKET):
+        if t in (SOCKET, SSL_SOCKET):
             return WithInfo("socket", t, None, False)
         if isinstance(t, SelectorType):  # `with selectors.DefaultSelector() as sel:` closes it at the end
             return WithInfo("selector", t, None, False)
-        if t == builtins.HTTP_RESPONSE:  # `with urlopen(url) as r:` closes the connection at the end
+        if t == HTTP_RESPONSE:  # `with urlopen(url) as r:` closes the connection at the end
             return WithInfo("response", t, None, False)
-        if t == builtins.EXECUTOR:  # `with ThreadPoolExecutor() as pool:` waits for the work at the end
+        if t == EXECUTOR:  # `with ThreadPoolExecutor() as pool:` waits for the work at the end
             return WithInfo("executor", t, None, False)
         if t == TEMPDIR:  # `with TemporaryDirectory() as tmp:` gives its name, removed at the end
             return WithInfo("tempdir", STR, None, False)
         if t == builtins.ZIPFILE:  # `with ZipFile(path, "w") as zf:` closes it (writing its directory) at the end
             return WithInfo("zipfile", t, None, False)
-        if t == builtins.TARFILE:  # `with tarfile.open(...) as tf:` closes it (without the end blocks after an error)
+        if t == TARFILE:  # `with tarfile.open(...) as tf:` closes it (without the end blocks after an error)
             return WithInfo("tarfile", t, None, False)
         if t == SQLITE_CONNECTION:  # `with conn:` commits, or rolls back if the block raised
             return WithInfo("connection", t, None, False)
@@ -3125,7 +3125,7 @@ class Checker:
         if t == BOOL and op == "~":
             raise self.error("'~' on a bool is deprecated in Python (it gives -2 for True); use 'not' to negate it, "
                              "or ~int(x) for the int's bits", e)
-        if op in ("-", "+") and (is_numeric(t) or t in (TIMEDELTA, builtins.NORMAL_DIST)):
+        if op in ("-", "+") and (is_numeric(t) or t in (TIMEDELTA, NORMAL_DIST)):
             return t
         if op == "~" and t == INT:
             return INT
@@ -3161,9 +3161,9 @@ class Checker:
             if (result := datetime_arithmetic(op, l, r)) is not None:
                 return result
             raise self.error(f"unsupported operand types for {op}: {l} and {r}", e)
-        if builtins.NORMAL_DIST in (l, r):
+        if NORMAL_DIST in (l, r):
             if normal_dist_arithmetic(op, l, r):
-                return builtins.NORMAL_DIST
+                return NORMAL_DIST
             raise self.error(f"unsupported operand types for {op}: {l} and {r}", e)
         match op:
             case "+":
@@ -3307,7 +3307,7 @@ class Checker:
                 raise self.error(f"comparing {lt} with {rt} using '{op}' is always {op == '!='}", e)
         elif op in ("in", "not in"):
             match rt:
-                case _ if rt == builtins.HTTP_HEADERS:  # "Content-Type" in headers
+                case _ if rt == HTTP_HEADERS:  # "Content-Type" in headers
                     ok = lt == STR
                 case ListType(elem) | SetType(elem) | DequeType(elem) | VarTupleType(elem) | GeneratorType(elem) | IterType(
                     elem, "range" | "keys" | "values" | "items"
@@ -3342,7 +3342,7 @@ class Checker:
                 (isinstance(lo, StructType) and lo.kind == "class")
                 or isinstance(lo, (ListType, DictType, SetType, DequeType, CounterType, DefaultDictType))
                 or lo == BYTEARRAY
-                or lo == builtins.SIGNAL_HANDLER  # getsignal(s) is signal.SIG_DFL
+                or lo == SIGNAL_HANDLER  # getsignal(s) is signal.SIG_DFL
             ) or (isinstance(lo, FileType) and isinstance(ro, FileType) and lo.binary == ro.binary)  # f is sys.stdout
             if not (is_none_check or same_object):
                 if isinstance(right, A.NoneLit):
@@ -3503,7 +3503,7 @@ class Checker:
             case VarTupleType(elem):
                 self.expect_type(index, INT, "tuple index")
                 return elem
-            case _ if vt == builtins.HTTP_HEADERS:  # headers["Content-Type"]: None if missing
+            case _ if vt == HTTP_HEADERS:  # headers["Content-Type"]: None if missing
                 self.expect_type(index, STR, "header name")
                 return OptionalType(STR)
             case MatchType():  # m[1] is m.group(1)
@@ -5069,7 +5069,7 @@ def datetime_arithmetic(op: str, l: Type, r: Type) -> Type | None:
 
 def normal_dist_arithmetic(op: str, l: Type, r: Type) -> bool:
     """statistics.NormalDist's operators: +/- another NormalDist or a number, * and / by a number."""
-    nd = builtins.NORMAL_DIST
+    nd = NORMAL_DIST
     if op in ("+", "-"):
         return (l == nd and (r == nd or is_numeric(r))) or (r == nd and is_numeric(l))
     if op == "*":

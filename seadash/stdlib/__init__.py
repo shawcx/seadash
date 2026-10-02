@@ -1,0 +1,55 @@
+"""The standard library's typing: one file per module (or a few related ones). Each defines
+how the checker types the module's functions and methods and what codegen calls, and
+registers the module in builtins.MODULES. Imported, in this order, at the end of builtins.py."""
+
+from .os import *  # noqa: F401,F403
+from .base64 import *  # noqa: F401,F403
+from .zlib import *  # noqa: F401,F403
+from .json import *  # noqa: F401,F403
+from .tomllib import *  # noqa: F401,F403
+from .random import *  # noqa: F401,F403
+from .statistics import *  # noqa: F401,F403
+from .threading import *  # noqa: F401,F403
+from .re import *  # noqa: F401,F403
+from .pathlib import *  # noqa: F401,F403
+from .shutil_tempfile import *  # noqa: F401,F403
+from .datetime import *  # noqa: F401,F403
+from .argparse import *  # noqa: F401,F403
+from .itertools import *  # noqa: F401,F403
+from .heapq_bisect import *  # noqa: F401,F403
+from .textwrap import *  # noqa: F401,F403
+from .string import *  # noqa: F401,F403
+from .binascii import *  # noqa: F401,F403
+from .gzip import *  # noqa: F401,F403
+from .zipfile import *  # noqa: F401,F403
+from .tarfile import *  # noqa: F401,F403
+from .io import *  # noqa: F401,F403
+from .uuid import *  # noqa: F401,F403
+from .errno import *  # noqa: F401,F403
+from .stat import *  # noqa: F401,F403
+from .sqlite3 import *  # noqa: F401,F403
+from .struct import *  # noqa: F401,F403
+from .shlex import *  # noqa: F401,F403
+from .fnmatch_glob import *  # noqa: F401,F403
+from .mimetypes import *  # noqa: F401,F403
+from .html import *  # noqa: F401,F403
+from .hashlib import *  # noqa: F401,F403
+from .secrets import *  # noqa: F401,F403
+from .concurrent_futures import *  # noqa: F401,F403
+from .signal import *  # noqa: F401,F403
+from .logging import *  # noqa: F401,F403
+from .csv import *  # noqa: F401,F403
+from .ssl import *  # noqa: F401,F403
+from .urllib import *  # noqa: F401,F403
+from .http_client import *  # noqa: F401,F403
+from .http_server import *  # noqa: F401,F403
+from .email_utils import *  # noqa: F401,F403
+from .subprocess import *  # noqa: F401,F403
+from .socket import *  # noqa: F401,F403
+from .select import *  # noqa: F401,F403
+from .decorators import *  # noqa: F401,F403
+from .copy import *  # noqa: F401,F403
+from .enum import *  # noqa: F401,F403
+from .contextlib import *  # noqa: F401,F403
+from .calendar import *  # noqa: F401,F403
+from .pprint import *  # noqa: F401,F403

@@ -3111,3 +3111,9 @@ def test_zipfile_types_and_errors():
     ]
     for source, message in cases:
         assert err("import zipfile\n" + source + "\n").message == message, source
+
+
+def test_compressed_file_classes_are_types():
+    info = ok("import gzip, bz2, lzma\n"
+              "def f(a: gzip.GzipFile, b: bz2.BZ2File, c: lzma.LZMAFile, d: lzma.LZMACompressor) -> None:\n    pass\n")
+    assert info is not None

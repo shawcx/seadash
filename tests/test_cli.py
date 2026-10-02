@@ -279,3 +279,11 @@ def test_debug_tracebacks_show_generators_and_lambdas(tmp_path):
     assert r.returncode == 1
     assert r.stdout == "0\n0\n1\nbody\n['a']\n"
     assert r.stderr.replace(str(tmp_path.resolve()) + "/", "DIR/") == TRACEBACK_GENERATORS_EXPECTED
+
+
+def test_every_python_package_is_listed():
+    # setuptools only ships the packages pyproject.toml names; a missing one fails to import once installed.
+    import tomllib
+    listed = set(tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["setuptools"]["packages"])
+    found = {".".join(p.parent.relative_to(ROOT).parts) for p in (ROOT / "seadash").rglob("__init__.py")}
+    assert found <= listed

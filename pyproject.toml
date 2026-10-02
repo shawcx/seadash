@@ -12,7 +12,7 @@ requires-python = ">=3.12"
 sd = "seadash.cli:main"
 
 [tool.setuptools]
-packages = ["seadash"]
+packages = ["seadash", "seadash.stdlib"]
 
 [tool.setuptools.package-data]
 seadash = ["runtime/*.hpp", "runtime/modules/*.hpp"]
