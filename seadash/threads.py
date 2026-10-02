@@ -665,7 +665,7 @@ class Spawn:
         self.scope = scope  # the FunctionScope the Thread(...) call is in
         self.module = module
         # threading.Thread(...) keeps its details in its call target; executor.submit()/map() on the call
-        self.extra = getattr(call, "spawn_extra", None) or call.sym.target[1]
+        self.extra = call.notes.get("spawn_extra", None) or call.sym.target[1]
         self.signal_handler = bool(self.extra.get("signal_handler"))  # signal.signal(s, handler): run on a thread
 
     def fail(self, message: str, node: A.Node) -> ThreadSafetyError:
@@ -738,7 +738,7 @@ class Spawn:
                 continue  # the block changes something that could be it
             lent.add(i)
         if lent:
-            call.lent = lent
+            call.notes["lent"] = lent
 
     def pool_block(self, pool: Var | None) -> list[A.Stmt] | None:
         """The body of the `with ThreadPoolExecutor(...) as pool:` this call is directly in."""
@@ -812,7 +812,7 @@ class Spawn:
         """The code the thread starts in, and the closure bodies whose captures must be checked."""
         if (handler := self.extra.get("handler")) is not None:  # ThreadingHTTPServer(addr, Handler)
             return handler_code(handler), []
-        if isinstance(target, A.Call) and (info := getattr(target, "partial", None)) is not None:
+        if isinstance(target, A.Call) and (info := target.notes.get("partial", None)) is not None:
             return self.partial_roots(target, info)
         if isinstance(target, A.Attribute) and isinstance(target.value.ty, HTTPServerType):  # target=server.serve_forever
             if target.value.ty.handler is None:
@@ -968,10 +968,10 @@ class Spawn:
                         f"type (queue.Queue, seadash.Mutex, seadash.Atomic)", n,
                     )
         if not recursive and snapshot:  # (nothing captured: nothing to copy)
-            closure.snapshot = snapshot
+            closure.notes["snapshot"] = snapshot
             target = self.extra["target"]
             if isinstance(closure, A.FunctionDef) and isinstance(target, A.Name):
-                target.snapshot_of = closure  # codegen: build the thread's closure from copies
+                target.notes["snapshot_of"] = closure  # codegen: build the thread's closure from copies
 
     def check_reachable(self, roots: list[A.Node]) -> None:
         """Follow calls from the thread's code; every global it touches must be safe to share."""

@@ -185,7 +185,7 @@ def mark_copy_outs(body) -> None:
                 mark(left)
                 mark(right)
             case A.Attribute() | A.Index() if e.ty is not None and threads.holds_references(e.ty) and into_value(e):
-                e.copy_out = True
+                e.notes["copy_out"] = True
 
     targets: set[int] = set()  # `a, b = ...`: tuples of targets, not of values
     for n in walk(body):

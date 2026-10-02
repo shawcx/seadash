@@ -120,7 +120,9 @@ headers (Homebrew's `pcre2` and `openssl@3` on macOS).
   sharing nothing (value-class fields, thread boundaries). A moved-from handle is a fresh,
   empty container. Runtime code may use `.vec()` (the `std::vector`) with std algorithms.
 - Arguments that only instruct the compiler (`type=int`, `digestmod=hashlib.sha256`) are
-  marked `compile_time` so codegen doesn't evaluate them as values.
+  marked `node.notes["compile_time"]` so codegen doesn't evaluate them as values.
+- What the checker works out for codegen beyond a node's `sym` and `ty` goes in `node.notes[name]`
+  (a call's bound arguments, `partial`, `lent`...), never in an undeclared attribute.
 - C library names that are macros (`stdout`, `st_mtime`...) are renamed by `codegen.ident`.
 - File objects over callbacks (`gzip.open`, `bz2.open`, `lzma.open`: `modules/cookie_file.hpp`)
   can't throw through C stdio: a callback parks its exception in `sd::pending_file_error`

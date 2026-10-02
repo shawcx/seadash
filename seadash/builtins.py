@@ -106,7 +106,7 @@ class CallContext:
         """Check a function-valued argument (often a lambda) taking `params`; returns its result type."""
         t = self.checker.check_expr(node, FuncType(params, None))
         if isinstance(t, FuncType) and t.params != params and fills_defaults(t, FuncType(params, t.ret)):
-            node.fill_to = FuncType(params, t.ret)  # (codegen passes a lambda filling in the defaults)
+            node.notes["fill_to"] = FuncType(params, t.ret)  # (codegen passes a lambda filling in the defaults)
             return t.ret
         if not isinstance(t, FuncType) or t.params != params:
             want = f"({', '.join(map(str, params))}) -> ..."
@@ -138,7 +138,7 @@ def mark_tuple_iterable(node, t: Type, elem: Type) -> None:
     """A tuple used as an iterable is converted to a list of its common element type
     (codegen reads this mark)."""
     if isinstance(t, TupleType):
-        node.tuple_elem = elem
+        node.notes["tuple_elem"] = elem
 
 
 def mixed_tuple_hint(t: Type) -> str:
@@ -585,7 +585,7 @@ def spread_items(ctx: CallContext, what: str) -> Type | None:
 def b_zip(ctx: CallContext) -> Type:
     ctx.keyword("strict", BOOL)
     if (items := spread_items(ctx, "argument")) is not None:  # zip(*rows): tuples as long as rows
-        ctx.call.spread_zip = True
+        ctx.call.notes["spread_zip"] = True
         return GeneratorType(VarTupleType(items))
     n = ctx.arity(1, MANY, keywords=("strict",))
     return GeneratorType(TupleType(tuple(ctx.iterable(i) for i in range(n))))
@@ -695,7 +695,7 @@ def b_dict(ctx: CallContext) -> Type:
             raise ctx.error(f"dict() needs a dict or (key, value) pairs, not {t}", ctx.args[0])
         if not is_hashable(pair.elts[0]):
             raise ctx.error(f"dict keys must be int, float, str, bool, or a tuple of those; not {pair.elts[0]}" + unhashable_hint(pair.elts[0]))
-        ctx.call.pairs = True
+        ctx.call.notes["pairs"] = True
         return DictType(*pair.elts)
     if isinstance(ctx.expected, DictType):
         return ctx.expected
@@ -893,7 +893,7 @@ def str_format(ctx: CallContext) -> Type:
     if isinstance(fmt, A.StrLit):
         fstring = compile_format(ctx, fmt.value, types)
         ctx.checker.check_expr(fstring)
-        ctx.call.format_fstring = fstring
+        ctx.call.notes["format_fstring"] = fstring
     return STR
 
 
@@ -1177,7 +1177,7 @@ def counter_counts(ctx: CallContext) -> Type:
     ctx.arity(1)
     t = ctx.arg(0)
     if isinstance(t, DictType) and t.value == INT and t.key == c.key:
-        ctx.call.counts = True  # codegen: add counts, don't count keys
+        ctx.call.notes["counts"] = True  # codegen: add counts, don't count keys
         return NONE
     elem = ctx.iterable(0)
     if not assignable(elem, c.key):
@@ -1618,7 +1618,7 @@ def path_join(ctx: CallContext) -> Type:
         if isinstance(arg, A.Starred):  # os.path.join(root, *parts)
             if element_type(arg.ty) != STR:
                 raise ctx.error(f"os.path.join() needs strs, not {arg.ty} unpacked", arg)
-            ctx.call.spread_join = True
+            ctx.call.notes["spread_join"] = True
         else:
             ctx.expect(i, STR)
     if not ctx.args:
@@ -2357,7 +2357,7 @@ def regex_op(ctx: CallContext, op: str, info: RegexInfo | None, args: dict[str, 
             if isinstance(rt, FuncType):
                 if rt.params != (MatchType(info),) or rt.ret != STR:
                     raise ctx.error(f"{ctx.what} replacement function must take a re.Match and return str, not {rt}", repl)
-                ctx.call.regex_repl_fn = True
+                ctx.call.notes["regex_repl_fn"] = True
             elif rt != STR:
                 raise ctx.error(f"{ctx.what} replacement must be a str or a function, not {rt}", repl)
             return STR if op == "sub" else TupleType((STR, INT))
@@ -2402,7 +2402,7 @@ def regex_pattern(ctx: CallContext, node: A.Expr, flags_node: A.Expr | None) -> 
         if flags is None:  # the flags (say, VERBOSE) aren't known until run time
             return None
         raise ctx.error(f"invalid regular expression: {e}", node)
-    ctx.call.regex_static = flags  # known flags: compile once, into a static
+    ctx.call.notes["regex_static"] = flags  # known flags: compile once, into a static
     return info
 
 
@@ -2421,7 +2421,7 @@ def re_function(op: str) -> Callable[[CallContext], Type]:
         params = (("pattern", STR), *rest, ("flags", INT, True))
         args = bind_args(ctx, params)
         info = regex_pattern(ctx, args["pattern"], args.get("flags"))
-        ctx.call.regex_args = args
+        ctx.call.notes["regex_args"] = args
         if op == "compile":
             return PatternType(info)
         return regex_op(ctx, op, info, args)
@@ -2432,7 +2432,7 @@ def re_function(op: str) -> Callable[[CallContext], Type]:
 def pattern_method(op: str) -> Callable[[CallContext], Type]:
     def handler(ctx: CallContext) -> Type:
         args = bind_args(ctx, REGEX_OPS[op])
-        ctx.call.regex_args = args
+        ctx.call.notes["regex_args"] = args
         return regex_op(ctx, op, ctx.receiver.info, args)
 
     return handler
@@ -2453,7 +2453,7 @@ def match_group_arg(ctx: CallContext, node: A.Expr) -> Type:
             raise ctx.error(f"the pattern has no group named '{node.value}'", node)
     if group is not None and info is not None and not 0 <= group <= info.groups:
         raise ctx.error(f"the pattern has no group {group} (it has {plural(info.groups, 'group')})", node)
-    node.regex_group = group  # codegen: a known group number
+    node.notes["regex_group"] = group  # codegen: a known group number
     return group_type(info, group)
 
 
@@ -2823,7 +2823,7 @@ def parser_add_subparsers(ctx: CallContext) -> Type:
     if key in ctx.checker.subcommands:
         raise ctx.error("a parser can only have one add_subparsers()", ctx.call)
     ctx.checker.subcommands[key] = {"dest": dest, "required": required, "commands": []}
-    ctx.call.argparse_sub = {"dest": dest, "required": required, "kw": kw}
+    ctx.call.notes["argparse_sub"] = {"dest": dest, "required": required, "kw": kw}
     return SubParsersType(key)
 
 
@@ -2849,7 +2849,7 @@ def subparsers_add_parser(ctx: CallContext) -> Type:
             raise ctx.error(f"conflicting subparser: {name}", ctx.call)
     child = ParserType(id(ctx.call))
     commands.append(((name, *aliases), child.key))
-    ctx.call.argparse_cmd = {"name": name, "aliases": aliases, "kw": kw}
+    ctx.call.notes["argparse_cmd"] = {"name": name, "aliases": aliases, "kw": kw}
     return child
 
 
@@ -2864,7 +2864,7 @@ def argument_kind(ctx: CallContext, node: A.Expr | None) -> tuple[str, Type]:
     """type=int / float / str / Path -> (runtime kind, value type)."""
     if node is None:
         return "STR", STR
-    node.compile_time = True
+    node.notes["compile_time"] = True
     if isinstance(node, A.Name) and node.id in ("int", "float", "str") and not ctx.checker.state.names.get(node.id):
         return node.id.upper(), {"int": INT, "float": FLOAT, "str": STR}[node.id]
     if ctx.checker.builtin_class(node) == PATH or (
@@ -2968,7 +2968,7 @@ def parser_add_argument(ctx: CallContext) -> Type:
             raise ctx.error(f"'{dest}' is already an argument of this parser", ctx.call)
     if t is not None:
         specs.append((dest, t))
-    ctx.call.argparse = {"flags": [] if positional else names, "dest": dest, "action": action, "nargs": nargs,
+    ctx.call.notes["argparse"] = {"flags": [] if positional else names, "dest": dest, "action": action, "nargs": nargs,
                          "kind": kind, "kw": kw, "required": required}
     return NONE
 
@@ -2983,7 +2983,7 @@ def parser_parse_args(ctx: CallContext) -> Type:
     node = ctx.args[0] if ctx.args else ctx.keyword_arg("args")
     if node is not None and not isinstance(node, A.NoneLit):
         ctx.checker.expect_type(node, ListType(STR), "args")
-    ctx.call.regex_args = {"args": node}  # (the bound argument, for codegen)
+    ctx.call.notes["parse_args"] = node  # (the bound argument, for codegen)
     fields = list(ctx.checker.argument_parsers.get(key, []))
     commands = []
     sub = ctx.checker.subcommands.get(key)
@@ -3065,7 +3065,7 @@ def iterable_of(ctx: CallContext, node: A.Expr, what: str = "argument") -> Type:
 def itertools_function(name: str) -> Callable[[CallContext], Type]:
     def handler(ctx: CallContext) -> Type:
         info: dict = {}
-        ctx.call.itertools = info
+        ctx.call.notes["itertools"] = info
         match name:
             case "count":
                 args = it_bind(ctx, (("start", None, True), ("step", None, True)))
@@ -3284,7 +3284,7 @@ def heapq_function(name: str) -> Callable[[CallContext], Type]:
                 ctx.checker.expect_type(args["n"], INT, f"{ctx.what} n")
                 elem = iterable_of(ctx, args["iterable"])
                 compared_as(ctx, args.get("key"), elem)
-                ctx.call.lib_args = args
+                ctx.call.notes["lib_args"] = args
                 return ListType(elem)
             case "merge":
                 if not ctx.args:
@@ -3325,8 +3325,8 @@ def bisect_function(name: str) -> Callable[[CallContext], Type]:
             ctx.checker.expect_type(args["lo"], INT, f"{ctx.what} lo")
         if "hi" in args:
             ctx.checker.expect_type(args["hi"], OptionalType(INT), f"{ctx.what} hi")
-        ctx.call.lib_args = args
-        ctx.call.compared_as = cmp
+        ctx.call.notes["lib_args"] = args
+        ctx.call.notes["compared_as"] = cmp
         return NONE if name.startswith("insort") else INT
 
     return handler
@@ -3867,7 +3867,7 @@ def sqlite_fetch(kind: str) -> Callable[[CallContext], Type]:
         for elt in row.elts:
             if not (elt in SQLITE_VALUE_TYPES or (isinstance(elt, OptionalType) and elt.inner in SQLITE_VALUE_TYPES)):
                 raise ctx.error(f"a row column is int, float, str, bytes or bool (or one of those | None), not {elt}")
-        ctx.call.sqlite_row = row
+        ctx.call.notes["sqlite_row"] = row
         return OptionalType(row) if kind == "one" else ListType(row)
 
     return handler
@@ -3989,7 +3989,7 @@ def struct_pack(ctx: CallContext) -> Type:
         ok = assignable(actual, t) or (t == FLOAT and actual == INT) or (t == BOOL and actual == INT) or (t == INT and actual == BOOL)
         if not ok:
             raise ctx.error(f"{ctx.what}: this value must be {t}, not {actual}", node)
-    ctx.call.struct_args = wanted
+    ctx.call.notes["struct_args"] = wanted
     return BYTES
 
 
@@ -4006,7 +4006,7 @@ def struct_unpack(kind: str) -> Callable[[CallContext], Type]:
             else:
                 ctx.keyword("offset", INT)
         row = TupleType(tuple(wanted))
-        ctx.call.struct_row = row
+        ctx.call.notes["struct_row"] = row
         return GeneratorType(row) if kind == "iter_unpack" else row
 
     return handler
@@ -4173,7 +4173,7 @@ def hash_constructor(name: str | None) -> Callable[[CallContext], Type]:
                 hash_data(ctx, args[key], f"{ctx.what} data")
         if "usedforsecurity" in args:
             ctx.checker.expect_type(args["usedforsecurity"], BOOL, "usedforsecurity")
-        ctx.call.hash_args = args
+        ctx.call.notes["hash_args"] = args
         return HASH
 
     return handler
@@ -4193,8 +4193,8 @@ def digest_name(ctx: CallContext, node: A.Expr) -> None:
     elif isinstance(node, A.Name) and node.id in ctx.checker.imported and ctx.checker.imported[node.id][0] is MODULES["hashlib"]:
         target = ctx.checker.imported[node.id][1]
     if target in HASH_NAMES:
-        node.hash_name = target
-        node.compile_time = True
+        node.notes["hash_name"] = target
+        node.notes["compile_time"] = True
         node.ty = STR
         return
     ctx.checker.expect_type(node, STR, f"{ctx.what} digest")
@@ -4208,7 +4208,7 @@ def hmac_new(ctx: CallContext) -> Type:
     if "digestmod" not in args:
         raise ctx.error("hmac.new() needs digestmod= (like hashlib.sha256 or 'sha256')")
     digest_name(ctx, args["digestmod"])
-    ctx.call.hash_args = args
+    ctx.call.notes["hash_args"] = args
     return HMAC_T
 
 
@@ -4217,7 +4217,7 @@ def hmac_digest(ctx: CallContext) -> Type:
     hash_data(ctx, args["key"], "hmac key")
     hash_data(ctx, args["msg"], "hmac msg")
     digest_name(ctx, args["digest"])
-    ctx.call.hash_args = args
+    ctx.call.notes["hash_args"] = args
     return BYTES
 
 
@@ -4289,7 +4289,7 @@ MODULES["secrets"] = module_with_params(runtime_module(
 def record_spawn(ctx: CallContext, fn: A.Expr, arg_nodes: list[A.Expr], arg_types: tuple, result: Type) -> None:
     args = A.TupleLit(list(arg_nodes), loc=ctx.call.loc)
     args.ty = TupleType(tuple(arg_types))
-    ctx.call.spawn_extra = {"target": fn, "args": args if arg_nodes else None, "result": result}
+    ctx.call.notes["spawn_extra"] = {"target": fn, "args": args if arg_nodes else None, "result": result}
     ctx.checker.spawns.append((ctx.call, ctx.checker.scope, ctx.checker.module_name))
 
 
@@ -4298,7 +4298,7 @@ def work_function(ctx: CallContext, fn: A.Expr, params: tuple) -> Type:
     if not isinstance(ft, FuncType):
         raise ctx.error(f"{ctx.what} needs a function to run, not {ft}", fn)
     if len(ft.params) != len(params) and (filled := filled_for(ft, params)) is not None:
-        fn.fill_to = ft = filled  # pool.submit(work) with work(n=3): the defaults filled in
+        fn.notes["fill_to"] = ft = filled  # pool.submit(work) with work(n=3): the defaults filled in
     if len(ft.params) != len(params) or not all(assignable(a, p) for a, p in zip(params, ft.params)):
         takes = ", ".join(map(str, ft.params)) or "no arguments"
         given = ", ".join(map(str, params)) or "none"
@@ -4314,7 +4314,7 @@ def executor_submit(ctx: CallContext) -> Type:
     arg_types = tuple(ctx.checker.check_expr(a) for a in ctx.args[1:])
     result = work_function(ctx, ctx.args[0], arg_types)
     record_spawn(ctx, ctx.args[0], ctx.args[1:], arg_types, result)
-    ctx.call.work_types = (arg_types, result)
+    ctx.call.notes["work_types"] = (arg_types, result)
     return FutureType(result)
 
 
@@ -4327,7 +4327,7 @@ def executor_map(ctx: CallContext) -> Type:
     ctx.keyword("timeout", OptionalType(FLOAT))
     ctx.keyword("chunksize", INT)
     record_spawn(ctx, ctx.args[0], ctx.args[1:], elems, result)
-    ctx.call.work_types = (elems, result)
+    ctx.call.notes["work_types"] = (elems, result)
     return GeneratorType(result)
 
 
@@ -4445,9 +4445,9 @@ def signal_signal(ctx: CallContext) -> Type:
         if not fills_defaults(t, FuncType(SIGNAL_HANDLER_PARAMS, t.ret)):
             raise ctx.error(f"a signal handler takes (int, FrameType | None), the signal's number and the frame: "
                             f"{SIGNAL_HANDLER_HINT}, not {t}", node)
-        node.fill_to = FuncType(SIGNAL_HANDLER_PARAMS, t.ret)  # (its other parameters have defaults)
+        node.notes["fill_to"] = FuncType(SIGNAL_HANDLER_PARAMS, t.ret)  # (its other parameters have defaults)
     record_spawn(ctx, node, [], (), None)
-    ctx.call.spawn_extra["signal_handler"] = True  # (threads.py words its errors for a handler)
+    ctx.call.notes["spawn_extra"]["signal_handler"] = True  # (threads.py words its errors for a handler)
     return SIGNAL_HANDLER
 
 
@@ -4511,7 +4511,7 @@ def log_call(level_name: str) -> Callable[[CallContext], Type]:
             raise ctx.error(f"{ctx.what} needs a message")
         for i in range(first, len(ctx.args)):
             ctx.need(i, printable, "something printable")
-        ctx.call.log_call = {"level": level_name, "first": first}
+        ctx.call.notes["log_call"] = {"level": level_name, "first": first}
         return NONE
 
     return handler
@@ -4624,7 +4624,7 @@ def csv_reader(ctx: CallContext) -> Type:
     csv_lines(ctx, ctx.args[0])
     if len(ctx.args) == 2:
         ctx.expect(1, STR)
-    ctx.call.csv = csv_format(ctx, {})
+    ctx.call.notes["csv"] = csv_format(ctx, {})
     return GeneratorType(ListType(STR))
 
 
@@ -4634,7 +4634,7 @@ def csv_writer(ctx: CallContext) -> Type:
     ctx.expect(0, TEXT_FILE)
     if len(ctx.args) == 2:
         ctx.expect(1, STR)
-    ctx.call.csv = csv_format(ctx, {})
+    ctx.call.notes["csv"] = csv_format(ctx, {})
     return CSV_WRITER
 
 
@@ -4653,7 +4653,7 @@ def csv_dict_reader(ctx: CallContext) -> Type:
     for name, t in CSV_FORMAT.items():
         if name in args:
             ctx.checker.expect_type(args[name], t, name)
-    ctx.call.csv = args
+    ctx.call.notes["csv"] = args
     return CSV_DICT_READER
 
 
@@ -4668,7 +4668,7 @@ def csv_dict_writer(ctx: CallContext) -> Type:
     for name, t in (*CSV_FORMAT.items(), ("extrasaction", STR)):
         if name in args:
             ctx.checker.expect_type(args[name], t, name)
-    ctx.call.csv = args
+    ctx.call.notes["csv"] = args
     return CSV_DICT_WRITER
 
 
@@ -4877,7 +4877,7 @@ def url_request(ctx: CallContext) -> Type:
     for ignored in ("origin_req_host", "unverifiable"):
         if ignored in args:
             ctx.checker.check_expr(args[ignored])
-    ctx.call.url_args = args
+    ctx.call.notes["url_args"] = args
     return URL_REQUEST
 
 
@@ -4892,7 +4892,7 @@ def url_open(ctx: CallContext) -> Type:
         url_data(ctx, args["data"], "urlopen() data")
     if "timeout" in args and not isinstance(args["timeout"], A.NoneLit):
         ctx.checker.expect_type(args["timeout"], FLOAT, "urlopen() timeout")
-    ctx.call.url_args = args
+    ctx.call.notes["url_args"] = args
     return HTTP_RESPONSE
 
 
@@ -4958,7 +4958,7 @@ def http_request(ctx: CallContext) -> Type:
         ctx.checker.expect_type(args["headers"], DictType(STR, STR), "request() headers")
     if "encode_chunked" in args:
         raise ctx.error("request(encode_chunked=...) isn't supported yet", args["encode_chunked"])
-    ctx.call.http_args = args
+    ctx.call.notes["http_args"] = args
     return NONE
 
 
@@ -5105,7 +5105,7 @@ def handler_class(ctx: CallContext, node: A.Expr) -> StructType:
                             "partial(SimpleHTTPRequestHandler, directory='public')", node)
         for kw in node.keywords:
             settings[kw.name] = kw.value
-        node.compile_time = True  # (codegen builds the server's handler factory from it instead)
+        node.notes["compile_time"] = True  # (codegen builds the server's handler factory from it instead)
         node = node.args[0]
     st = ctx.checker.lookup_struct(node.id) if isinstance(node, A.Name) else None
     if st is None or not st.is_subclass_of(HANDLER) or st is HANDLER:
@@ -5133,7 +5133,7 @@ def handler_class(ctx: CallContext, node: A.Expr) -> StructType:
             raise ctx.error(f"{st.name}.{name} is {f.type}, not {actual}", value)
         if reason := unsendable_reason(f.type):
             raise ctx.error(f"{st.name}.{name} can't be a setting: each connection's handler gets its own copy, and {reason}", value)
-    ctx.call.handler_settings = settings
+    ctx.call.notes["handler_settings"] = settings
     node.sym, node.ty = st, ClassRefType(st)
     return st
 
@@ -5152,11 +5152,11 @@ def http_server_new(threading: bool):
         st = handler_class(ctx, args["RequestHandlerClass"])
         if partial_of(ctx, args["RequestHandlerClass"]):
             args["RequestHandlerClass"] = args["RequestHandlerClass"].args[0]  # (its settings are in handler_settings)
-        ctx.call.http_args = args  # (for codegen)
+        ctx.call.notes["http_args"] = args  # (for codegen)
         t = HTTPServerType(st, threading)
         if threading:  # every request is handled on a thread of its own: the handler's code is thread code
             record_spawn(ctx, args["RequestHandlerClass"], [], (), None)
-            ctx.call.spawn_extra["handler"] = st
+            ctx.call.notes["spawn_extra"]["handler"] = st
         return t
     return check
 
@@ -5289,7 +5289,7 @@ def process_call(op: str) -> Callable[[CallContext], Type]:
                 ctx.checker.expect_type(kw[name], t, name)
         if "cwd" in kw and not isinstance(kw["cwd"], A.NoneLit):
             ctx.checker.expect_type(kw["cwd"], STR, "cwd")
-        ctx.call.process = {"op": op, "kw": kw, "text": text, "streams": streams}
+        ctx.call.notes["process"] = {"op": op, "kw": kw, "text": text, "streams": streams}
         content = STR if text else BYTES
         match op:
             case "run":
@@ -5341,7 +5341,7 @@ def popen_communicate(ctx: CallContext) -> Type:
         ctx.checker.expect_type(args["input"], content, "input")
     if "timeout" in args:
         ctx.checker.expect_type(args["timeout"], FLOAT, "timeout")
-    ctx.call.regex_args = args  # (reused: the bound arguments, for codegen)
+    ctx.call.notes["communicate_args"] = args  # (the bound arguments, for codegen)
     return TupleType(tuple(content if piped else OptionalType(content) for piped in (t.stdout, t.stderr)))
 
 
@@ -5925,7 +5925,7 @@ def functools_partial(ctx: CallContext) -> Type:
     # keyword can then only be passed by keyword (a positional one would land on the bound parameter).
     first_keyword = min((names[kw.name] for kw in ctx.call.keywords), default=len(params))
     taken = [i for i, a in enumerate(bound) if a is None]
-    ctx.call.partial = PartialInfo(target, params, bound, taken)
+    ctx.call.notes["partial"] = PartialInfo(target, params, bound, taken)
     rest = [Param(params[i].name, params[i].type, params[i].default, params[i].loc, False,
                   "kwonly" if i > first_keyword else params[i].kind) for i in taken]
     name = func.id if isinstance(func, A.Name) else func.attr if isinstance(func, A.Attribute) else "partial"
@@ -5952,7 +5952,7 @@ def contextlib_nullcontext(ctx: CallContext) -> Type:
     """nullcontext(enter_result=None): does nothing; `with ... as x` gives enter_result."""
     n = ctx.arity(0, 1, keywords=("enter_result",))
     node = ctx.args[0] if n else ctx.keyword_arg("enter_result")
-    ctx.call.never_suppresses = True
+    ctx.call.notes["never_suppresses"] = True
     if node is None:
         return ContextManagerType(NONE)
     want = ctx.expected.elem if isinstance(ctx.expected, ContextManagerType) else None
@@ -5977,7 +5977,7 @@ def contextlib_closing(ctx: CallContext) -> Type:
     t = ctx.arg(0)
     if not has_close(t):
         raise ctx.error(f"closing() needs something with a close() method (taking no arguments), not {t}", ctx.args[0])
-    ctx.call.never_suppresses = True
+    ctx.call.notes["never_suppresses"] = True
     return ContextManagerType(t)
 
 
@@ -5993,7 +5993,7 @@ def contextlib_suppress(ctx: CallContext) -> Type:
             raise ctx.error("suppress() takes exception classes, like suppress(FileNotFoundError, KeyError)", a)
         a.sym, a.ty = st, ClassRefType(st)
         classes.append(st)
-    ctx.call.suppressed = classes
+    ctx.call.notes["suppressed"] = classes
     return ContextManagerType(NONE)
 
 
@@ -6010,7 +6010,7 @@ def exitstack_enter_context(ctx: CallContext) -> Type:
     info = ctx.checker.context_manager(t, ctx.args[0])
     if info.kind in ("lock", "mutex", "rw_read", "rw_write"):
         raise ctx.error(f"enter_context() can't hold {t} (a lock is held by a with statement's block)", ctx.args[0])
-    ctx.call.with_info = info
+    ctx.call.notes["with_info"] = info
     return info.enter_type
 
 

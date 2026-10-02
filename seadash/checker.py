@@ -316,8 +316,8 @@ class Checker:
             match stmt:
                 case A.ClassDef() | A.FunctionDef() if stmt.type_params:
                     if stmt.decorators and isinstance(stmt, A.FunctionDef):
-                        if getattr(stmt, "implicit", None):
-                            p = stmt.implicit[0]
+                        if stmt.notes.get("implicit", None):
+                            p = stmt.notes["implicit"][0]
                             raise self.error(f"a decorated function's parameters need type annotations (yet): "
                                              f"'{p}'", stmt)
                         raise self.error("decorators on generic functions aren't supported yet", stmt.decorators[0])
@@ -330,7 +330,7 @@ class Checker:
                         raise self.error(f"'{stmt.name}' is already defined", stmt)
                     func_nodes.append(stmt)
                     if assignment := self.declare_decorated(stmt):
-                        stmt.decorated = assignment  # codegen emits it where the def was
+                        stmt.notes["decorated"] = assignment  # codegen emits it where the def was
                         top_level.append(assignment)  # f = deco(<f>)
                     else:
                         self.functions[stmt.name] = None  # placeholder until signatures resolve
@@ -2139,7 +2139,7 @@ class Checker:
                     and n.func.value.sym is var):
                 continue
             if n.func.attr == "enter_context":
-                if n.with_info.suppresses:
+                if n.notes["with_info"].suppresses:
                     return True
                 expected += 1
             elif n.func.attr in ("callback", "close", "pop_all"):
@@ -2151,7 +2151,7 @@ class Checker:
         Known for a direct call (nullcontext() and closing() never do, a @contextmanager
         function does if it catches what's raised at its yield); otherwise assume it can."""
         if isinstance(node, A.Call):
-            if getattr(node, "never_suppresses", False):
+            if node.notes.get("never_suppresses", False):
                 return False
             target = node.sym.target if isinstance(node.sym, CallTarget) else None
             if isinstance(target, FuncInfo) and target.context_manager:
@@ -2235,7 +2235,7 @@ class Checker:
         if remaining is not None:
             exits.append(fallthrough)
         self.state = merge(exits)
-        stmt.never_completes = self.state.dead  # every case returns or raises, and one always runs
+        stmt.notes["never_completes"] = self.state.dead  # every case returns or raises, and one always runs
 
     def narrow_subject(self, subject: A.Expr, t: Type | None) -> None:
         if t is not None:
@@ -2317,8 +2317,8 @@ class Checker:
                 return [(name, t)]
             case A.MatchAs(inner, name):
                 bindings = self.check_pattern(inner, t)
-                p.bound = self.pattern_narrows(inner, t) or t
-                return bindings + [(name, p.bound)]
+                p.notes["bound"] = self.pattern_narrows(inner, t) or t
+                return bindings + [(name, p.notes["bound"])]
             case A.MatchOr(options):
                 results = [self.check_pattern(o, t) for o in options]
                 names = [sorted(n.id for n, _ in r) for r in results]
@@ -2484,7 +2484,7 @@ class Checker:
         if len(set(names)) != len(names):
             dup = next(n for n in names if names.count(n) > 1)
             raise self.error(f"{st.name}() got multiple sub-patterns for attribute '{dup}'", p)
-        p.fields = names
+        p.notes["fields"] = names
         bindings: list[tuple[A.Name, Type]] = []
         for field_name, sub in zip(names, (*p.patterns, *p.kwd_patterns)):
             f = st.find_field(field_name)
@@ -2926,7 +2926,7 @@ class Checker:
         if not threads.holds_references(var.type):
             return  # (nothing that could be shared)
         if var.kind in ("local", "param") and not var.captured:
-            value.moved_into_mutex = True  # (a closure could still read a captured one: that's copied)
+            value.notes["moved_into_mutex"] = True  # (a closure could still read a captured one: that's copied)
         elif not (var.kind == "global" and self.scope.is_module):
             return
         # A module-level name is copied (functions may read it), but the module's own code
@@ -3259,7 +3259,7 @@ class Checker:
         for op, right in zip(e.ops, e.comparators):
             hint = lt if op in ("==", "!=", "<", "<=", ">", ">=") else None  # xs == []: the same type
             if lt == TYPE_OBJECT and op in ("is", "is not", "==", "!=") and (named := self.named_type_object(right)):
-                right.type_literal, right.ty = named, TYPE_OBJECT  # type(x) is Point, type(x) == int
+                right.notes["type_literal"], right.ty = named, TYPE_OBJECT  # type(x) is Point, type(x) == int
                 left, lt = right, TYPE_OBJECT
                 e.dunder.append(None)
                 continue
@@ -3554,15 +3554,15 @@ class Checker:
         if not any(isinstance(a, A.Starred) for a in e.args):
             return
         args: list[A.Expr] = []
-        e.spread = []
+        e.notes["spread"] = []
         for a in e.args:
             if not isinstance(a, A.Starred):
                 args.append(a)
-                e.spread.append(a)
+                e.notes["spread"].append(a)
                 continue
             t = self.check_expr(a.value)
             a.ty = t
-            e.spread.append(a.value)
+            e.notes["spread"].append(a.value)
             if isinstance(t, TupleType):
                 args.extend(A.Index(a.value, A.IntLit(i, loc=a.loc), loc=a.loc) for i in range(len(t.elts)))
             elif element_type(t) is None:
@@ -3977,7 +3977,7 @@ class Checker:
             if not isinstance(tt, FuncType):
                 raise self.error(f"target must be a function, not {tt}", target)
             if len(tt.params) != len(arg_types) and (filled := filled_for(tt, arg_types)) is not None:
-                target.fill_to = tt = filled  # Thread(target=work) with work(n=3): the defaults filled in
+                target.notes["fill_to"] = tt = filled  # Thread(target=work) with work(n=3): the defaults filled in
             if len(tt.params) != len(arg_types) or not all(assignable(a, p) for a, p in zip(arg_types, tt.params)):
                 params = ", ".join(map(str, tt.params)) or "no arguments"
                 given = ", ".join(map(str, arg_types)) or "none"
@@ -4022,10 +4022,10 @@ class Checker:
             ctx.arity(1)
             arg = e.args[0]
             if name == "callable":
-                arg.compile_time = True  # (known now: nothing to evaluate)
+                arg.notes["compile_time"] = True  # (known now: nothing to evaluate)
                 if isinstance(arg, A.Name) and arg.id not in self.state.names and (
                         arg.id in builtins.FUNCTIONS or arg.id in self.functions or self.lookup_struct(arg.id)):
-                    e.constant = True  # callable(len), callable(Point)
+                    e.notes["constant"] = True  # callable(len), callable(Point)
                     return BOOL
             t = ctx.arg(0)
             if name == "type":
@@ -4034,7 +4034,7 @@ class Checker:
                                      f"and classes)", e.args[0])
                 return TYPE_OBJECT
             if name == "callable":
-                e.constant = isinstance(t, (FuncType, ClassRefType)) or bool(self.dunder(t, "__call__"))
+                e.notes["constant"] = isinstance(t, (FuncType, ClassRefType)) or bool(self.dunder(t, "__call__"))
                 return BOOL
             if not has_identity(t):
                 raise self.error(f"id() needs an object with identity (a class instance, list, dict, set or bytearray), "
@@ -4050,7 +4050,7 @@ class Checker:
         node = A.Attribute(obj, attr.value, loc=e.loc)
         if self.has_attribute(owner, attr.value):
             t = self.check_expr(node)  # (obj is checked again: an attribute's value is always checked with it)
-            e.reflected = ("static", node)
+            e.notes["reflected"] = ("static", node)
             if name == "hasattr":
                 return BOOL
             if len(e.args) == 3:
@@ -4068,14 +4068,14 @@ class Checker:
                 [t] = types
                 if default is not None:
                     self.expect_type(default, t, "getattr() default")
-            e.reflected = ("subclasses", subclasses)
+            e.notes["reflected"] = ("subclasses", subclasses)
             return BOOL if name == "hasattr" else next(iter(types))
         if name == "hasattr":
-            e.constant = False  # (a type that can't have it)
+            e.notes["constant"] = False  # (a type that can't have it)
             return BOOL
         if default is None:
             self.check_expr(node)  # (its error: no such attribute)
-        e.reflected = ("default", default)
+        e.notes["reflected"] = ("default", default)
         return self.check_expr(default)
 
     def has_attribute(self, t: Type, attr: str) -> bool:
@@ -4495,7 +4495,7 @@ class Checker:
             raise self.error(f"a list unpacked with '*' can't fill both parameters and *args of {what}", e.args[k])
         source = e.args[k].value
         e.args = e.args[:k] + [A.Index(source, A.IntLit(i, loc=e.args[k].loc), loc=e.args[k].loc) for i in range(len(filled))]
-        e.spread_check = (source, len(filled), k, what, [p.name for p in filled])
+        e.notes["spread_check"] = (source, len(filled), k, what, [p.name for p in filled])
 
     def match_args(self, e: A.Call, params: list[Param], what: str) -> list[A.Expr | None]:
         """Match positional and keyword arguments to parameters; returns one slot per parameter,
@@ -4575,7 +4575,7 @@ class Checker:
                 raise self.error(f"argument '{p.name}' of {what} must be {p.type}, not {t}", arg)
         if source is not None:
             by_position = [p.name for p in positional[:len(e.args)]]
-            e.kw_check = (source, fillable, [kw.name for kw in e.keywords], by_position, kwargs is not None, what)
+            e.notes["kw_check"] = (source, fillable, [kw.name for kw in e.keywords], by_position, kwargs is not None, what)
         return out
 
     def double_star_source(self, e: A.Call, what: str) -> A.Expr | None:
@@ -4857,7 +4857,7 @@ def implicit_type_params(node: A.FunctionDef) -> None:
         tvar = f"type of {p.name}"
         p.annotation = A.TypeName(tvar, [], loc=p.loc)
         node.type_params = [*node.type_params, tvar]
-    node.implicit = [p.name for p in implicit]
+    node.notes["implicit"] = [p.name for p in implicit]
 
 
 @dataclass

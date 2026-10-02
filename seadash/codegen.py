@@ -414,8 +414,8 @@ class CodeGen:
             self.function(fn)
 
         top_level = [
-            getattr(s, "decorated", s) for s in self.module.body  # a decorated def: `f = deco(<f>)`
-            if not isinstance(s, (A.FunctionDef, A.ClassDef, A.Import, A.ImportFrom)) or hasattr(s, "decorated")
+            s.notes.get("decorated", s) for s in self.module.body  # a decorated def: `f = deco(<f>)`
+            if not isinstance(s, (A.FunctionDef, A.ClassDef, A.Import, A.ImportFrom)) or "decorated" in s.notes
         ]
         self.func = None
         mark_copy_outs(top_level)
@@ -731,7 +731,7 @@ class CodeGen:
         if name == "type":
             return self.type_object_code(e.args[0])
         if name == "callable":
-            return "true" if e.constant else "false"
+            return "true" if e.notes["constant"] else "false"
         return self.reflected_attribute(name, e)
 
     def type_object_literal(self, st: StructType | tuple) -> str:
@@ -753,9 +753,9 @@ class CodeGen:
 
     def reflected_attribute(self, name: str, e: A.Call) -> str:
         """getattr(obj, "n"[, default]) / hasattr(obj, "n"), resolved by the checker (e.reflected)."""
-        if getattr(e, "constant", None) is not None:  # hasattr on a type that can't have it
+        if e.notes.get("constant", None) is not None:  # hasattr on a type that can't have it
             return "false"
-        kind, data = e.reflected
+        kind, data = e.notes["reflected"]
         if kind == "static":
             return "true" if name == "hasattr" else self.expr(data)
         if kind == "default":
@@ -1184,14 +1184,14 @@ class CodeGen:
         """A nested def that a thread runs is built by a maker from the variables it captures,
         so the thread's copy can be built from copies of them (threads.Spawn.check_captures)."""
         info: FuncInfo = s.sym
-        cells = ", ".join(f"std::shared_ptr<{self.cpp_type(v.type)}>" for v in s.snapshot)
+        cells = ", ".join(f"std::shared_ptr<{self.cpp_type(v.type)}>" for v in s.notes["snapshot"])
         return f"sd_mk_{ident(info.var.cpp_name)}", f"std::function<{self.cpp_type(info.var.type)}({cells})>"
 
     def hoist_makers(self, body: list[A.Stmt]) -> None:
         todo = list(body)
         while todo:
             stmt = todo.pop()
-            if isinstance(stmt, A.FunctionDef) and getattr(stmt, "snapshot", None) is not None:
+            if isinstance(stmt, A.FunctionDef) and stmt.notes.get("snapshot", None) is not None:
                 name, t = self.maker_signature(stmt)
                 self.line(f"{t} {name};")
             for sub in sub_blocks(stmt):
@@ -1200,7 +1200,7 @@ class CodeGen:
     def snapshot_call(self, s: A.FunctionDef) -> str:
         """The thread's own copy of a nested def: rebuilt around copies of what it captures."""
         name, _ = self.maker_signature(s)
-        cells = ", ".join(f"std::make_shared<{self.cpp_type(v.type)}>(sd::value_copy({self.var_ref(v)}))" for v in s.snapshot)
+        cells = ", ".join(f"std::make_shared<{self.cpp_type(v.type)}>(sd::value_copy({self.var_ref(v)}))" for v in s.notes["snapshot"])
         return f"{name}({cells})"
 
     def nested_def(self, s: A.FunctionDef) -> None:
@@ -1222,7 +1222,7 @@ class CodeGen:
             capture = f"[=, sd_self = {self.var_code(self_names[0].sym, self_names[0].sym.type)}]"
         recursive = any(isinstance(n, A.Call) and isinstance(n.sym, CallTarget) and n.sym.kind == "self_call"
                         and n.sym.target is info for n in walk(s.body))
-        snapshot = getattr(s, "snapshot", None)
+        snapshot = s.notes.get("snapshot", None)
         if recursive:
             fn, rec = self.fresh("fn"), self.fresh("rec")
             self.recursion.append((info, rec))
@@ -1268,7 +1268,7 @@ class CodeGen:
             return
         if from_:
             v = self.fresh("y")
-            source = element_type(value.ty) if not hasattr(value, "tuple_elem") else value.tuple_elem
+            source = value.notes["tuple_elem"] if "tuple_elem" in value.notes else element_type(value.ty)
             self.line(f"for (auto&& {v} : sd::iter({self.expr(value)})) {{ SD_SUSPEND; co_yield {self.coerce(v, source, elem)}; SD_RESUME; }}")
         elif value is None:
             self.line(f"SD_SUSPEND; co_yield {self.cpp_type(elem)}{{}}; SD_RESUME;")
@@ -1438,7 +1438,7 @@ class CodeGen:
     def enter_context(self, stack: str, e: A.Call) -> str:
         """stack.enter_context(cm): enter it now, and push its exit (taking the exception in
         flight, returning true to swallow it) onto the stack."""
-        info = e.with_info
+        info = e.notes["with_info"]
         arg = e.args[0]
         if info.kind in ("contextlib", "exitstack"):
             return f"sd::contextlib::enter_context({stack}, {self.expr(arg)})"
@@ -1486,8 +1486,8 @@ class CodeGen:
             return (f"sd::contextlib::closing<{self.cpp_type(t)}>({self.expr(e.args[0])}, "
                     f"[](auto& sd_x) {{ sd_x{arrow}{close}(); }})")
         if name == "suppress":
-            test = " || ".join(f"sd::isinstance<{class_name(c)}>(sd_t)" for c in e.suppressed) or "false"
-            return f"sd::contextlib::suppress([](const sd::Thrown& {'sd_t' if e.suppressed else ''}) {{ return {test}; }})"
+            test = " || ".join(f"sd::isinstance<{class_name(c)}>(sd_t)" for c in e.notes["suppressed"]) or "false"
+            return f"sd::contextlib::suppress([](const sd::Thrown& {'sd_t' if e.notes["suppressed"] else ''}) {{ return {test}; }})"
         if name == "ExitStack":
             return "sd::contextlib::ExitStack()"
         raise NotImplementedError(f"codegen for contextlib.{name}()")
@@ -1587,7 +1587,7 @@ class CodeGen:
                 self.close()
             self.close()
         self.close()
-        if s.never_completes:  # (C++ can't tell that a case always runs)
+        if s.notes["never_completes"]:  # (C++ can't tell that a case always runs)
             self.line('sd::raise("SystemError", "no case matched");')
 
     def pattern_code(self, p: A.Pattern, path: str, alternatives: list[str]) -> tuple[list[str], list[tuple]]:
@@ -1601,7 +1601,7 @@ class CodeGen:
                 return [], [(name, path, t, None)]
             case A.MatchAs(inner, name):
                 tests, binds = self.pattern_code(inner, path, alternatives)
-                return tests, binds + [(name, self.narrowed_path(path, t, p.bound), p.bound, None)]
+                return tests, binds + [(name, self.narrowed_path(path, t, p.notes["bound"]), p.notes["bound"], None)]
             case A.MatchOr(options):
                 results = [self.pattern_code(o, path, alternatives) for o in options]
                 if not any(binds for _, binds in results):
@@ -1666,7 +1666,7 @@ class CodeGen:
                     obj = f"std::static_pointer_cast<{class_name(st)}>({path})"
                 arrow = "->" if st.kind == "class" else "."
                 binds = []
-                for field_name, sub in zip(p.fields, (*p.patterns, *p.kwd_patterns)):
+                for field_name, sub in zip(p.notes["fields"], (*p.patterns, *p.kwd_patterns)):
                     sub_tests, sub_binds = self.pattern_code(sub, f"{obj}{arrow}{ident(field_name)}", alternatives)
                     tests += sub_tests
                     binds += sub_binds
@@ -1962,13 +1962,13 @@ class CodeGen:
     def expr(self, e: A.Expr) -> str:
         if id(e) in self.precomputed:
             return self.precomputed[id(e)]  # already converted, if it's a tuple loop
-        if (elem := getattr(e, "tuple_elem", None)) is not None:
+        if (elem := e.notes.get("tuple_elem", None)) is not None:
             if isinstance(e, A.TupleLit):  # `for x in (a, b, c)`: build the list directly
                 return f"{self.cpp_type(ListType(elem))}{{{', '.join(self.expr_as(x, elem) for x in e.elts)}}}"
             return self.tuple_as_list(self.expr_code(e), e.ty, elem)
-        if getattr(e, "copy_out", False):  # a @value class's list used as a value: a copy of it
+        if e.notes.get("copy_out", False):  # a @value class's list used as a value: a copy of it
             return f"sd::value_copy({self.expr_code(e)})"
-        if (fill_to := getattr(e, "fill_to", None)) is not None:  # map(greet, names): its defaults filled in
+        if (fill_to := e.notes.get("fill_to", None)) is not None:  # map(greet, names): its defaults filled in
             return self.fill_defaults(self.expr_code(e), e.ty, fill_to)
         return self.expr_code(e)
 
@@ -1978,7 +1978,7 @@ class CodeGen:
         return f"[&](auto&& sd_tup) {{ return {self.cpp_type(ListType(elem))}{{{items}}}; }}({code})"
 
     def expr_code(self, e: A.Expr) -> str:
-        if (named := getattr(e, "type_literal", None)) is not None:  # `Point` in type(x) is Point
+        if (named := e.notes.get("type_literal", None)) is not None:  # `Point` in type(x) is Point
             return self.type_object_literal(named)
         match e:
             case A.IntLit(v):
@@ -2112,7 +2112,7 @@ class CodeGen:
 
     def name(self, e: A.Name) -> str:
         sym = e.sym
-        if (fn_def := getattr(e, "snapshot_of", None)) is not None and getattr(fn_def, "snapshot", None) is not None:
+        if (fn_def := e.notes.get("snapshot_of", None)) is not None and fn_def.notes.get("snapshot", None) is not None:
             return self.snapshot_call(fn_def)  # a thread's target: built from copies of what it captures
         if isinstance(sym, Var):
             return self.var_code(sym, e.ty)
@@ -2159,7 +2159,7 @@ class CodeGen:
             self_var = next(n.sym for n in walk_expr(e.body) if isinstance(n, A.Name) and is_self(n))
             captures.append(f"sd_self = {self.var_code(self_var, self_var.type)}")
             self.lambda_self += 1
-        for v in getattr(e, "snapshot", None) or []:  # run on another thread: its own copies of what it uses
+        for v in e.notes.get("snapshot", None) or []:  # run on another thread: its own copies of what it uses
             captures.append(f"{ident(v.cpp_name)} = std::make_shared<{self.cpp_type(v.type)}>(sd::value_copy({self.var_ref(v)}))")
         capture = f"[{', '.join(captures)}]"
         try:
@@ -2183,7 +2183,7 @@ class CodeGen:
     def partial_code(self, e: A.Call) -> str:
         """functools.partial: a lambda holding the function and the bound arguments (evaluated
         now; copied over if it's for another thread), filling in the rest, and defaults."""
-        info: builtins.PartialInfo = e.partial
+        info: builtins.PartialInfo = e.notes["partial"]
         captures, args = [], []
         params = [f"{self.cpp_type(info.params[i].type)} sd_p{i}" for i in info.taken]
         for i, (p, arg) in enumerate(zip(info.params, info.bound)):
@@ -2583,8 +2583,8 @@ class CodeGen:
     # =========================================================================
 
     def call(self, e: A.Call) -> str:
-        spread = getattr(e, "spread", None) or []
-        if (kw := getattr(e, "kw_check", None)) is not None:  # f(**d): d once, its keys checked first
+        spread = e.notes.get("spread", None) or []
+        if (kw := e.notes.get("kw_check", None)) is not None:  # f(**d): d once, its keys checked first
             spread = [*spread, kw[0]]
         if spread:  # f(*args): each argument as written, once, in order
             decls = []
@@ -2592,7 +2592,7 @@ class CodeGen:
                 tmp = self.fresh("a")
                 decls.append(f"auto {tmp} = {self.expr(x)};")
                 self.precomputed[id(x)] = tmp
-            if check := getattr(e, "spread_check", None):  # a list's length, known only now
+            if check := e.notes.get("spread_check", None):  # a list's length, known only now
                 source, want, before, what, names = check
                 quoted = ", ".join(cpp_string(n) for n in names)
                 decls.append(f"sd::check_spread({self.precomputed[id(source)]}.size(), {want}, {before}, "
@@ -2610,7 +2610,7 @@ class CodeGen:
             return f"[&]() -> decltype(auto) {{ {' '.join(decls)} return {inner}; }}()"
         # (arguments like add_argument's type=int or hmac's digestmod=hashlib.sha256 are
         # instructions to the compiler, not values to evaluate)
-        operands = [x for x in [*e.args, *(k.value for k in e.keywords)] if not getattr(x, "compile_time", False)]
+        operands = [x for x in [*e.args, *(k.value for k in e.keywords)] if not x.notes.get("compile_time", False)]
         return self.in_order(operands, lambda: self.call_inner(e), keep_refs=True)
 
     def call_inner(self, e: A.Call) -> str:
@@ -2713,7 +2713,7 @@ class CodeGen:
     # ---- csv --------------------------------------------------------------------------
 
     def csv_call(self, name: str, e: A.Call) -> str:
-        kw = e.csv if name in ("DictReader", "DictWriter") else {**e.csv}
+        kw = e.notes["csv"] if name in ("DictReader", "DictWriter") else {**e.notes["csv"]}
         dialect_node = kw.get("dialect") or (e.args[1] if name in ("reader", "writer") and len(e.args) > 1 else None)
         opt = lambda k, t: f"std::optional<{t}>({self.expr(kw[k])})" if k in kw else "std::nullopt"
         if "quotechar" in kw:
@@ -2751,7 +2751,7 @@ class CodeGen:
 
     def log_call(self, e: A.Call, target: str) -> str:
         """logging.info(msg, *args) -> sd::logging::root_log(site, level, exc_info, msg, args...)."""
-        info = e.log_call
+        info = e.notes["log_call"]
         name = info["level"]
         func = self.func.name if self.func is not None else "<module>"
         site = f"sd::logging::Site{{{cpp_string(self.source_path)[:-1]}, {e.loc.line}, {cpp_string(func)[:-1]}}}"
@@ -2764,10 +2764,10 @@ class CodeGen:
     # ---- hashlib, hmac ----------------------------------------------------------------
 
     def hash_call(self, mod: str, name: str, e: A.Call) -> str:
-        args = e.hash_args
+        args = e.notes["hash_args"]
 
         def digest(node: A.Expr) -> str:
-            return cpp_string(node.hash_name) if hasattr(node, "hash_name") else self.expr(node)
+            return cpp_string(node.notes["hash_name"]) if "hash_name" in node.notes else self.expr(node)
 
         data = next((self.expr(args[k]) for k in ("data", "string") if k in args), "sd::bytes()")
         if mod == "hashlib":
@@ -2783,14 +2783,14 @@ class CodeGen:
 
     def itertools_call(self, name: str, e: A.Call) -> str:
         ns = "sd::itertools::"
-        info = e.itertools
+        info = e.notes["itertools"]
         args = info.get("args", {})
         out = e.ty.elem if isinstance(e.ty, GeneratorType) else None
         T = self.cpp_type(out) if out is not None else None
         a = [self.expr(x) for x in e.args]
         present = lambda k: k in args and not isinstance(args[k], A.NoneLit)
         opt_int = lambda k: self.expr_as(args[k], OptionalType(INT)) if present(k) else "std::nullopt"
-        source_elem = lambda node: self.cpp_type(element_type(node.ty) if not hasattr(node, "tuple_elem") else node.tuple_elem)
+        source_elem = lambda node: self.cpp_type(node.notes["tuple_elem"] if "tuple_elem" in node.notes else element_type(node.ty))
         match name:
             case "count":
                 start = self.expr_as(args["start"], out) if "start" in args else f"{T}(0)"
@@ -2856,7 +2856,7 @@ class CodeGen:
     # ---- heapq and bisect -----------------------------------------------------------
 
     def heapq_bisect_call(self, mod: str, name: str, e: A.Call) -> str:
-        args = getattr(e, "lib_args", {})
+        args = e.notes.get("lib_args", {})
         key = args.get("key", self.keyword(e, "key"))
         key_code = self.expr(key) if key is not None and not isinstance(key, A.NoneLit) else "nullptr"
         if mod == "heapq":
@@ -2878,7 +2878,7 @@ class CodeGen:
             raise NotImplementedError(f"codegen for heapq.{name}")
         func = {"bisect": "bisect_right", "insort": "insort_right"}.get(name, name)
         a = args["a"]
-        x = self.expr_as(args["x"], a.ty.elem if func.startswith("insort") else e.compared_as)
+        x = self.expr_as(args["x"], a.ty.elem if func.startswith("insort") else e.notes["compared_as"])
         lo = self.expr_as(args["lo"], INT) if "lo" in args else "0"
         hi = self.expr_as(args["hi"], OptionalType(INT)) if "hi" in args else "std::nullopt"
         return f"sd::bisect::{func}({self.expr(a)}, {x}, {lo}, {hi}, {key_code})"
@@ -2886,7 +2886,7 @@ class CodeGen:
     # ---- subprocess -----------------------------------------------------------------
 
     def process_call(self, e: A.Call) -> str:
-        spec = e.process
+        spec = e.notes["process"]
         kw, streams, op = spec["kw"], spec["streams"], spec["op"]
 
         def redirect(name: str) -> str:
@@ -2937,7 +2937,7 @@ class CodeGen:
 
     def process_method(self, r: str, t: ProcessType, name: str, e: A.Call) -> str:
         if name == "communicate":
-            args = e.regex_args
+            args = e.notes["communicate_args"]
             data = "std::nullopt"
             if "input" in args and not isinstance(args["input"], A.NoneLit):
                 data = f"std::optional<std::string>(sd::raw({self.expr(args['input'])}))"
@@ -2958,9 +2958,9 @@ class CodeGen:
             return f"sd::re::escape({self.expr(e.args[0])})"
         if name == "purge":
             return "(void)0"
-        args = e.regex_args
+        args = e.notes["regex_args"]
         pattern = args["pattern"]
-        flags = getattr(e, "regex_static", None)
+        flags = e.notes.get("regex_static", None)
         if flags is not None and isinstance(pattern, A.StrLit):
             # A literal pattern is compiled once, the first time this line runs (thread-safe).
             code = (f"[]() -> const sd::re::Pattern& {{ static const sd::re::Pattern sd_p("
@@ -2986,7 +2986,7 @@ class CodeGen:
                 return f"{pat}.{op}({s})"
             case "sub" | "subn":
                 count = self.expr(args["count"]) if "count" in args else "0"
-                if getattr(e, "regex_repl_fn", False):
+                if e.notes.get("regex_repl_fn", False):
                     repl = self.expr_as(args["repl"], FuncType((MatchType(None),), STR))
                     return f"{pat}.{op}_fn({repl}, {s}, {count})"
                 return f"{pat}.{op}({self.expr(args['repl'])}, {s}, {count})"
@@ -2998,7 +2998,7 @@ class CodeGen:
 
     def match_group(self, m: str, node: A.Expr, t: Type) -> str:
         """m.group(g) / m[g]: a str when the group always matches, else str?."""
-        g = getattr(node, "regex_group", None)
+        g = node.notes.get("regex_group", None)
         arg = f"std::int64_t{{{g}}}" if g is not None else self.expr(node)
         return f"{m}.{'group_opt' if isinstance(t, OptionalType) else 'group_str'}({arg})"
 
@@ -3021,7 +3021,7 @@ class CodeGen:
             case "start" | "end" | "span":
                 if not e.args:
                     return f"{r}.{name}()"
-                g = getattr(e.args[0], "regex_group", None)
+                g = e.args[0].notes.get("regex_group", None)
                 return f"{r}.{name}({f'std::int64_t{{{g}}}' if g is not None else self.expr(e.args[0])})"
             case "expand":
                 return f"{r}.expand({self.expr(e.args[0])})"
@@ -3168,7 +3168,7 @@ class CodeGen:
             case "sum" if len(e.args) == 2 or e.keywords:
                 start = e.args[1] if len(e.args) == 2 else self.keyword(e, "start")
                 return f"sd::sum({self.expr(e.args[0])}, {self.expr_as(start, e.ty)})"
-            case "zip" if getattr(e, "spread_zip", False):  # zip(*rows)
+            case "zip" if e.notes.get("spread_zip", False):  # zip(*rows)
                 strict = self.keyword(e, "strict")
                 return (f"sd::zip_spread<{self.cpp_type(e.ty.elem.elem)}>({self.expr(e.args[0].value)}, "
                         f"{self.expr(strict) if strict is not None else 'false'})")
@@ -3215,11 +3215,11 @@ class CodeGen:
             case "dict" if e.keywords:  # dict(a=1), dict(other, b=2): the keywords are str keys
                 tmp = self.fresh("d")
                 positional = A.Call(e.func, e.args, [], loc=e.loc, ty=e.ty)
-                positional.pairs = getattr(e, "pairs", False)
+                positional.notes["pairs"] = e.notes.get("pairs", False)
                 base = self.builtin_call("dict", positional)
                 sets = " ".join(f"{tmp}[{cpp_string(kw.name)}] = {self.expr_as(kw.value, e.ty.value)};" for kw in e.keywords)
                 return f"[&] {{ auto {tmp} = {base}; {sets} return {tmp}; }}()"
-            case "dict" if getattr(e, "pairs", False):
+            case "dict" if e.notes.get("pairs", False):
                 k, v = e.ty.key, e.ty.value
                 return f"sd::dict_from_pairs<{self.cpp_type(k)}, {self.cpp_type(v)}>({a})"
             case "dict" if a:
@@ -3265,9 +3265,9 @@ class CodeGen:
         head = [] if receiver is not None else [self.expr(args.pop(0))]
         target = f"{receiver}." if receiver is not None else "sd::structmod::"
         if name == "pack":
-            values = [self.expr_as(a, t) for a, t in zip(args, e.struct_args)]
+            values = [self.expr_as(a, t) for a, t in zip(args, e.notes["struct_args"])]
             return f"{target}pack({', '.join(head + values)})"
-        row = self.cpp_type(e.struct_row)
+        row = self.cpp_type(e.notes["struct_row"])
         rest = [self.expr(args[0])]
         if name == "unpack_from":
             offset = args[1] if len(args) > 1 else self.keyword(e, "offset")
@@ -3277,7 +3277,7 @@ class CodeGen:
 
     def argument_spec(self, e: A.Call) -> str:
         """An argparse Spec built from the literal add_argument(...) call."""
-        a = e.argparse
+        a = e.notes["argparse"]
         kw = a["kw"]
         lines = [f"s.flags = {{{', '.join(cpp_string(f) for f in a['flags'])}}};", f"s.dest = {cpp_string(a['dest'])};",
                  f"s.action = {cpp_string(a['action'])};", f"s.kind = sd::argparse::{a['kind']};"]
@@ -3299,7 +3299,7 @@ class CodeGen:
     def sent(self, node: A.Expr, code: str) -> str:
         """An argument that another thread receives (sd::send copies it): moved instead, when
         it's a local list the sender never reads again."""
-        if getattr(node, "moved_into_mutex", False) and code == self.expr(node):
+        if node.notes.get("moved_into_mutex", False) and code == self.expr(node):
             return f"std::move({code})"  # the Mutex owns it now (the checker stops later reads)
         if (
             isinstance(node, A.Name) and isinstance(node.sym, Var) and node.sym.kind == "local" and not node.sym.captured
@@ -3314,7 +3314,7 @@ class CodeGen:
         arguments: evaluate each once (self.call did them in order if that matters), then build
         that. Any other is parsed at run time."""
         values = e.args + [kw.value for kw in e.keywords]
-        fstring = getattr(e, "format_fstring", None)
+        fstring = e.notes.get("format_fstring", None)
         if fstring is None:
             fmt = e.func.value
             types = ", ".join(cpp_string(str(strip_optional(v.ty)).split("[")[0])[:-1] for v in values)
@@ -3384,20 +3384,20 @@ class CodeGen:
         if isinstance(recv_type, ParserType) and name == "add_argument":
             return f"{r}.add_argument({self.argument_spec(e)})"
         if isinstance(recv_type, ParserType) and name == "add_subparsers":
-            sub = e.argparse_sub
+            sub = e.notes["argparse_sub"]
             lines = [f"s.dest = {cpp_string(sub['dest'])};", f"s.required = {'true' if sub['required'] else 'false'};"]
             for field in ("help", "metavar"):
                 if field in sub["kw"]:
                     lines.append(f"s.{field} = {self.expr(sub['kw'][field])};")
             return f"{r}.add_subparsers([&] {{ sd::argparse::Spec s; {' '.join(lines)} return s; }}())"
         if isinstance(recv_type, SubParsersType):  # add_parser(name, help=, aliases=, description=)
-            cmd = e.argparse_cmd
+            cmd = e.notes["argparse_cmd"]
             opt = lambda k: self.expr_as(cmd["kw"][k], OptionalType(STR)) if k in cmd["kw"] else "std::nullopt"
             aliases = ", ".join(cpp_string(a) for a in cmd["aliases"])
             return (f"{r}.add_parser({cpp_string(cmd['name'])}, {opt('help')}, sd::list<std::string>{{{aliases}}}, "
                     f"{opt('description')})")
         if isinstance(recv_type, ParserType) and name == "parse_args":
-            node = e.regex_args["args"]
+            node = e.notes["parse_args"]
             given = node is not None and not isinstance(node, A.NoneLit)
             return f"{r}.parse_args({self.expr_as(node, OptionalType(ListType(STR))) if given else 'std::nullopt'})"
         if recv_type == STR_TEMPLATE and name in ("substitute", "safe_substitute"):
@@ -3407,17 +3407,17 @@ class CodeGen:
             return f"{r}.substitute(sd::dict<std::string, std::string>{{{keywords}}}, {mapping}, {safe})"
         if recv_type == DATETIME and name in ("date", "time"):
             return f"{r}.to_{name}()"  # (a C++ member can't share its class's name)
-        if recv_type == LOGGER and hasattr(e, "log_call"):
+        if recv_type == LOGGER and "log_call" in e.notes:
             return self.log_call(e, f"{r}.log")
         if recv_type in (LOGGER, LOG_HANDLER) and name == "setLevel":
             return f"{r}.setLevel(sd::logging::level_of({self.expr(e.args[0])}))"
         if recv_type == LOGGER and name == "getChild":
             return f"sd::logging::getLogger({r}.name() + \".\" + {self.expr(e.args[0])})"
         if recv_type == EXECUTOR and name in ("submit", "map"):
-            params, result = e.work_types
+            params, result = e.notes["work_types"]
             fn = self.expr_as(e.args[0], FuncType(params, result))
             if name == "submit":
-                lent = getattr(e, "lent", set())  # shared with the task, not copied (threads.Spawn.lend_arguments)
+                lent = e.notes.get("lent", set())  # shared with the task, not copied (threads.Spawn.lend_arguments)
                 args = ", ".join([fn, *(f"sd::lend({self.expr_as(a, p)})" if i in lent else self.sent(a, self.expr_as(a, p))
                                         for i, (a, p) in enumerate(zip(e.args[1:], params), start=1))])
                 return f"{r}.submit<{self.cpp_type(result)}>({args})"
@@ -3432,13 +3432,13 @@ class CodeGen:
             return self.struct_op(name, e, r)
         if recv_type in (SQLITE_CONNECTION, SQLITE_CURSOR):
             if name in ("fetchone", "fetchmany", "fetchall"):  # the row type comes from the context
-                return f"{r}.{name}<{self.cpp_type(e.sqlite_row)}>({', '.join(self.expr(a) for a in e.args)})"
+                return f"{r}.{name}<{self.cpp_type(e.notes["sqlite_row"])}>({', '.join(self.expr(a) for a in e.args)})"
             args = [self.expr(a) for a in e.args] + [self.expr(k.value) for k in e.keywords]
             return f"{r}.{name}({', '.join(args)})"
         if recv_type in (CSV_WRITER, CSV_DICT_WRITER):
             return f"{r}.{name}({', '.join(self.expr(a) for a in e.args)})"
         if recv_type == HTTP_CONNECTION and name == "request":
-            args = e.http_args
+            args = e.notes["http_args"]
             body = args.get("body")
             if body is None or isinstance(body, A.NoneLit):
                 body_code = "std::nullopt"
@@ -3478,7 +3478,7 @@ class CodeGen:
             case ProcessType():
                 return self.process_method(r, recv_type, name, e)
             case PatternType():
-                return self.regex_op(r, name, e.regex_args, e)
+                return self.regex_op(r, name, e.notes["regex_args"], e)
             case MatchType():
                 return self.match_method(r, name, e)
             case DequeType(elem):
@@ -3492,7 +3492,7 @@ class CodeGen:
             case CounterType() if name in ("most_common", "elements", "total"):
                 return f"{r}.{name}({', '.join(args)})"
             case CounterType() if name in ("update", "subtract"):
-                how = "counts" if getattr(e, "counts", False) else "items"
+                how = "counts" if e.notes.get("counts", False) else "items"
                 return f"{r}.{name}_{how}({args[0]})"
             case ListType():
                 match name:
@@ -3556,16 +3556,16 @@ class CodeGen:
         mod = module.name
         if mod == "re":
             return self.re_call(name, e)
-        if mod == "subprocess" and hasattr(e, "process"):
+        if mod == "subprocess" and "process" in e.notes:
             return self.process_call(e)
         if mod == "itertools":
             return self.itertools_call(name, e)
         if mod in ("heapq", "bisect"):
             return self.heapq_bisect_call(mod, name, e)
-        if mod in ("hashlib", "hmac") and hasattr(e, "hash_args"):
+        if mod in ("hashlib", "hmac") and "hash_args" in e.notes:
             return self.hash_call(mod, name, e)
         if mod == "urllib.request" and name in ("urlopen", "Request"):
-            args = e.url_args
+            args = e.notes["url_args"]
             opt = lambda k, t: self.expr_as(args[k], OptionalType(t)) if k in args else "std::nullopt"
             if name == "Request":
                 headers = self.expr(args["headers"]) if "headers" in args else "sd::dict<std::string, std::string>{}"
@@ -3626,7 +3626,7 @@ class CodeGen:
             return self.struct_op(name, e, None)
         if mod == "csv" and name in ("reader", "writer", "DictReader", "DictWriter"):
             return self.csv_call(name, e)
-        if mod == "logging" and hasattr(e, "log_call"):
+        if mod == "logging" and "log_call" in e.notes:
             return self.log_call(e, "sd::logging::root_log")
         if mod == "logging" and name == "basicConfig":
             kw = {k.name: k.value for k in e.keywords}
@@ -3653,7 +3653,7 @@ class CodeGen:
             when = e.args[2] if len(e.args) > 2 else self.keyword(e, "return_when")
             return (f"sd::futures::wait<{elem}>({self.expr(e.args[0])}, {timeout}, "
                     f"{self.expr(when) if when is not None else chr(34) + 'ALL_COMPLETED' + chr(34) + 's'})")
-        if getattr(e, "spread_join", False):  # os.path.join(root, *parts)
+        if e.notes.get("spread_join", False):  # os.path.join(root, *parts)
             return f"sd::os::path::join_list({self.starred_display('sd::list<std::string>', e.args, STR)})"
         if mod == "functools" and name == "partial":
             return self.partial_code(e)
@@ -3666,12 +3666,12 @@ class CodeGen:
         if mod == "functools" and name == "cmp_to_key":
             return f"sd::cmp_to_key<{self.cpp_type(e.ty.params[0])}>({self.expr(e.args[0])})"
         if mod == "http.server" and name in ("HTTPServer", "ThreadingHTTPServer"):
-            args = e.http_args
+            args = e.notes["http_args"]
             st: StructType = args["RequestHandlerClass"].sym  # made for each connection, from its fields' defaults
             fields = [self.expr_as(f.default, f.type) for f in st.all_fields().values()]
             ctor = [] if st.builtin else ["sd::init", *fields]
             base = "sd::httpserver::BaseHTTPRequestHandler"
-            settings = getattr(e, "handler_settings", {})  # partial(Handler, directory=...): set on each handler
+            settings = e.notes.get("handler_settings", {})  # partial(Handler, directory=...): set on each handler
             captures = ", ".join(f"sd_s{i} = {self.expr_as(v, st.find_field(k).type)}" for i, (k, v) in enumerate(settings.items()))
             sets = " ".join(f"sd_h->{ident(k)} = sd::send(sd_s{i});" for i, k in enumerate(settings))
             make = (f"[{captures}] {{ auto sd_h = std::make_shared<{class_name(st)}>({', '.join(ctor)}); {sets} "

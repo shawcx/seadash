@@ -27,6 +27,10 @@ class Node:
     # Filled in by the checker when an operator/protocol resolves to a dunder method on a
     # user type: a checker.Dunder (or a list of them, one per operator in a comparison chain).
     dunder: object = field(default=None, compare=False, repr=False, kw_only=True)
+    # What the checker works out for codegen (or for a later analysis) beyond `sym` and `ty`, by
+    # name: a call's bound arguments ("regex_args", "http_args"...), "partial", "lent" (pool
+    # arguments shared, not copied), "compile_time" (an argument codegen doesn't evaluate)...
+    notes: dict = field(default_factory=dict, compare=False, repr=False, kw_only=True)
 
 
 # ---- types ------------------------------------------------------------------
