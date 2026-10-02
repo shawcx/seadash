@@ -1,0 +1,63 @@
+# zipfile: the archives are Python's byte for byte (stored and bzip2: other methods depend on
+# the library's version), ZIP64, many members, data before the archive, and corrupt archives.
+import hashlib
+import io
+import zipfile
+
+
+def build(method: int, zip64: bool) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=method) as zf:
+        zf.writestr(zipfile.ZipInfo("a.txt", (2020, 2, 3, 4, 5, 6)), "hello " * 50)
+        info = zipfile.ZipInfo("café.txt", (2021, 12, 31, 23, 59, 58))
+        info.comment = b"member comment"
+        info.compress_type = method
+        info.external_attr = 0o644 << 16
+        zf.writestr(info, b"\x00\x01" * 1000)
+        with zf.open("streamed", "w", force_zip64=zip64) as f:
+            f.write(b"chunk " * 300)
+        zf.mkdir("dir")
+        zf.comment = b"archive comment"
+    return buf.getvalue()
+
+
+for method in (zipfile.ZIP_STORED, zipfile.ZIP_BZIP2):
+    for zip64 in (False, True):
+        data = build(method, zip64)
+        print(method, zip64, len(data), hashlib.sha256(data).hexdigest()[:16])
+for method in (zipfile.ZIP_DEFLATED, zipfile.ZIP_LZMA):
+    with zipfile.ZipFile(io.BytesIO(build(method, True))) as zf:
+        print(method, [(i.filename, i.file_size, i.CRC, i.compress_type) for i in zf.infolist()], zf.testzip())
+
+many = io.BytesIO()
+with zipfile.ZipFile(many, "w") as zf:
+    for i in range(70000):  # more than the end record can count: a ZIP64 end record
+        zf.writestr(zipfile.ZipInfo(f"f{i}", (2020, 1, 1, 0, 0, 0)), str(i))
+with zipfile.ZipFile(many) as zf:
+    names = zf.namelist()
+    print(len(names), names[-1], zf.read("f69999"))
+print(hashlib.sha256(many.getvalue()).hexdigest()[:16])
+
+stored = build(zipfile.ZIP_STORED, False)
+prepended = io.BytesIO(b"#!/bin/sh\necho self-extracting\n" + stored)
+print(zipfile.is_zipfile(prepended))
+with zipfile.ZipFile(prepended) as zf:
+    print(zf.namelist(), zf.read("a.txt")[:12], zf.comment, zf.getinfo("café.txt").comment)
+
+corrupt = stored[:40] + bytes([stored[40] ^ 0xFF]) + stored[41:]  # a byte of a.txt's data changed
+with zipfile.ZipFile(io.BytesIO(corrupt)) as zf:
+    print(zf.testzip())
+    try:
+        zf.read("a.txt")
+    except zipfile.BadZipFile as e:
+        print("BadZipFile:", e)
+truncated = io.BytesIO(stored[:-30])
+print(zipfile.is_zipfile(truncated))
+try:
+    zipfile.ZipFile(truncated)
+except zipfile.BadZipFile as e:
+    print("BadZipFile:", e)
+try:
+    zipfile.ZipFile(io.BytesIO(), "w", allowZip64=False).open("big", "w", force_zip64=True)
+except ValueError as e:
+    print("ValueError:", e)

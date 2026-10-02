@@ -3002,3 +3002,24 @@ def test_pprint_takes_any_value():
         "s: str", "p: pprint.PrettyPrinter", "t: str"]
     assert err("import pprint\npprint.pprint([1], stream='out')\n").message == (
         "pprint.pprint() argument 'stream' must be TextIO?, not str")
+
+
+def test_zipfile_types_and_errors():
+    assert variables(ok("import io, zipfile\nzf = zipfile.ZipFile(io.BytesIO(), 'w')\ni = zipfile.ZipInfo('a')\n"
+                        "i.external_attr |= 0x10\nn = zf.namelist()\nf = zf.open(i, 'w')\nd = i.date_time\n")) == [
+        "zf: zipfile.ZipFile", "i: zipfile.ZipInfo", "n: list[str]", "f: BinaryIO", "d: tuple[int, int, int, int, int, int]"]
+    cases = [
+        ("zf = zipfile.ZipFile(3)", "zipfile.ZipFile() argument 'file' must be a str, a Path or a binary file object, not int"),
+        ("zf = zipfile.ZipFile('a.zip')\nzf.read(5)",
+         "zipfile.ZipFile.read() argument 'name' must be a member's name (str) or a ZipInfo, not int"),
+        ("zf = zipfile.ZipFile('a.zip')\nzf.writestr('a', 5)", "zipfile.ZipFile.writestr() argument 'data' must be bytes or a str, not int"),
+        ("zf = zipfile.ZipFile('a.zip')\nzf.extractall(members=[1])",
+         "zipfile.ZipFile.extractall() argument 'members' must be a list of names or of ZipInfos, not list[int]"),
+        ("zf = zipfile.ZipFile('a.zip')\nzf.mode = 'w'", "zipfile.ZipFile.mode can't be changed (it's read-only)"),
+        ("i = zipfile.ZipInfo('a')\ni.file_size = 'big'", "zipfile.ZipInfo.file_size is int, can't assign str"),
+        ("zf = zipfile.ZipFile('a.zip')\nzf.mode += 'b'", "zipfile.ZipFile.mode can't be changed (it's read-only)"),
+        ("zf = zipfile.ZipFile('a.zip')\nzf.filename += 'x'",
+         "str? might be None; check it first, e.g. `if zf.filename is not None:`"),
+    ]
+    for source, message in cases:
+        assert err("import zipfile\n" + source + "\n").message == message, source

@@ -1,0 +1,192 @@
+# zipfile: writing and reading archives in memory and on disk, every compression method,
+# members as file objects, extracting, ZipInfo, and Python's errors.
+import io
+import os
+import shutil
+import tempfile
+import zipfile
+
+
+def in_memory() -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("hello.txt", "Hello, zip!\n" * 3)
+        zf.writestr("data/numbers.bin", bytes(range(256)))
+        info = zipfile.ZipInfo("notes/readme.md", date_time=(2024, 5, 6, 7, 8, 10))
+        info.compress_type = zipfile.ZIP_STORED
+        zf.writestr(info, "# Notes\n")
+        zf.mkdir("empty")
+        with zf.open("streamed.txt", "w") as f:
+            f.write(b"line one\n")
+            f.write(b"line two\n")
+        zf.comment = b"made by seadash"
+
+    print(zipfile.is_zipfile(buf))
+    with zipfile.ZipFile(buf) as zf:
+        print(zf.namelist())
+        print(zf.comment)
+        print(zf.read("hello.txt").decode(), end="")
+        print(len(zf.read("data/numbers.bin")))
+        info = zf.getinfo("notes/readme.md")
+        print(info)
+        print(info.date_time, info.file_size, info.is_dir(), info.compress_type)
+        print(zf.getinfo("empty/"))
+        with zf.open("streamed.txt") as f:
+            for line in f:
+                print(line)
+        for i in zf.infolist():
+            print(i.filename, i.file_size, i.is_dir(), hex(i.CRC))
+        print(zf.testzip())
+        try:
+            zf.getinfo("missing")
+        except KeyError as e:
+            print("KeyError", e)
+
+
+def on_disk() -> None:
+    tmp = tempfile.mkdtemp()
+    src = os.path.join(tmp, "src")
+    os.makedirs(os.path.join(src, "sub"))
+    with open(os.path.join(src, "a.txt"), "w") as f:
+        f.write("alpha\n" * 100)
+    with open(os.path.join(src, "sub", "b.txt"), "w") as f:
+        f.write("beta\n")
+
+    archive = os.path.join(tmp, "out.zip")
+    for method in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
+        with zipfile.ZipFile(archive, "w", compression=method) as zf:
+            zf.write(os.path.join(src, "a.txt"), "a.txt")
+            zf.write(os.path.join(src, "sub"), "sub")
+            zf.write(os.path.join(src, "sub", "b.txt"), arcname="sub/b.txt")
+            zf.writestr("big.bin", bytes(range(256)) * 400)
+        with zipfile.ZipFile(archive) as zf:
+            print(method, zf.namelist(), zf.testzip())
+            print([i.compress_type for i in zf.infolist()])
+            print(zf.read("a.txt") == b"alpha\n" * 100, zf.read("big.bin") == bytes(range(256)) * 400)
+
+    with zipfile.ZipFile(archive, "a") as zf:
+        zf.writestr("added.txt", b"appended")
+        print(repr(zf).replace(tmp, "TMP"))
+    print(repr(zf))
+
+    with zipfile.ZipFile(archive) as zf:
+        print(zf.namelist())
+        out = io.StringIO()
+        zf.printdir(file=out)
+        lines = out.getvalue().splitlines()
+        print(lines[0])
+        print(lines[1][:46].rstrip(), lines[1][-12:])
+        dest = os.path.join(tmp, "dest")
+        print(zf.extract("sub/b.txt", dest).replace(tmp, "TMP"))
+        print(zf.extract(zf.getinfo("sub/"), dest).replace(tmp, "TMP"))
+        zf.extractall(os.path.join(tmp, "all"))
+        zf.extractall(os.path.join(tmp, "some"), members=["a.txt"])
+        print(sorted(os.listdir(os.path.join(tmp, "all"))), os.listdir(os.path.join(tmp, "some")))
+        with open(os.path.join(tmp, "all", "sub", "b.txt")) as f:
+            print(f.read(), end="")
+        info = zf.getinfo("a.txt")
+        print(info.date_time[0] >= 2024, info.file_size, oct(info.external_attr >> 16))
+        with zf.open("big.bin") as f:
+            print(f.read(3), f.tell())
+            f.seek(1000)
+            print(f.read(4), f.tell())
+            f.seek(-2, 2)
+            print(f.read(), f.tell())
+            f.seek(10)
+            print(f.read(2), f.readable(), f.seekable())
+            print(f.name, f.mode)
+        print(zf.open("a.txt").readline())
+        print(zf.open("a.txt").readlines()[-1])
+
+    # errors
+    try:
+        zipfile.ZipFile(os.path.join(src, "a.txt"))
+    except zipfile.BadZipFile as e:
+        print("BadZipFile:", e)
+    try:
+        zipfile.ZipFile(archive, "q")
+    except ValueError as e:
+        print("ValueError:", e)
+    try:
+        zipfile.ZipFile(os.path.join(tmp, "missing.zip"))
+    except FileNotFoundError as e:
+        print("FileNotFoundError:", e.strerror)
+    try:
+        zipfile.ZipFile(archive, "w", compression=9)
+    except NotImplementedError as e:
+        print("NotImplementedError:", e)
+    zf = zipfile.ZipFile(archive)
+    zf.close()
+    try:
+        zf.read("a.txt")
+    except ValueError as e:
+        print("ValueError:", e)
+    try:
+        zipfile.ZipInfo("old", (1979, 1, 1, 0, 0, 0))
+    except ValueError as e:
+        print("ValueError:", e)
+    with zipfile.ZipFile(archive) as zf:
+        try:
+            zf.writestr("x", "y")
+        except ValueError as e:
+            print("ValueError:", e)
+        try:
+            zf.open("a.txt", "a")
+        except ValueError as e:
+            print("ValueError:", e)
+    print(zipfile.is_zipfile(archive), zipfile.is_zipfile(os.path.join(src, "a.txt")), zipfile.is_zipfile(os.path.join(tmp, "nope")))
+
+    zi = zipfile.ZipInfo("x/y.txt")
+    zi.external_attr = 0o644 << 16
+    zi.external_attr |= 0x20
+    zi.compress_type = zipfile.ZIP_DEFLATED
+    zi.file_size = 10
+    zi.compress_size = 7
+    print(zi, zi.filename, zi.orig_filename, zi.date_time, zi.compress_level)
+    print(zipfile.ZipInfo(), zipfile.ZipInfo("dir/").is_dir())
+    names = io.BytesIO()
+    with zipfile.ZipFile(names, "w") as zf:
+        zf.writestr("café/naïve.txt", "unicode")
+        zf.mkdir("ünï")
+    with zipfile.ZipFile(names) as zf:
+        print(zf.namelist(), [hex(i.flag_bits) for i in zf.infolist()])
+    shutil.rmtree(tmp)
+
+
+
+# An archive nobody closes still gets its central directory when it goes, as in Python.
+def forgotten(buf: io.BytesIO) -> None:
+    zf = zipfile.ZipFile(buf, "w")
+    zf.writestr(zipfile.ZipInfo("x.txt"), "never closed")
+
+
+def lifetimes() -> None:
+    buf = io.BytesIO()
+    forgotten(buf)
+    with zipfile.ZipFile(buf) as zf:
+        print(zf.namelist())
+        f = zf.open("x.txt")
+    print(f.read(5), repr(zf))
+    f.close()
+    print(f.closed)
+
+    out = io.BytesIO()
+    zf = zipfile.ZipFile(out, "w")
+    w = zf.open("a", "w")
+    w.write(b"data")
+    try:
+        zf.close()
+    except ValueError as e:
+        print("ValueError:", e)
+    try:
+        zf.writestr("b", "x")
+    except ValueError as e:
+        print("ValueError:", e)
+    w.close()
+    zf.close()
+    print(zipfile.ZipFile(out).read("a"))
+
+
+in_memory()
+on_disk()
+lifetimes()

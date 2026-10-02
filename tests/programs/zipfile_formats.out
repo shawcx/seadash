@@ -1,0 +1,15 @@
+0 False 4507 07852ecbfc045f71
+0 True 4527 337f881915cf7617
+12 False 803 20552c68a6bba178
+12 True 823 9f18f49280e0368a
+8 [('a.txt', 300, 1497516225, 0), ('café.txt', 2000, 2491775677, 8), ('streamed', 1800, 161863262, 8), ('dir/', 0, 0, 0)] None
+14 [('a.txt', 300, 1497516225, 0), ('café.txt', 2000, 2491775677, 14), ('streamed', 1800, 161863262, 14), ('dir/', 0, 0, 0)] None
+70000 f69999 b'69999'
+e8812d4dbbdce1ee
+True
+['a.txt', 'café.txt', 'streamed', 'dir/'] b'hello hello ' b'archive comment' b'member comment'
+a.txt
+BadZipFile: Bad CRC-32 for file 'a.txt'
+False
+BadZipFile: File is not a zip file
+ValueError: force_zip64 is True, but allowZip64 was False when opening the ZIP file.

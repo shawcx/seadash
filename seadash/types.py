@@ -49,6 +49,7 @@ class BuiltinClass(Prim):
     unsendable: str = field(default="", compare=False)
     methods: dict = field(default_factory=dict, compare=False, repr=False)  # name -> checks a call (builtins.sync_method)
     attributes: dict = field(default_factory=dict, compare=False, repr=False)  # name -> lambda t: its type
+    setters: dict = field(default_factory=dict, compare=False, repr=False)  # name -> its type: `obj.name = v` (obj.set_name(v))
 
 
 IMMUTABLE = "immutable"  # can never change: threads share it, and a @value class may hold it

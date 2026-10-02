@@ -1310,6 +1310,8 @@ class CodeGen:
             enter, exit_call = ctx, f"{ctx}.sd_exit(false)"  # commit; the catch below rolls back
         elif info.kind == "server":
             enter, exit_call = ctx, f"{ctx}.server_close()"
+        elif info.kind == "zipfile":
+            enter, exit_call = ctx, f"{ctx}.close()"
         else:
             st: StructType = item.context.ty
             arrow = "->" if st.kind == "class" else "."
@@ -1322,7 +1324,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind not in ("file", "socket", "selector", "process", "tempdir", "executor", "response", "connection", "server"):  # still call __enter__ for its effects
+        elif info.kind not in ("file", "socket", "selector", "process", "tempdir", "executor", "response", "connection", "server", "zipfile"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -1700,6 +1702,8 @@ class CodeGen:
                 prefix = self.self_prefix(target.value.sym.type) if is_self(target.value) else (
                     f"{self.expr(target.value)}{'->' if getter.owner.kind == 'class' else '.'}")
                 self.line(f"{prefix}sd_cache_{getter.name} = {self.coerce(code, ty, getter.ret)};")
+            case A.Attribute() if isinstance(target.sym, tuple) and target.sym[0] == "builtin_set":  # zinfo.comment = b"..."
+                self.line(f"{self.expr(target.value)}.set_{target.sym[1]}({self.coerce(code, ty, target.ty)});")
             case A.Attribute() if isinstance(target.sym, tuple) and target.sym[0] == "property_set":
                 setter: FuncInfo = target.sym[1]
                 self.line(f"{self.member(target.value, setter)}({self.coerce(code, ty, setter.params[0].type)});")
@@ -1823,6 +1827,16 @@ class CodeGen:
             arrow = "->" if getter.owner.kind == "class" else "."
             new = self.binop_code(op, f"{obj}{arrow}{fn_name(getter)}()", read_type, self.expr(value), value.ty, result, s.dunder)
             self.line(f"{obj}{arrow}{fn_name(setter)}({self.coerce(new, result, setter.params[0].type)});")
+            self.close()
+            return
+        if isinstance(target, A.Attribute) and isinstance(target.sym, tuple) and target.sym[0] == "builtin_attr":
+            # zinfo.external_attr |= 0x10 -> obj.set_external_attr(obj.external_attr() | 0x10), evaluating obj once
+            obj = self.fresh("obj")
+            setter_type = target.value.ty.setters[target.attr]
+            self.open("")
+            self.line(f"auto&& {obj} = {self.expr(target.value)};")
+            new = self.binop_code(op, f"{obj}.{target.attr}()", read_type, self.expr(value), value.ty, result, s.dunder)
+            self.line(f"{obj}.set_{target.attr}({self.coerce(new, result, setter_type)});")
             self.close()
             return
         ref = self.fresh("ref")

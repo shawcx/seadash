@@ -38,7 +38,7 @@ from . import builtins, flow, threads
 from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
-    BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
+    BINARY_FILE, BOOL, BuiltinClass, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
     SYNC_ARITY, SelectorType, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
@@ -1608,6 +1608,10 @@ class Checker:
             self.note_attr_assignment(target, target.sym.type, result)
         elif isinstance(target, A.Attribute) and isinstance(target.sym, tuple) and target.sym[0] == "property":
             self.property_setter(target.value.ty, target.attr, target)  # obj.count += 1 needs a setter
+        elif isinstance(target, A.Attribute) and isinstance(read_sym, tuple) and read_sym[0] == "builtin_attr":
+            owner = target.value.ty  # zinfo.external_attr |= 0x10: obj.set_x(obj.x() | 0x10)
+            if not isinstance(owner, BuiltinClass) or target.attr not in owner.setters:
+                raise self.error(f"{owner}.{target.attr} can't be changed (it's read-only)", target)
         # For codegen: what was read (and its type there) and the operation's
         # result type. target.sym is the variable written, which may differ.
         stmt.sym = (read_sym, current, result)
@@ -1627,6 +1631,15 @@ class Checker:
                 if isinstance(owner, StructType) and owner.enum is not None:
                     raise self.error(f"{owner.name} is an enum: its members can't be changed (cannot set attribute "
                                      f"'{attr}')", target)
+                if isinstance(owner, BuiltinClass) and attr in owner.setters:  # zinfo.compress_type = ZIP_DEFLATED
+                    want = owner.setters[attr]
+                    if not assignable(t, want):
+                        raise self.error(f"{owner}.{attr} is {want}, can't assign {t}", value)
+                    target.sym = ("builtin_set", attr)
+                    target.ty = want
+                    return
+                if isinstance(owner, BuiltinClass) and attr in owner.attributes:
+                    raise self.error(f"{owner}.{attr} can't be changed (it's read-only)", target)
                 if not isinstance(owner, StructType):
                     raise self.error(f"can't set attribute '{attr}' on {owner}", target)
                 if (getter := owner.find_method(attr)) and getter.lazy:  # obj.cached = v: replaces the kept value
@@ -2012,6 +2025,8 @@ class Checker:
             return WithInfo("executor", t, None, False)
         if t == TEMPDIR:  # `with TemporaryDirectory() as tmp:` gives its name, removed at the end
             return WithInfo("tempdir", STR, None, False)
+        if t == builtins.ZIPFILE:  # `with ZipFile(path, "w") as zf:` closes it (writing its directory) at the end
+            return WithInfo("zipfile", t, None, False)
         if t == SQLITE_CONNECTION:  # `with conn:` commits, or rolls back if the block raised
             return WithInfo("connection", t, None, False)
         if isinstance(t, HTTPServerType):  # `with HTTPServer(...) as server:` closes it at the end
@@ -3155,7 +3170,8 @@ class Checker:
             except CheckError:
                 pass
             else:
-                operand = e.left if maybe is l else e.right
+                left, right = (e.target, e.value) if isinstance(e, A.AugAssign) else (e.left, e.right)
+                operand = left if maybe is l else right
                 raise self.error(
                     f"{maybe} might be None; check it first, e.g. `if {describe_short(operand)} is not None:`", operand
                 )
