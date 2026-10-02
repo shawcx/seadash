@@ -1,0 +1,14 @@
+hello, ann! hi, bob! hello, cy?
+1 6 12 12
+16 25
+['hello, dee!', 'hello, dee!']
+hello, eve.
+['ANN!', 'BO!', 'CYD!'] ['bo', 'ann', 'cyd']
+work 3 ()
+X! Y!
+['Z!', 'z?']
+http://localhost:80 (5.0s) http://localhost:8080 (5.0s) https://localhost:9000 (5.0s)
+http://a.example:80 (0.5s) https://b.example:443 (0.5s)
+http://c.example:22 (5.0s) http://d.example:22 (1.0s)
+['https://e.example:80 (5.0s)', 'http://e.example:80 (5.0s)']
+['http://f:1 (5.0s)', 'http://g:1 (5.0s)']

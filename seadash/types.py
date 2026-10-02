@@ -109,6 +109,9 @@ PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYT
 class ListType(Type):
     elem: Type
 
+    def __post_init__(self) -> None:  # (a container holds plain function types: see FuncType.sig)
+        object.__setattr__(self, "elem", strip_sig(self.elem))
+
     def __str__(self) -> str:
         return f"list[{self.elem}]"
 
@@ -116,6 +119,9 @@ class ListType(Type):
 @dataclass(frozen=True)
 class SetType(Type):
     elem: Type
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "elem", strip_sig(self.elem))
 
     def __str__(self) -> str:
         return f"set[{self.elem}]"
@@ -125,6 +131,9 @@ class SetType(Type):
 class DictType(Type):
     key: Type
     value: Type
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "value", strip_sig(self.value))
 
     def __str__(self) -> str:
         return f"dict[{self.key}, {self.value}]"
@@ -151,6 +160,9 @@ class DequeType(Type):
     """collections.deque: a sequence with fast appends and pops at both ends."""
 
     elem: Type
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "elem", strip_sig(self.elem))
 
     def __str__(self) -> str:
         return f"deque[{self.elem}]"
@@ -255,6 +267,9 @@ class VarTupleType(Type):
 
     elem: Type
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "elem", strip_sig(self.elem))
+
     def __str__(self) -> str:
         return f"tuple[{self.elem}, ...]"
 
@@ -327,16 +342,62 @@ class TupleType(Type):
         return f"tuple[{', '.join(map(str, self.elts))}]"
 
 
+@dataclass(eq=False)
+class Signature:
+    """The parameter names, kinds and defaults of the function a value is known to be (a def,
+    a bound method, a lambda, a partial), so a call through the value can use keywords and
+    leave out arguments that have defaults. Compared by identity: one per function."""
+
+    what: str  # for messages: "f()"
+    params: list  # Param
+
+
 @dataclass(frozen=True)
 class FuncType(Type):
     """`(int, str) -> bool`. In *expected-type hints only*, ret may be None,
-    meaning "infer it" (e.g. the key function passed to sorted())."""
+    meaning "infer it" (e.g. the key function passed to sorted()). `sig`: which function
+    it is, when that's known here (see Signature); only a name's flow-sensitive view keeps it,
+    so what a variable or container holds is a plain function type."""
 
     params: tuple[Type, ...]
     ret: Type | None
+    sig: Signature | None = field(default=None, hash=False)
 
     def __str__(self) -> str:
         return f"({', '.join(map(str, self.params))}) -> {self.ret if self.ret is not None else '?'}"
+
+
+def fills_defaults(src: FuncType, dst: FuncType) -> bool:
+    """Can a known function stand in for a function type with fewer parameters, because the
+    rest have defaults (or are *args)? `def greet(name, greeting="hi")` as a (str) -> str."""
+    if src.sig is None or len(dst.params) >= len(src.sig.params):
+        return False
+    given, rest = src.sig.params[:len(dst.params)], src.sig.params[len(dst.params):]
+    return (all(not p.star and p.kind != "kwonly" for p in given) and tuple(p.type for p in given) == dst.params
+            and all(p.star or p.default is not None for p in rest))
+
+
+def filled_for(ft: Type, given: tuple) -> FuncType | None:
+    """For a known function called with arguments of types `given` (fewer than it takes):
+    the function type it stands in as, its other parameters left to their defaults."""
+    if not isinstance(ft, FuncType) or ft.sig is None or len(given) >= len(ft.sig.params):
+        return None
+    if not all(assignable(a, p.type) for a, p in zip(given, ft.sig.params)):
+        return None
+    want = FuncType(tuple(p.type for p in ft.sig.params[:len(given)]), ft.ret)
+    return want if fills_defaults(ft, want) else None
+
+
+def strip_sig(t: Type) -> Type:
+    """t without what it knows about which function a value is (for what gets stored)."""
+    match t:
+        case FuncType(params, ret, sig) if sig is not None:
+            return FuncType(params, ret)
+        case OptionalType(inner) if isinstance(inner, FuncType) and inner.sig is not None:
+            return OptionalType(strip_sig(inner))
+        case TupleType(elts) if any(strip_sig(x) is not x for x in elts):
+            return TupleType(tuple(strip_sig(x) for x in elts))
+    return t
 
 
 @dataclass(frozen=True)
@@ -459,6 +520,12 @@ class FuncInfo:
     def __str__(self) -> str:
         params = ", ".join(f"*{p.name}: {p.type.elem}" if p.star else f"{p.name}: {p.type}" for p in self.params)
         return f"def {self.name}({params}) -> {self.ret}"
+
+    def value_type(self) -> FuncType:
+        """Its type as a value (`f`, `obj.method`), which knows its parameters' names and defaults."""
+        if (sig := self.__dict__.get("_signature")) is None:
+            sig = self.__dict__["_signature"] = Signature(f"{self.name}()", self.params)
+        return FuncType(tuple(p.type for p in self.params), self.ret, sig)
 
 
 @dataclass(eq=False)
@@ -654,7 +721,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return src.key == dst.key and src.value == dst.value
     if isinstance(src, FuncType) and isinstance(dst, FuncType):
         # Same parameters; any result is fine where the result is ignored (-> None).
-        return src.params == dst.params and (dst.ret == NONE or assignable(src.ret, dst.ret))
+        returns = dst.ret == NONE or assignable(src.ret, dst.ret)
+        return returns and (src.params == dst.params or fills_defaults(src, dst))
     if isinstance(dst, OptionalType):
         if src == NONE:
             return True
@@ -674,6 +742,8 @@ def join(a: Type, b: Type) -> Type | None:
     """The type that can hold both `a` and `b` (for list literals, if-expressions...), or None."""
     if a == b:
         return a
+    if isinstance(a, FuncType) and isinstance(b, FuncType) and strip_sig(a) == strip_sig(b):
+        return strip_sig(a)  # two different functions of the same type
     if type(a) is type(b) and isinstance(a, (PatternType, MatchType)):
         return type(a)(None)  # different patterns: forget what's known about their groups
     if isinstance(b, VarTupleType) and isinstance(a, TupleType):

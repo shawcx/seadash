@@ -1,0 +1,73 @@
+# Function values keep the signature of the function they are (a def, a bound method, a lambda,
+# a partial): calls through them take keywords and defaults, and a function whose other parameters
+# have defaults fits where fewer parameters are expected.
+import threading
+from dataclasses import dataclass
+from functools import partial
+from typing import Callable
+
+
+def greet(name: str, greeting: str = "hello", *, punct: str = "!") -> str:
+    return f"{greeting}, {name}{punct}"
+
+
+@dataclass
+class Counter:
+    n: int = 0
+
+    def add(self, k: int = 1, *, times: int = 1) -> int:
+        self.n += k * times
+        return self.n
+
+
+g = greet
+print(g("ann"), g("bob", greeting="hi"), g(name="cy", punct="?"))
+c = Counter()
+add = c.add
+print(add(), add(5), add(k=2, times=3), c.n)
+square: Callable[[int], int] = lambda x: x * x
+print(square(4), square(x=5))
+callbacks: list[Callable[[str], str]] = [g, g]
+print([cb("dee") for cb in callbacks])
+pick = greet if c.n > 0 else greet
+print(pick("eve", punct="."))
+
+
+def shout(s: str, mark: str = "!") -> str:
+    return s.upper() + mark
+
+
+def by_len(s: str, reverse: bool = False) -> int:
+    return -len(s) if reverse else len(s)
+
+
+def work(n: int = 3, *labels: str) -> None:
+    print("work", n, labels)
+
+
+names = ["ann", "bo", "cyd"]
+print(list(map(shout, names)), sorted(names, key=by_len))
+t = threading.Thread(target=work)
+t.start()
+t.join()
+handlers: dict[str, Callable[[str], str]] = {"shout": shout}
+handlers["upper"] = shout
+print(handlers["shout"]("x"), handlers["upper"]("y"))
+fs: list[Callable[[str], str]] = [shout]
+fs.append(lambda s: s + "?")
+print([f("z") for f in fs])
+
+
+def connect(host: str, port: int = 80, *, secure: bool = False, timeout: float = 5.0) -> str:
+    return f"{'https' if secure else 'http'}://{host}:{port} ({timeout}s)"
+
+
+local = partial(connect, "localhost")
+print(local(), local(8080), local(port=9000, secure=True))
+fast = partial(connect, timeout=0.5)
+print(fast("a.example"), fast("b.example", 443, secure=True))
+by_name = partial(connect, port=22)
+print(by_name("c.example"), by_name(host="d.example", timeout=1.0))
+callbacks: list[Callable[[str], str]] = [partial(connect, secure=True), connect]
+print([cb("e.example") for cb in callbacks])
+print(list(map(partial(connect, port=1), ["f", "g"])))

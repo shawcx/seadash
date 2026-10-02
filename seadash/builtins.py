@@ -25,8 +25,8 @@ from .types import (
     ContextManagerType, EXIT_STACK,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_RESPONSE, HTTP_CONNECTION, HTTP_HEADERS, URL_REQUEST, URL_PARTS,
     DictType, Field, FileType, Prim, SyncType, FuncType, user_dunder, IterType, ListType, ModuleType, OptionalType, SetType, StructType, TupleType, Type,
-    ClassAttr, ClassRefType, CmpKeyType, FuncInfo, HTTPServerType, Param, Var,
-    assignable, element_type, enum_mixin, is_hashable, is_numeric, join,
+    ClassAttr, ClassRefType, CmpKeyType, FuncInfo, HTTPServerType, Param, Signature, Var,
+    assignable, filled_for, fills_defaults, element_type, enum_mixin, is_hashable, is_numeric, join,
 )
 
 # Generic built-in types and how many type arguments they take (None = any number).
@@ -101,6 +101,9 @@ class CallContext:
     def function(self, node: A.Expr, params: tuple[Type, ...], what: str) -> Type:
         """Check a function-valued argument (often a lambda) taking `params`; returns its result type."""
         t = self.checker.check_expr(node, FuncType(params, None))
+        if isinstance(t, FuncType) and t.params != params and fills_defaults(t, FuncType(params, t.ret)):
+            node.fill_to = FuncType(params, t.ret)  # (codegen passes a lambda filling in the defaults)
+            return t.ret
         if not isinstance(t, FuncType) or t.params != params:
             want = f"({', '.join(map(str, params))}) -> ..."
             raise self.error(f"{self.what} {what} must be a function like {want}, not {t}", node)
@@ -3834,6 +3837,8 @@ def work_function(ctx: CallContext, fn: A.Expr, params: tuple) -> Type:
     ft = ctx.checker.check_expr(fn, FuncType(params, None))
     if not isinstance(ft, FuncType):
         raise ctx.error(f"{ctx.what} needs a function to run, not {ft}", fn)
+    if len(ft.params) != len(params) and (filled := filled_for(ft, params)) is not None:
+        fn.fill_to = ft = filled  # pool.submit(work) with work(n=3): the defaults filled in
     if len(ft.params) != len(params) or not all(assignable(a, p) for a, p in zip(params, ft.params)):
         takes = ", ".join(map(str, ft.params)) or "no arguments"
         given = ", ".join(map(str, params)) or "none"
@@ -5084,11 +5089,8 @@ class PartialInfo:
 
 def functools_partial(ctx: CallContext) -> Type:
     """partial(func, *args, **keywords): func with its first arguments, and any named ones,
-    already given (evaluated now, as in Python). The result takes the rest, positionally:
-    seadash's function values have no keywords or defaults, so a parameter after one bound by
-    keyword can't be reached (unless it has a default, which is used), and parameters with
-    defaults at the end are left out (their defaults are used) unless the function's expected
-    type asks for them."""
+    already given (evaluated now, as in Python). The result takes the rest, keeping their names
+    and defaults (see FuncType.sig)."""
     if not ctx.args:
         raise ctx.error("partial() needs the function to call")
     func, given = ctx.args[0], ctx.args[1:]
@@ -5136,20 +5138,16 @@ def functools_partial(ctx: CallContext) -> Type:
             actual = checker.check_expr(arg, p.type)
             if not assignable(actual, p.type):
                 raise ctx.error(f"{what}: argument '{p.name}' must be {p.type}, not {actual}", arg)
+    # The result takes the rest, with their names and defaults; as in Python, those after one bound by
+    # keyword can then only be passed by keyword (a positional one would land on the bound parameter).
     first_keyword = min((names[kw.name] for kw in ctx.call.keywords), default=len(params))
-    open_ = [i for i, a in enumerate(bound) if a is None]
-    for i in open_:
-        if i > first_keyword and params[i].default is None:
-            raise ctx.error(f"{what}: after binding '{params[first_keyword].name}' by keyword, '{params[i].name}' could "
-                            f"only be passed by keyword, which seadash's function values can't take yet; bind it too, or "
-                            f"use a lambda", ctx.call)
-    taken = [i for i in open_ if i < first_keyword]
-    expected = strip_optional_type(ctx.expected) if ctx.expected is not None else None
-    want = len(expected.params) if isinstance(expected, FuncType) else None
-    while taken and params[taken[-1]].default is not None and (want is None or len(taken) > want):
-        taken.pop()  # (left out: its default is used)
+    taken = [i for i, a in enumerate(bound) if a is None]
     ctx.call.partial = PartialInfo(target, params, bound, taken)
-    return FuncType(tuple(params[i].type for i in taken), ret)
+    rest = [Param(params[i].name, params[i].type, params[i].default, params[i].loc, False,
+                  "kwonly" if i > first_keyword else params[i].kind) for i in taken]
+    name = func.id if isinstance(func, A.Name) else func.attr if isinstance(func, A.Attribute) else "partial"
+    sig = Signature(f"{name}()", rest) if target is not None else None  # (a function value's have no names)
+    return FuncType(tuple(p.type for p in rest), ret, sig)
 
 
 MODULES["functools"] = Module("functools", {

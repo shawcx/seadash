@@ -43,7 +43,8 @@ from .types import (
     SYNC_ARITY, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var, EnumInfo, EnumMember, bool_decays, enum_decays, enum_flag_op, enum_mixin,
-    UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional, widen,
+    Signature, UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional,
+    filled_for, strip_sig, widen,
 )
 
 INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
@@ -135,6 +136,8 @@ def merge_entries(entries: list[Entry | None]) -> Entry:
     first = entries[0]
     if all(isinstance(e, Bound) and e.var is first.var for e in entries):
         same_view = all(e.ty == first.ty for e in entries)
+        if not same_view and all(strip_sig(e.ty) == strip_sig(first.ty) for e in entries):
+            return Bound(first.var, strip_sig(first.ty))  # (different functions: still narrowed, not which one)
         return first if same_view else Bound(first.var, first.var.type)
     sources: set[tuple[Type, Loc]] = set()
     for e in entries:
@@ -1183,7 +1186,7 @@ class Checker:
             if p.default is not None:
                 raise self.error(f"default values aren't supported in nested functions yet ('{p.name}')", p.default)
         name = A.Name(node.name, loc=node.loc)
-        self.bind(name, FuncType(tuple(p.type for p in info.params), info.ret), node)
+        self.bind(name, info.value_type(), node)
         info.var = name.sym
         saved = (self.scope, self.state, self.loops, self.handler_depth, self.finally_loops, self.lambda_depth, self.frame)
         try:
@@ -1489,6 +1492,8 @@ class Checker:
         if not assignable(t, declared):
             raise self.error(f"'{target.id}' is declared as {declared}, but the value is {t}", value)
         self.bind(target, declared, value, exact=True)
+        if isinstance(t, FuncType) and t.sig is not None and isinstance(entry := self.state.names[target.id], Bound):
+            self.state.names[target.id] = Bound(entry.var, t)  # (which function it holds, for keywords and defaults)
 
     def check_aug_assign(self, stmt: A.AugAssign, target: A.Expr, op: str, value: A.Expr) -> None:
         # `x += v` is checked as `x = x + v`, so for plain names it may rebind
@@ -1681,10 +1686,12 @@ class Checker:
                 raise self.error("a class can't be stored in a variable yet; call it, or call its class methods", value)
             if isinstance(t, ModuleType):
                 raise self.error(f"a module can't be stored in a variable; use `import ... as name` to rename it", value)
-            var = self.variable(name.id, t, name.loc)
+            var = self.variable(name.id, strip_sig(t), name.loc)
         view = var.type
         if isinstance(var.type, OptionalType) and t != NONE and not isinstance(t, OptionalType):
             view = var.type.inner  # just assigned a real value: known not None
+        if isinstance(t, FuncType) and t.sig is not None and assignable(t, view):
+            view = t  # (which function it is: calls through it can use keywords and defaults)
         self.state.names[name.id] = Bound(var, view)
         self.state.forget_attrs((name.id,))
         name.sym = var
@@ -2658,7 +2665,7 @@ class Checker:
         if name in self.functions:
             info = self.functions[name]
             e.sym = info
-            return FuncType(tuple(p.type for p in info.params), info.ret)
+            return info.value_type()
         if ((st := self.lookup_struct(name)) is not None and st.enum is not None
                 and not isinstance(strip_optional(expected) if expected else None, FuncType)):
             e.sym = st  # an enum class: `for c in Color`, `len(Color)`, `Color["RED"]`
@@ -2713,7 +2720,8 @@ class Checker:
         if isinstance(body, IterType):
             raise self.error(f"a lambda can't return {body.kind}(...); make a list with list(...)", e.body)
         ret = hint if hint is not None and hint != NONE and assignable(body, hint) else body
-        return FuncType(param_types, ret)
+        sig = Signature("<lambda>()", [Param(p.name, t, None, p.loc) for p, t in zip(e.params, param_types)])
+        return FuncType(param_types, ret, sig)
 
     def callable_as_value(self, e: A.Name | A.Attribute, expected: Type | None, name: str) -> Type:
         """Built-ins, constructors and module functions aren't values themselves (they're
@@ -3218,7 +3226,7 @@ class Checker:
                 return f.type
             if (method := vt.find_method(attr)) and method.name != "__init__":
                 e.sym = method  # a bound method: remembers its object
-                return FuncType(tuple(p.type for p in method.params), method.ret)
+                return method.value_type()
             if (ca := vt.find_class_attr(attr)) is not None:  # self.version: the object's class's value
                 e.sym = ("class_attr", ca)
                 return ca.type
@@ -3283,7 +3291,7 @@ class Checker:
             return ModuleType(m.name)
         if isinstance(m, FuncInfo):  # utils.helper as a value
             e.sym = m
-            return FuncType(tuple(p.type for p in m.params), m.ret)
+            return m.value_type()
         if isinstance(m, Var):  # utils.LIMIT
             e.sym = m
             return m.type
@@ -3788,6 +3796,8 @@ class Checker:
             tt = self.check_expr(target, FuncType(arg_types, None))
             if not isinstance(tt, FuncType):
                 raise self.error(f"target must be a function, not {tt}", target)
+            if len(tt.params) != len(arg_types) and (filled := filled_for(tt, arg_types)) is not None:
+                target.fill_to = tt = filled  # Thread(target=work) with work(n=3): the defaults filled in
             if len(tt.params) != len(arg_types) or not all(assignable(a, p) for a, p in zip(arg_types, tt.params)):
                 params = ", ".join(map(str, tt.params)) or "no arguments"
                 given = ", ".join(map(str, arg_types)) or "none"
@@ -4125,8 +4135,12 @@ class Checker:
             raise self.error(f"{t} might be None; check it first", e.func)
         if not isinstance(t, FuncType):
             raise self.error(f"{t} is not callable", e.func)
+        if t.sig is not None:  # which function it is is known: keywords and defaults, as in a direct call
+            e.sym = CallTarget("value", t, self.match_args(e, t.sig.params, t.sig.what))
+            return t.ret
         if e.keywords:
-            raise self.error("keyword arguments can't be used when calling a function value", e.keywords[0])
+            raise self.error("keyword arguments can't be used when calling a function value whose parameters "
+                             "aren't known here", e.keywords[0])
         if len(e.args) != len(t.params):
             raise self.error(f"this function takes {plural(len(t.params), 'argument')} but {len(e.args)} were given", e)
         for i, (arg, pt) in enumerate(zip(e.args, t.params)):

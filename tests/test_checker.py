@@ -771,9 +771,12 @@ def test_lambda_parameter_types_come_from_context():
     ("f = lambda x: x", "can't tell the types of this lambda's parameters from here; give it a type, e.g. `f: (int) -> int = lambda ...`"),
     ("f: (int) -> int = lambda a, b: a", "this lambda takes 2 parameters, but (int) -> int is expected here"),
     ("f: (int) -> int = lambda a: 'x'", "'f' is declared as (int) -> int, but the value is (int) -> str"),
-    ("f: (int) -> int = lambda a: a\nf('x')", "argument 1 must be int, not str"),
-    ("f: (int) -> int = lambda a: a\nf(1, 2)", "this function takes 1 argument but 2 were given"),
-    ("f: (int) -> int = lambda a: a\nf(a=1)", "keyword arguments can't be used when calling a function value"),
+    ("def g(f: (int) -> int) -> None:\n    f('x')", "argument 1 must be int, not str"),
+    ("def g(f: (int) -> int) -> None:\n    f(1, 2)", "this function takes 1 argument but 2 were given"),
+    ("def g(f: (int) -> int) -> None:\n    f(a=1)",
+     "keyword arguments can't be used when calling a function value whose parameters aren't known here"),
+    ("f: (int) -> int = lambda a: a\nf('x')", "argument 'a' of <lambda>() must be int, not str"),
+    ("f: (int) -> int = lambda a: a\nf(b=1)", "<lambda>() got an unexpected keyword argument 'b'"),
     ("f: ((int) -> int)? = None\nf(1)", "((int) -> int)? might be None; check it first"),
     ("x = 5\nx(1)", "int is not callable"),
     ("xs = sorted([{1}], key=lambda s: s)", "sorted() key must return something comparable, not set[int]"),
@@ -2253,8 +2256,8 @@ PARTIAL = "from functools import partial\ndef f(a: int, b: int, c: int = 3) -> i
     ("p = partial(f, d=1)\n", "partial(f): the function has no parameter 'd'"),
     ("p = partial(f, 1, a=2)\n", "partial(f) got multiple values for argument 'a'"),
     ("p = partial(f, 'x')\n", "partial(f): argument 'a' must be int, not str"),
-    ("p = partial(f, a=1)\n", "partial(f): after binding 'a' by keyword, 'b' could only be passed by keyword, which "
-                               "seadash's function values can't take yet; bind it too, or use a lambda"),
+    ("p = partial(f, a=1)\nx = p(2)\n", "f() takes 0 positional arguments but 1 were given"),
+    ("p = partial(f, 1)\nx = p(2, d=4)\n", "f() got an unexpected keyword argument 'd'"),
     ("g: Callable[[int], int] = lambda x: x\np = partial(g, x=1)\n",
      "partial() of a function value can't bind keywords (its parameters have no names here)"),
 ])
@@ -2285,7 +2288,7 @@ def test_fnmatch_glob_errors(src, msg):
 def test_partial_types():
     info = ok("from typing import Callable\n" + PARTIAL + "p = partial(f, 1)\nq = partial(f, b=2, c=4)\nr = partial(f, 1, 2, 3)\n"
               "s: Callable[[int, int], int] = partial(f, 1)\n")
-    assert {"p: (int) -> int", "q: (int) -> int", "r: () -> int", "s: (int, int) -> int"} <= set(variables(info))
+    assert {"p: (int, int) -> int", "q: (int) -> int", "r: () -> int", "s: (int, int) -> int"} <= set(variables(info))
 
 
 

@@ -45,7 +45,7 @@ from .types import (
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
-    TupleType, Type, Var, element_type, is_numeric, user_dunder, ClassRefType, bool_decays, enum_decays, enum_flag_op, enum_mixin,
+    TupleType, Type, Var, element_type, fills_defaults, is_numeric, user_dunder, ClassRefType, bool_decays, enum_decays, enum_flag_op, enum_mixin,
 )
 
 CPP_KEYWORDS = frozenset(
@@ -320,9 +320,22 @@ class CodeGen:
             items = ", ".join(self.coerce(f"std::get<{i}>(sd_t)", t, dst.elem) for i, t in enumerate(src.elts))
             param = "sd_t" if src.elts else ""
             return f"[&](auto&& {param}) {{ return {self.cpp_type(dst)}{{{items}}}; }}({code})"
+        if isinstance(src, FuncType) and isinstance(strip_optional(dst), FuncType) and fills_defaults(src, strip_optional(dst)):
+            return f"static_cast<{self.cpp_type(dst)}>({self.fill_defaults(code, src, strip_optional(dst))})"
         if src == NONE:
             return f"{self.cpp_type(dst)}{{}}"
         return f"static_cast<{self.cpp_type(dst)}>({code})"
+
+    def fill_defaults(self, code: str, src: FuncType, dst: FuncType) -> str:
+        """A known function as a function type with fewer parameters: a lambda passing on its
+        arguments, and the defaults (or an empty *args) for the rest."""
+        params = [f"{self.cpp_type(t)} sd_a{i}" for i, t in enumerate(dst.params)]
+        args = [f"sd_a{i}" for i in range(len(dst.params))]
+        for p in src.sig.params[len(dst.params):]:
+            args.append(f"{self.cpp_type(p.type)}{{}}" if p.star else self.expr_as(p.default, p.type))
+        call = f"sd_f({', '.join(args)})"
+        body = f"{call};" if dst.ret == NONE else f"return {call};"
+        return f"[sd_f = {code}]({', '.join(params)}) mutable -> {self.cpp_type(dst.ret)} {{ {body} }}"
 
     def expr_as(self, e: A.Expr, dst: Type) -> str:
         return self.coerce(self.expr(e), e.ty, dst)
@@ -1822,6 +1835,8 @@ class CodeGen:
             return self.tuple_as_list(self.expr_code(e), e.ty, elem)
         if getattr(e, "copy_out", False):  # a @value class's list used as a value: a copy of it
             return f"sd::value_copy({self.expr_code(e)})"
+        if (fill_to := getattr(e, "fill_to", None)) is not None:  # map(greet, names): its defaults filled in
+            return self.fill_defaults(self.expr_code(e), e.ty, fill_to)
         return self.expr_code(e)
 
     def tuple_as_list(self, code: str, t: TupleType, elem: Type) -> str:
@@ -2477,7 +2492,10 @@ class CodeGen:
                 return f"{rec}({', '.join([rec, *args])})"
             case "value":
                 ft: FuncType = target.target
-                args = ", ".join(self.expr_as(a, pt) for a, pt in zip(e.args, ft.params))
+                if ft.sig is not None:  # keywords and defaults matched to the known function's parameters
+                    args = ", ".join(self.slot_codes(target.args, ft.sig.params))
+                else:
+                    args = ", ".join(self.expr_as(a, pt) for a, pt in zip(e.args, ft.params))
                 f = self.expr(e.func)
                 return f"{f}({args})" if isinstance(e.func, A.Name) else f"({f})({args})"
             case "builtin":

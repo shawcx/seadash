@@ -53,17 +53,11 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - Decorators on nested functions (other than `@functools.wraps`).
 - `contextlib`: `chdir`, `redirect_stdout`/`redirect_stderr`, `ContextDecorator`, `ExitStack.push`, async
   context managers. Generators can't `yield` in an `except`/`finally` block (C++ can't suspend there).
-- Functions: `**kwargs`, default
-  values in nested functions and lambdas, and keywords or defaults when calling a function held in
-  a variable.
+- Functions: `**kwargs`, default values in nested functions and lambdas, and keywords or defaults when
+  calling a function held in a parameter, field or container (its signature isn't known there).
 - No tracebacks for uncaught exceptions.
 
 ## Open questions
-
-- **Function values that keep their signature** (decided as the next step for functions, not
-  built): when the compiler knows which function a value is (a `def`, a bound method, a
-  `partial`), its type keeps parameter names and defaults, so calls through it can use keywords
-  and leave arguments out, as in Python. That lifts `partial`'s limits too.
 
 - **Mutable default arguments.** `def f(xs: list[int] = [])` makes a new list on every call; Python
   makes one when the function is defined and shares it between calls. Match Python, or keep this and
