@@ -12,6 +12,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>  // (makedev, major, minor: in sys/types.h on macOS)
+#endif
 #include <zlib.h>
 
 #include <algorithm>

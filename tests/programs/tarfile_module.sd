@@ -100,7 +100,7 @@ def on_disk() -> None:
     with tarfile.open(archive) as tf:
         names = tf.getnames()
         print(names)
-        print([(m.name, m.uname, oct(m.mode), m.issym(), m.linkname) for m in tf.getmembers() if m.name.endswith("a.txt") or m.name.endswith("link")])
+        print([(m.name, m.uname, oct(m.mode) if m.isfile() else "-", m.issym(), m.linkname) for m in tf.getmembers() if m.name.endswith("a.txt") or m.name.endswith("link")])
         tf.list(verbose=False)
         dest = os.path.join(tmp, "dest")
         tf.extractall(dest)

@@ -25,7 +25,7 @@ w:xz True
 True False
 True w
 ['proj', 'proj/a.txt', 'proj/link', 'proj/sub', 'proj/sub/b.txt', 'proj/sub/deeper']
-[('proj/a.txt', 'nobody', '0o640', False, ''), ('proj/link', 'nobody', '0o755', True, 'a.txt')]
+[('proj/a.txt', 'nobody', '0o640', False, ''), ('proj/link', 'nobody', '-', True, 'a.txt')]
 proj/ 
 proj/a.txt 
 proj/link 
