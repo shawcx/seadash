@@ -20,3 +20,4 @@ bob True False None ['address', 'age', 'name']
 {"city": "Oslo", "zip": "0150"} False
 type error: this json.Value is a string, not an int
 key error: 'missing'
+json: expected an array of 2 items at $, got an array

@@ -58,3 +58,7 @@ try:
     print(data[0]["missing"])
 except KeyError as e:
     print("key error:", e)
+try:
+    short: tuple[int, int] = json.loads("[1]")
+except ValueError as e:
+    print(e)

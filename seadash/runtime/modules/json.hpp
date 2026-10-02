@@ -519,7 +519,7 @@ T decode(const Value& v, const std::string& path) {
     } else if constexpr (is_tuple<T>::value) {
         constexpr std::size_t n = std::tuple_size_v<T>;
         if (!v.is_list() || v.arr_->size() != n) {
-            std::string want = "an array of " + std::to_string(n) + " arr_";
+            std::string want = "an array of " + std::to_string(n) + " items";
             mismatch(want.c_str(), v, path);
         }
         return [&]<std::size_t... I>(std::index_sequence<I...>) {
@@ -703,7 +703,7 @@ inline void write(std::string& out, const Value& v, const WriteOptions& o, std::
 template <class T>
 std::string dumps(const T& x, std::optional<std::int64_t> indent = std::nullopt, bool sort_keys = false,
                   bool ensure_ascii = true, std::optional<std::tuple<std::string, std::string>> separators = std::nullopt) {
-    // Python's defaults: ", " between arr_, or "," when indenting (the newline follows).
+    // Python's defaults: ", " between items, or "," when indenting (the newline follows).
     WriteOptions o{indent, sort_keys, ensure_ascii, indent ? "," : ", ", ": "};
     if (separators) std::tie(o.item_sep, o.key_sep) = *separators;
     std::string out;
