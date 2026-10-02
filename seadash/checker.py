@@ -310,9 +310,15 @@ class Checker:
             if isinstance(stmt, (A.Import, A.ImportFrom)):
                 self.declare_import(stmt)
         for stmt in module.body:
+            if isinstance(stmt, A.FunctionDef):
+                implicit_type_params(stmt)
             match stmt:
                 case A.ClassDef() | A.FunctionDef() if stmt.type_params:
                     if stmt.decorators and isinstance(stmt, A.FunctionDef):
+                        if getattr(stmt, "implicit", None):
+                            p = stmt.implicit[0]
+                            raise self.error(f"a decorated function's parameters need type annotations (yet): "
+                                             f"'{p}'", stmt)
                         raise self.error("decorators on generic functions aren't supported yet", stmt.decorators[0])
                     self.declare_generic(stmt)
                 case A.ClassDef():
@@ -724,6 +730,17 @@ class Checker:
                     f"Copying {st.origin or st.name} would share it: {fix}", f.loc,
                 )
 
+    def default_type(self, p: A.Param) -> Type:
+        """An unannotated parameter's type, from its default (as `n = 0` types a variable)."""
+        try:
+            t = self.check_expr(p.default)
+        except CheckError:
+            t = UNKNOWN
+        if t in (NONE, UNKNOWN) or contains_unknown(t):
+            raise self.error(f"can't tell the type of parameter '{p.name}' from its default; annotate it, "
+                             f"e.g. `{p.name}: int | None = None`", p)
+        return t
+
     def resolve_signature(self, node: A.FunctionDef, owner: StructType | None, kind: str = "method") -> FuncInfo:
         if node.type_params and not self.type_env:
             raise self.error("generic methods are not supported yet (make the class generic instead)", node)
@@ -741,6 +758,10 @@ class Checker:
                 raise self.error("'self' doesn't need a type annotation", first)
         resolved: list[Param] = []
         for p in params:
+            if p.annotation is None and p.default is not None and not p.star:  # def f(n=0): n is an int
+                t = self.default_type(p)
+                resolved.append(Param(p.name, t, p.default, p.loc, p.star, p.kind, p.double_star))
+                continue
             if p.annotation is None:
                 example = f"*{p.name}: str" if p.star else f"**{p.name}: int" if p.double_star else f"{p.name}: int"
                 raise self.error(
@@ -893,6 +914,10 @@ class Checker:
         self.check_block(node.body)
         self.check_frozen_changes(node.body, info)
         self.check_dropped_changes(param_nodes, node.body)
+        if getattr(info, "inferring", False):
+            if not self.state.dead:
+                info.returned.append(NONE)  # (falling off the end returns None)
+            return
         if not self.state.dead and info.ret != NONE and not isinstance(info.ret, OptionalType) and not info.generator:
             raise self.error(
                 f"function '{info.name}' can reach its end without returning a value "
@@ -984,6 +1009,25 @@ class Checker:
             return info.ret
         return self.check_constructor(e, owner.instantiate_class(gen, type_args, e))
 
+    def generic_as_value(self, e: A.Name, gen: GenericDef, expected: Type | None) -> Type:
+        """A generic function (or one with unannotated parameters) as a value: the expected
+        function type decides its types, as in sorted(xs, key=f)."""
+        want = strip_optional(expected) if expected is not None else None
+        params = generic_params(gen)
+        tvars = set(gen.node.type_params)
+        env: dict[str, Type] = {}
+        if isinstance(want, FuncType) and len(want.params) >= len([p for p in gen.node.params if p.default is None]):
+            for (_, annotation), t in zip(params, want.params):
+                if annotation is not None:
+                    gen.checker.unify(annotation, t, tvars, env)
+        if any(v not in env for v in gen.node.type_params):
+            raise self.error(
+                f"'{gen.name}' has parameters without types, so it can only be called, or passed where a "
+                f"function type is expected (key={gen.name}); annotate its parameters to use it as a value here", e)
+        info = gen.checker.instantiate_function(gen, tuple(env[v] for v in gen.node.type_params), e)
+        e.sym = info
+        return info.value_type()
+
     def infer_type_args(self, e: A.Call, gen: GenericDef, expected: Type | None) -> tuple:
         owner = gen.checker
         tvars = set(gen.node.type_params)
@@ -1015,6 +1059,10 @@ class Checker:
             hint = owner.partial_type(annotation, env, tvars)
             owner.unify(annotation, self.check_expr(arg, hint), tvars, env)
         missing = [v for v in gen.node.type_params if v not in env]
+        if missing and all(v.startswith("type of ") for v in missing):
+            names = " and ".join(f"'{v[len('type of '):]}'" for v in missing)
+            raise self.error(f"can't tell the type of {names} for {gen.name} from this call; annotate the "
+                             f"parameter, e.g. `{missing[0][len('type of '):]}: int`", e)
         if missing:
             example = ", ".join("int" for _ in gen.node.type_params)
             raise self.error(
@@ -1076,7 +1124,11 @@ class Checker:
     def instantiate_function(self, gen: GenericDef, type_args: tuple, node: A.Node) -> FuncInfo:
         key = (gen.name, type_args)
         if key in self.instances:
-            return self.instances[key]
+            info = self.instances[key]
+            if getattr(info, "inferring", False):
+                raise self.error(f"can't infer what '{gen.name}' returns, as it calls itself; add `-> type` to its "
+                                 f"definition", node)
+            return info
         self.check_instantiable(gen, type_args, node)
         env = dict(zip(gen.node.type_params, type_args))
         copy = deepcopy(gen.node)
@@ -1086,9 +1138,37 @@ class Checker:
         self.instances[key] = info
         self.out_functions.append(info)
         self.resolve_in_context(env, lambda: self.check_param_defaults(info))
+        if gen.node.returns is None and not info.generator:  # no `-> T`: what its body returns, for these types
+            self.infer_return(info, display, env)
+            return info
         self.pending.append((display, env, [info]))
         self.check_pending_instances()
         return info
+
+    def infer_return(self, info: FuncInfo, display: str, env: dict) -> None:
+        """Check the instance's body now, collecting what its `return`s give (falling off the
+        end returns None): the return type is their common type."""
+        info.inferring, info.returned = True, []
+        info.ret = UNKNOWN
+        try:
+            self.resolve_in_context(env, lambda: self.check_function_body(info))
+        except CheckError as err:
+            if not err.message.startswith("in "):
+                err.message = f"in {display}: {err.message}"
+            raise
+        finally:
+            info.inferring = False
+        values = [t for t in info.returned if t != NONE]
+        ret: Type | None = NONE
+        for t in values:
+            joined = t if ret == NONE else join(ret, t) or widen(ret, t)
+            if joined is None:
+                raise self.error(f"in {display}: '{info.name}' returns different types, {ret} and {t}; give it one "
+                                 f"return type, or annotate it", info.node)
+            ret = joined
+        if values and NONE in info.returned and not isinstance(ret, OptionalType):
+            ret = OptionalType(ret)  # (some paths return nothing: None)
+        info.ret = ret
 
     def instantiate_class(self, gen: GenericDef, type_args: tuple, node: A.Node) -> StructType:
         key = (gen.name, type_args)
@@ -1768,6 +1848,10 @@ class Checker:
         if scope.info.generator:
             if value is not None:
                 raise self.error("a generator can only `return` without a value (to finish early)", value)
+            self.state.dead = True
+            return
+        if getattr(scope.info, "inferring", False):  # the return type is being worked out from these
+            scope.info.returned.append(NONE if value is None else self.check_expr(value))
             self.state.dead = True
             return
         if value is None:
@@ -2649,6 +2733,8 @@ class Checker:
             raise self.error(f"'{name}' {what}", e)
         if not self.scope.is_module and name in self.module_assign_counts:
             var = self.globals.get(name)
+            if var is None and self.module_assign_counts[name] == 1:  # (a generic body checked at its first call)
+                raise self.error(f"'{name}' isn't set yet when this runs: the module assigns it later", e)
             if var is None and name in self.module_deleted:
                 raise self.error(f"functions can't use the module-level '{name}': it's deleted (line "
                                  f"{self.module_deleted[name].line})", e)
@@ -2671,6 +2757,8 @@ class Checker:
             info = self.functions[name]
             e.sym = info
             return info.value_type()
+        if (gen := self.generics.get(name)) is not None and gen.kind == "func":
+            return self.generic_as_value(e, gen, expected)
         if ((st := self.lookup_struct(name)) is not None and st.enum is not None
                 and not isinstance(strip_optional(expected) if expected else None, FuncType)):
             e.sym = st  # an enum class: `for c in Color`, `len(Color)`, `Color["RED"]`
@@ -4532,6 +4620,19 @@ DUNDER_SIGNATURES = {
 
 def accepts(m: FuncInfo, t: Type) -> bool:
     return len(m.params) == 1 and assignable(t, m.params[0].type)
+
+
+def implicit_type_params(node: A.FunctionDef) -> None:
+    """`def f(x)`: an unannotated parameter (without a default) takes the type of what it's given,
+    as if f were `def f[T](x: T)`; each call compiles for its argument types, like a C++ template."""
+    implicit = [p for p in node.params if p.annotation is None and p.default is None and not p.double_star]
+    if not implicit or (node.params and node.params[0].name in ("self", "cls")):
+        return
+    for p in implicit:
+        tvar = f"type of {p.name}"
+        p.annotation = A.TypeName(tvar, [], loc=p.loc)
+        node.type_params = [*node.type_params, tvar]
+    node.implicit = [p.name for p in implicit]
 
 
 @dataclass

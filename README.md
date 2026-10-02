@@ -127,6 +127,23 @@ a = str(a)          # fine: a is now a str
 total: float = 0    # annotate when you want to
 ```
 
+**Annotations on functions are optional too.** A parameter without one takes the type of what
+it's given: each call compiles for its argument types, like a C++ template (or `def f[T](x: T)`),
+and the return type comes from the body. Annotate to get errors at the definition rather than at
+the call, and for methods, which still need them.
+
+```python
+def add(a, b):
+    return a + b
+
+def negate(x):
+    return -x
+
+add(1, 2)                        # 3
+add("sea", "dash")               # 'seadash'
+sorted([3, 1, 2], key=negate)    # [3, 2, 1]: the expected function type decides x
+```
+
 **`@value` classes are values; other classes are shared references.** Lists, dicts and sets
 are shared references too, as in Python; a value class's lists are part of its value, so
 they're copied with it. `@value` is ordinary Python syntax, so seadash files still work with
@@ -305,6 +322,7 @@ seadash borrows Python's syntax, not all of its semantics:
 - **Enums are fixed when compiling.** A member's value must be a constant (a literal, a tuple of them, or ints combined with operators and earlier members, `RW = R | W`), and all of an enum's values have one type. Not supported: `__init__`/`__new__` on an enum, `_missing_` and the other `_sunder_` hooks, `__members__`, the functional API (`Enum("Color", "RED GREEN")`), other mixins, inheriting from an enum, and `print(Color)` itself. An `IntEnum`/`StrEnum` member is an int/str wherever one is expected (arithmetic, comparisons, arguments, str methods), but a list of them isn't a `list[int]` (so `sum(Level)` or `"-".join(Mode)` need `.value`). A plain `Enum` member compared with another type (`Color.RED == 1`) is a compile error rather than `False`, and so is `isinstance(member, Color)`. A flag's `.name` is a `str \| None`. `match` exhaustiveness counts members, not flag combinations.
 - **`f(*xs)` with a list** fills the parameters after the ones given, up to any passed by name, or goes to `*args`; its length is checked when it runs, with Python's `TypeError`. It can't fill parameters that have defaults, and of the builtins only `print`, `zip`, `itertools.chain`/`product` and `os.path.join` take one (a tuple can be unpacked into any call). `zip(*rows)` and `product(*lists)` give `tuple[T, ...]`s, as the number of rows isn't known when compiling, and read each row first.
 - **`f(**d)`** takes the arguments it doesn't otherwise get from `d` when it runs (Python's `TypeError`s for a missing, unexpected or repeated one), but only parameters whose type `d`'s values fit, one `**` per call, and not into builtins. A `**kwargs` parameter has one value type, like any dict.
+- **Unannotated parameters are generic, not dynamic.** `def f(x)` compiles once per argument type, so `f` works with anything that supports what its body does, but each call's types must be known when compiling: `f([])` needs a typed list, a function that calls itself needs `-> type`, and `f` as a value needs a function type from context (`key=f`). A parameter with a default takes the default's type (`def f(n=0)` takes ints, not floats). Methods, decorated functions and nested functions still need annotations.
 - **Augmented assignment to a slice** (`xs[1:3] += ys`) isn't supported; write `xs[1:3] = xs[1:3] + ys`.
 - **`del`** works on names, items, slices and keys, as in Python, but a function can't `del` a global or `nonlocal` variable, nor one a nested function or lambda uses, and functions can't read a module-level name that's deleted. Reading a deleted name is a compile error rather than a `NameError`.
 - **Signal handlers run on a thread of their own**, since there's no interpreter loop to stop the main thread between statements. So a handler is checked like a thread's code (to tell the main thread to stop, set a `threading.Event` rather than a global), and it runs alongside the main thread rather than interrupting it. `raise_signal()` and `os.kill()` of the program's own process still wait for the handler, as in Python. Nothing can be raised in the main thread: an exception or `sys.exit()` escaping a handler ends the program at once (no `finally` blocks, and other threads aren't waited for), and there's no `KeyboardInterrupt`: Ctrl-C ends the program, as SIGINT's default action does. A handler's `frame` is always `None`, and a handler may itself call `signal.signal()`. `getsignal(SIGPIPE)` is `SIG_DFL` (Python ignores SIGPIPE when it starts). `valid_signals()` is a `set[int]`. Not yet: `setitimer`, `siginterrupt`, `set_wakeup_fd`, `sigwait`, `pthread_sigmask`, `pthread_kill`, the `Handlers` enum, and calling a handler that `getsignal()` gave.

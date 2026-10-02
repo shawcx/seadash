@@ -35,7 +35,7 @@ code.
 
 ## Typing rules
 
-- **Annotate function parameters and returns.** Local types are inferred. Annotate an empty
+- **Function annotations are optional for plain functions.** An unannotated parameter takes the type it's called with (each call compiles separately, like a template), and the return type comes from the body; methods still need annotations, and annotating gives errors at the definition. Local types are inferred. Annotate an empty
   container when its use doesn't decide its type: `names: list[str] = []`.
 - **Containers hold one type.** `[1, "a"]` is an error, and `[1, 2.5]` widens to
   `list[float]`. Model a mix with a class, a tuple, or `json.Value`.

@@ -11,7 +11,10 @@ The name is final (a nod to the author's two kids).
   is a decision for the user.
 - **Static types, inferred.** Names can be rebound to a new type (`a = 2; a = str(a)`): each
   (name, type) gets its own C++ variable. `T?` / `T | None` is optional, and the checker
-  narrows it (also on attributes, `isinstance`, `args.command == "add"`...).
+  narrows it (also on attributes, `isinstance`, `args.command == "add"`...). A function's
+  unannotated parameters take the types they're called with (`def f(x)` is `def f[T](x: T)`,
+  compiled per call like a C++ template) and its return type then comes from its body; a
+  parameter with a default takes the default's type. Methods still need annotations.
 - **A `@value` class is a value, any other class a shared reference** (`std::shared_ptr`).
   `@value` comes from `from seadash import value` (it was a `struct` keyword, which broke
   `import struct`); internally its kind is still "struct" and the C++ is a plain struct.

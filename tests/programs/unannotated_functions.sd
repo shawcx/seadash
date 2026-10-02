@@ -1,0 +1,49 @@
+# Parameters without annotations take the type of what they're given (each call compiles for
+# its argument types, like a C++ template), and the return type comes from the body.
+def matt(arg):
+    print(arg)
+
+
+def add(a, b):
+    return a + b
+
+
+def first(xs):
+    for x in xs:
+        return x
+    return None
+
+
+def describe(thing, prefix="item"):
+    return f"{prefix}: {thing}"
+
+
+def total(*nums):
+    return sum(nums)
+
+
+matt(1)
+matt("two")
+matt([3.0, 4.5])
+print(add(1, 2), add("a", "b"), add([1], [2]), add(1, 2.5))
+print(first([5, 6]), first(["x"]), first([1][:0]))
+print(describe(3), describe("hat", prefix="thing"))
+print(total(1, 2, 3))
+
+
+def negate(x):
+    return -x
+
+
+def shout(word, times=1):
+    return (word.upper() + "!") * times
+
+
+def largest(a, b):
+    if a > b:
+        return a
+    return b
+
+
+print(sorted([3, 1, 2], key=negate), list(map(shout, ["hi", "yo"])), shout("hey", times=2))
+print(largest(3, 9), largest("pear", "apple"), largest(2.5, 1.0))

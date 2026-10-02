@@ -332,7 +332,7 @@ def test_is_between_an_optional_and_an_object():
 
 
 def test_params_need_annotations():
-    e = err("def f(x): pass")
+    e = err("class C:\n    def m(self, x):\n        pass\n")
     assert e.message == "parameter 'x' needs a type annotation, e.g. `x: int`"
 
 
@@ -2450,7 +2450,7 @@ def test_class_attribute_errors(src, msg):
 
 
 @pytest.mark.parametrize("src,msg", [
-    ("def f(*args):\n    pass\n", "parameter 'args' needs a type annotation, e.g. `*args: str`"),
+    ("class C:\n    def m(self, *args):\n        pass\n", "parameter 'args' needs a type annotation, e.g. `*args: str`"),
     ("def f(*args: int, x: int):\n    pass\nf(1, 2)\n", "f() is missing keyword-only argument 'x'"),
     ("def f(*args: int = 1):\n    pass\n", "*args can't have a default value"),
     ("def f(*args: int):\n    pass\nf(1, 'a')\n", "*args of f() takes int arguments, not str"),
@@ -2946,3 +2946,30 @@ def test_signals_table_matches_the_runtime():
     names = re.findall(r'"(SIG\w+)"', table[:table.index("}")])
     values = re.findall(r"\b(SIG\w+)\b", table[table.index("}") + 1:table.index("},", table.index("}") + 1)])
     assert names == values == builtins.SIGNAL_NAMES
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("def fact(n):\n    return 1 if n < 2 else n * fact(n - 1)\nprint(fact(5))\n",
+     "in fact[int]: can't infer what 'fact' returns, as it calls itself; add `-> type` to its definition"),
+    ("def f(x):\n    if x:\n        return 1\n    return 'a'\nf(True)\n",
+     "in f[bool]: 'f' returns different types, int and str; give it one return type, or annotate it"),
+    ("def f(a, b):\n    return a - b\nf('x', 'y')\n", "in f[str, str]: unsupported operand types for -: str and str"),
+    ("def f(x=None):\n    pass\n",
+     "can't tell the type of parameter 'x' from its default; annotate it, e.g. `x: int | None = None`"),
+    ("import functools\n@functools.cache\ndef f(x):\n    return x\n",
+     "a decorated function's parameters need type annotations (yet): 'x'"),
+    ("def f(x):\n    return x\ng = f\n",
+     "'f' has parameters without types, so it can only be called, or passed where a function type is expected "
+     "(key=f); annotate its parameters to use it as a value here"),
+    ("def f(x):\n    return x + LATER\nprint(f(1))\nLATER = 2\n",
+     "in f[int]: 'LATER' isn't set yet when this runs: the module assigns it later"),
+])
+def test_unannotated_function_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_unannotated_function_types():
+    info = ok("def add(a, b):\n    return a + b\ndef first(xs):\n    for x in xs:\n        return x\n    return None\n"
+              "def shout(word, times=1):\n    return word * times\n"
+              "x = add(1, 2.5)\ny = first(['a'])\nz = shout('a')\n")
+    assert variables(info) == ["x: float", "y: str?", "z: str"]
