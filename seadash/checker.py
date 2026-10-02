@@ -40,7 +40,7 @@ from .parser import parse
 from .types import (
     BINARY_FILE, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
-    SYNC_ARITY, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
+    SYNC_ARITY, SelectorType, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     SetType, StructType, TupleType, Type, Var, EnumInfo, EnumMember, bool_decays, enum_decays, enum_flag_op, enum_mixin,
     Signature, UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional,
@@ -1242,6 +1242,8 @@ class Checker:
             t = SyncType(kind, tuple(self.resolve_type(a) for a in args))
             self.check_sync_contents(t, node)
             return t
+        if isinstance(m := self.module_member_named(name), builtins.Function) and m.generic_type is not None:
+            return m.generic_type(self, [self.resolve_type(a) for a in args], node)  # selectors.DefaultSelector[...]
         if self.module_member_named(name) is builtins.FUTURE_MARKER:  # Future[int]
             if len(args) != 1:
                 raise self.error("Future takes one type argument, e.g. Future[int]", node)
@@ -1913,6 +1915,8 @@ class Checker:
             return WithInfo("lock", BOOL, None, False)
         if t == SOCKET:
             return WithInfo("socket", t, None, False)
+        if isinstance(t, SelectorType):  # `with selectors.DefaultSelector() as sel:` closes it at the end
+            return WithInfo("selector", t, None, False)
         if t == builtins.HTTP_RESPONSE:  # `with urlopen(url) as r:` closes the connection at the end
             return WithInfo("response", t, None, False)
         if t == builtins.EXECUTOR:  # `with ThreadPoolExecutor() as pool:` waits for the work at the end
@@ -3497,6 +3501,9 @@ class Checker:
                 e.sym = CallTarget("method", method, self.match_args(e, method.params, f"{func.attr}()"))
                 return method.ret
             handler = builtins.method_for(owner, func.attr)
+            attrs = builtins.type_attributes(owner)
+            if handler is None and attrs and func.attr in attrs and isinstance(strip_optional(attrs[func.attr](owner)), FuncType):
+                return self.call_value(e, self.check_expr(func))  # key.data(...): an attribute holding a function
             if handler is None:
                 if isinstance(owner, OptionalType):
                     raise self.error(
@@ -4693,6 +4700,8 @@ def type_family(t: Type) -> str:
             return "set"
         case TupleType():
             return "tuple"
+        case SelectorType():
+            return "DefaultSelector"
     return str(t)
 
 

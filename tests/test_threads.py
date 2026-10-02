@@ -366,6 +366,28 @@ UNSAFE = [
         threading.Thread(target=work).start()
         items.append(2)
      """, "thread code uses the module-level 'items' (list[int]), but it's modified (line 10)"),
+    ("""
+        import selectors
+        sel = selectors.DefaultSelector()
+        sel.register(0, selectors.EVENT_READ)
+        def work(s: selectors.DefaultSelector[int]):
+            s.select(0)
+        threading.Thread(target=work, args=(sel,)).start()
+     """, "can't pass this to a thread: a selector (give each thread its own, or send the sockets to the thread "
+          "that selects)"),
+    ("""
+        import selectors
+        sel = selectors.DefaultSelector()
+        sel.register(0, selectors.EVENT_READ)
+        threading.Thread(target=lambda: print(len(sel.get_map()))).start()
+     """, "thread code uses the module-level 'sel' (DefaultSelector[int, None]), but a selector"),
+    ("""
+        import select
+        p = select.poll()
+        def work(q: select.poll):
+            q.poll(0)
+        threading.Thread(target=work, args=(p,)).start()
+     """, "can't pass this to a thread: a poll object (give each thread its own)"),
 ]
 
 

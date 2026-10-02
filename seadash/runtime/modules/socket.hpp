@@ -92,6 +92,7 @@ class Socket {
         if (!t) return;
         pollfd p{handle(), events, 0};
         int rc = ::poll(&p, 1, static_cast<int>(*t * 1000));
+        if (rc == 0 && *t == 0) raise_os(EAGAIN, std::nullopt);  // non-blocking: BlockingIOError, like Python
         if (rc == 0) timed_out();
         if (rc < 0) fail();
     }
@@ -136,6 +137,9 @@ public:
         state().timeout = t;
     }
     std::optional<double> gettimeout() const { return timeout(); }
+    // setblocking(False) is settimeout(0.0): calls that would wait raise BlockingIOError.
+    void setblocking(bool flag) { settimeout(flag ? std::nullopt : std::optional<double>(0.0)); }
+    bool getblocking() const { return timeout() != 0.0; }
 
     void connect(const Address& addr) {
         socklen_t len = 0;
@@ -150,6 +154,10 @@ public:
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         int rc = ::connect(fd, reinterpret_cast<sockaddr*>(&sa), len);
         int err = rc == 0 ? 0 : errno;
+        if (err == EINPROGRESS && *timeout() == 0) {  // non-blocking: it goes on connecting (select for writing)
+            fcntl(fd, F_SETFL, flags);
+            raise_os(err, std::nullopt);
+        }
         if (err == EINPROGRESS) {
             pollfd p{fd, POLLOUT, 0};
             int ready = ::poll(&p, 1, static_cast<int>(*timeout() * 1000));
@@ -177,7 +185,7 @@ public:
         socklen_t len = sizeof sa;
         int fd = ::accept(handle(), reinterpret_cast<sockaddr*>(&sa), &len);
         if (fd < 0) fail();
-        return {adopt(fd, state().family, state().type, timeout()), from_sockaddr(sa)};
+        return {adopt(fd, state().family, state().type, std::nullopt), from_sockaddr(sa)};  // blocking, as in Python
     }
 
     template <class B>
@@ -254,6 +262,8 @@ public:
         if (fd >= 0) ::close(fd);
     }
     std::int64_t fileno() const { return s_ ? s_->fd.load() : -1; }
+    bool is(const Socket& o) const { return s_ == o.s_; }  // the same socket object (Python's `is`)
+    friend bool operator==(const Socket& a, const Socket& b) { return a.is(b); }  // (Python's == is `is` too)
     std::string sd_repr() const {
         return "<socket fd=" + std::to_string(fileno()) + (s_ ? ", family=" + std::to_string(s_->family) +
                ", type=" + std::to_string(s_->type) : "") + ">";

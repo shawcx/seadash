@@ -37,7 +37,7 @@ from .errors import CheckError, Loc
 from .types import (
     element_type,
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, EXECUTOR, IMMUTABLE, LOCKED, VALUE, BuiltinClass, HTTPServerType,
-    DefaultDictType, DequeType, DictType, FutureType, GeneratorType, MatchType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
+    DefaultDictType, DequeType, DictType, FutureType, SelectorKeyType, SelectorType, GeneratorType, MatchType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
 MUTATING_METHODS = frozenset(
@@ -179,6 +179,10 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
                     f"or a frozen dataclass whose fields can't change either)")
         case FuncType():
             return "a function value (it could share variables it captured)"
+        case SelectorType():
+            return "a selector (give each thread its own, or send the sockets to the thread that selects)"
+        case SelectorKeyType():
+            return "a SelectorKey (send its fileobj or data instead)"
     return f"a {t} can't be shared between threads"
 
 

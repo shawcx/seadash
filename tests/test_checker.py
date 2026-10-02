@@ -1421,6 +1421,135 @@ def test_socket_annotations():
     """)
 
 
+def test_socket_blocking():
+    [v] = ok("import socket\ns = socket.socket()\ns.setblocking(False)\nx = s.getblocking()\n").globals[1:]
+    assert str(v.type) == "bool"
+    assert err("import socket\nsocket.socket().setblocking(1.5)\n").message == (
+        "socket.setblocking() argument 'flag' must be bool, not float")
+
+
+# ---- select, selectors ----------------------------------------------------------------
+
+SELECT_PRELUDE = "import os\nimport select\nimport selectors\nimport socket\n"
+
+
+@pytest.mark.parametrize("expr,ty", [
+    ("select.select([socket.socket()], [], [], 0.5)", "tuple[list[socket], list[socket], list[socket]]"),
+    ("select.select([], [1], [])", "tuple[list[int], list[int], list[int]]"),
+    ("select.select([open('f')], [3], [socket.socket()], None)", "tuple[list[TextIO], list[int], list[socket]]"),
+    ("select.poll()", "select.poll"),
+    ("select.poll().poll(10)", "list[tuple[int, int]]"),
+])
+def test_select_types(expr, ty):
+    [v] = ok(f"{SELECT_PRELUDE}x = {expr}\n").globals
+    assert str(v.type) == ty
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("select.select([1.5], [], [])", "select() takes lists of sockets, files or file descriptors (ints), not list[float]"),
+    ("select.select((1,), [], [])", "select() takes lists of sockets, files or file descriptors (ints), not tuple[int]"),
+    ("select.select([1], [], [], 'x')", "select() timeout must be a number of seconds or None, not str"),
+    ("select.select([1], [], [], timeout=1)", "select.select() takes no keyword arguments"),
+    ("select.select([1], [])", "select.select() takes 3 to 4 arguments (2 given)"),
+    ("select.poll().register('x')",
+     "select.poll.register() argument 'fd' must be a file descriptor (int), a socket or a file, not str"),
+])
+def test_select_errors(src, msg):
+    assert err(f"{SELECT_PRELUDE}{src}\n").message == msg
+
+
+def test_selector_types_come_from_the_first_register():
+    info = ok(SELECT_PRELUDE + textwrap.dedent("""
+        def handle(conn: socket.socket, mask: int):
+            pass
+        sel = selectors.DefaultSelector()
+        key = sel.register(socket.socket(), selectors.EVENT_READ, handle)
+        ready = sel.select(timeout=1)
+        data = key.data
+        fd = key.fd
+        everything = sel.get_map()
+        key.data(key.fileobj, 1)  # (an attribute holding a function can be called)
+    """))
+    assert [f"{v.cpp_name}: {v.type}" for v in info.globals] == [
+        "sel: DefaultSelector[socket, (socket, int) -> None]",
+        "key: SelectorKey[socket, (socket, int) -> None]",
+        "ready: list[tuple[SelectorKey[socket, (socket, int) -> None], int]]",
+        "data: (socket, int) -> None",
+        "fd: int",
+        "everything: dict[int, SelectorKey[socket, (socket, int) -> None]]",
+    ]
+
+
+def test_selector_types_from_annotations():
+    ok(SELECT_PRELUDE + textwrap.dedent("""
+        from typing import BinaryIO
+        class Conn:
+            name: str
+        def service(key: selectors.SelectorKey[socket.socket, Conn | None], mask: int) -> str:
+            return key.data.name if key.data is not None else "listener"
+        def serve(sel: selectors.DefaultSelector[socket.socket, Conn | None]):
+            sel.register(socket.socket(), selectors.EVENT_READ)
+            sel.register(socket.socket(), selectors.EVENT_READ, Conn("a"))
+            for key, mask in sel.select():
+                print(service(key, mask))
+        def files():
+            with selectors.DefaultSelector() as sel:  # decided by its first register(), here a file's
+                sel.register(os.fdopen(0, "rb"), selectors.EVENT_READ)
+                for key, mask in sel.select(0):
+                    f: BinaryIO = key.fileobj
+        def bare(sel: selectors.DefaultSelector):  # (bare: its types come from what's passed in)
+            for key, mask in sel.select(0):
+                print(key.fileobj.recv(10))
+        mine: selectors.DefaultSelector[socket.socket] = selectors.DefaultSelector()
+        serve(selectors.DefaultSelector())
+        bare(mine)
+    """))
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("sel = selectors.DefaultSelector()\nsel.select()",
+     "can't tell yet what this selector watches: register something with it first, or annotate it, e.g. "
+     "`sel: selectors.DefaultSelector[socket.socket, int] = selectors.DefaultSelector()`"),
+    ("sel = selectors.DefaultSelector()\nsel.modify(1, selectors.EVENT_READ)",
+     "can't tell yet what this selector watches: register something with it first, or annotate it, e.g. "
+     "`sel: selectors.DefaultSelector[socket.socket, int] = selectors.DefaultSelector()`"),
+    ("sel = selectors.DefaultSelector()\nsel.register(1.5, selectors.EVENT_READ)",
+     "DefaultSelector.register() argument 'fileobj' must be a file descriptor (int), a socket or a file, not float"),
+    ("sel = selectors.DefaultSelector()\nsel.register(1, 'r')",
+     "DefaultSelector.register() argument 'events' must be int, not str"),
+    ("sel = selectors.DefaultSelector()\nsel.register(1)", "DefaultSelector.register() is missing argument 'events'"),
+    ("sel = selectors.DefaultSelector()\nsel.register(1, selectors.EVENT_READ, 'a')\nsel.register(2, selectors.EVENT_READ, 3)",
+     "this selector's data is str, not int (as its first register() on line 6 decided)"),
+    ("sel = selectors.DefaultSelector()\nsel.register(1, selectors.EVENT_READ)\nsel.register(2, selectors.EVENT_READ, 'a')",
+     "this selector's data is None, not str (as its first register() on line 6 decided). To attach both, annotate it: "
+     "`sel: selectors.DefaultSelector[int, str?] = selectors.DefaultSelector()`"),
+    ("sel = selectors.DefaultSelector()\nsel.register(1, selectors.EVENT_READ, 'a')\nsel.register(2, selectors.EVENT_READ)",
+     "DefaultSelector.register() needs data: this selector's data is str (as its first register() on line 6 decided). "
+     "To register some without data, annotate it: `sel: selectors.DefaultSelector[int, str?] = selectors.DefaultSelector()`"),
+    ("sel = selectors.DefaultSelector()\nsel.register(1, selectors.EVENT_READ)\nsel.register(socket.socket(), selectors.EVENT_READ)",
+     "this selector watches int objects, not socket (as its first register() on line 6 decided)"),
+    ("sel: selectors.DefaultSelector[socket.socket, int] = selectors.DefaultSelector()\nsel.register(socket.socket(), 1)",
+     "DefaultSelector.register() needs data: this selector's data is int. To register some without data, annotate it: "
+     "`sel: selectors.DefaultSelector[socket.socket, int?] = selectors.DefaultSelector()`"),
+    ("sel = selectors.DefaultSelector()\nsel.register(1, 1)\nsel.unregister('x')",
+     "DefaultSelector.unregister() argument 'fileobj' must be int, not str"),
+    ("sel = selectors.DefaultSelector()\nsel.register(1, 1)\ndef f(s: selectors.DefaultSelector[socket.socket]):\n    pass\nf(sel)",
+     "argument 's' of f() must be DefaultSelector[socket, None], not DefaultSelector[int, None]"),
+    ("sel: selectors.DefaultSelector[float] = selectors.DefaultSelector()",
+     "a selector watches sockets, files or file descriptors (ints), not float"),
+    ("sel: selectors.DefaultSelector[int, int, int] = selectors.DefaultSelector()",
+     "a selector takes the type of what it watches and of the data registered with it, e.g. "
+     "DefaultSelector[socket.socket, int] (DefaultSelector[socket.socket] has no data)"),
+    ("def f(k: selectors.SelectorKey):\n    pass",
+     "SelectorKey takes the types its selector has, e.g. SelectorKey[socket.socket, int] (SelectorKey[socket.socket] has no data)"),
+    ("selectors.BaseSelector()", "BaseSelector is abstract (it's for annotations): make a selectors.DefaultSelector()"),
+    ("selectors.SelectorKey(1, 1, 1, None)", "a SelectorKey comes from a selector: register(), get_key(), select() or get_map()"),
+    ("selectors.DefaultSelector(1)", "selectors.DefaultSelector() takes exactly 0 arguments (1 given)"),
+])
+def test_selector_errors(src, msg):
+    assert err(f"{SELECT_PRELUDE}{src}\n").message == msg
+
+
 # ---- dunder methods -------------------------------------------------------------------
 
 VEC = """

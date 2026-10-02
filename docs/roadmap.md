@@ -41,6 +41,7 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - `tomllib`: `parse_float=`; class patterns for dates and times on a `json.Value` (`case date():`).
 - `io`: `readline(size)`, `readlines(hint)`, `getbuffer`, `read1`/`readinto`, `io.UnsupportedOperation`,
   `TextIOWrapper`; copying a `StringIO`; `gzip.GzipFile(fileobj=...)` over one.
+- `select`: `epoll`, `kqueue`, `devpoll` (selectors use `poll()` everywhere); `socket.socketpair()`.
 - `enum`: `__init__`/`__new__` on enums (members built from tuples), `_missing_` and other `_sunder_` hooks,
   `__members__`, the functional API, inheriting from a member-less enum, `print(Color)`; containers of
   `IntEnum`/`StrEnum` members used as containers of ints/strs.

@@ -1,0 +1,48 @@
+[] True []
+True [] []
+b'ping'
+([], [], []) True
+a line
+ValueError: timeout must be non-negative
+ValueError: timeout must be non-negative
+ValueError: file descriptor cannot be a negative integer (-1)
+True
+[] True
+True b'hello'
+1 2 4 8 16 32
+True
+True
+True
+[]
+KeyError: True
+FileNotFoundError: True
+ValueError: file descriptor cannot be a negative integer (-1)
+False 0.0
+BlockingIOError: True
+b'FIRST'
+b'SECOND'
+['accepted from 127.0.0.1', "echoing b'first'", 'closing', 'accepted from 127.0.0.1', "echoing b'second'", 'closing']
+1 True
+RuntimeError: Selector is closed
+True True 1 Pipe(name='one', received=0)
+ready: None 2
+["read: Pipe(name='one', received=3)", 'writable: True']
+Pipe(name='writer', received=0)
+[('one', 1)]
+b''
+True Pipe(name='two', received=0)
+Pipe(name='one', received=3)
+ValueError: Invalid events: 0
+ValueError: Invalid events: 4
+KeyError: True
+KeyError: True
+KeyError: True
+KeyError: True
+ValueError: Invalid file descriptor: -1
+0
+True
+[b'over a socket']
+1
+ValueError: Invalid file descriptor: -1
+the reader True b'through a file'
+on_read: b'called through key.data' 1

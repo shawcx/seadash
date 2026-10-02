@@ -1,0 +1,251 @@
+import errno
+import os
+import select
+import selectors
+import socket
+import time
+from dataclasses import dataclass
+from typing import Callable
+
+# ---- select.select ----------------------------------------------------------------------
+
+r, w = os.pipe()
+rs, ws, xs = select.select([r], [w], [], 0)
+print(rs, ws == [w], xs)
+os.write(w, b"ping")
+readable, writable, exceptional = select.select([r, r], [], [], 0)
+print(readable == [r, r], writable, exceptional)  # (listed twice, reported twice)
+print(os.read(r, 100))
+
+start = time.monotonic()
+print(select.select([r], [], [], 0.05), time.monotonic() - start >= 0.05)
+
+with open("data.txt", "w") as f:
+    f.write("a line\n")
+with open("data.txt") as f:
+    ready, _, _ = select.select([f], [], [])  # a regular file is always ready
+    print(ready[0].readline().strip())
+
+for bad in (-1.0, -5):
+    try:
+        select.select([r], [], [], bad)
+    except ValueError as e:
+        print("ValueError:", e)
+closed = socket.socket()
+closed.close()
+try:
+    select.select([closed], [], [], 0)
+except ValueError as e:
+    print("ValueError:", e)
+
+server = socket.create_server(("127.0.0.1", 0))
+port = server.getsockname()[1]
+client = socket.create_connection(("127.0.0.1", port), timeout=5)
+print(select.select([server], [], [], 0)[0] == [server] or select.select([server], [], [], 5)[0] == [server])
+conn, _ = server.accept()
+cs, ws2, _ = select.select([conn], [client], [], 0)
+print(cs, ws2 == [client])
+client.sendall(b"hello")
+print(select.select([conn], [], [], 5)[0] == [conn], conn.recv(10))
+conn.close()
+client.close()
+
+# ---- select.poll --------------------------------------------------------------------------
+
+print(select.POLLIN, select.POLLPRI, select.POLLOUT, select.POLLERR, select.POLLHUP, select.POLLNVAL)
+p = select.poll()
+p.register(r, select.POLLIN)
+p.register(w, select.POLLOUT)
+print(p.poll(0) == [(w, select.POLLOUT)])
+os.write(w, b"x")
+print(p.poll(0) == [(r, select.POLLIN), (w, select.POLLOUT)])  # in the order registered
+p.modify(w, select.POLLIN)
+print(p.poll(10) == [(r, select.POLLIN)])
+os.read(r, 1)
+p.unregister(w)
+print(p.poll(0))
+try:
+    p.unregister(w)
+except KeyError as e:
+    print("KeyError:", str(e) == str(w))
+try:
+    p.modify(w, select.POLLIN)
+except FileNotFoundError as e:
+    print("FileNotFoundError:", e.errno == errno.ENOENT)
+try:
+    p.register(-1)
+except ValueError as e:
+    print("ValueError:", e)
+
+# ---- selectors: callbacks as data (the selectors documentation's echo server) --------------
+
+sel = selectors.DefaultSelector()
+log: list[str] = []
+
+
+def accept(sock: socket.socket, mask: int):
+    conn, addr = sock.accept()
+    log.append(f"accepted from {addr[0]}")
+    conn.setblocking(False)
+    sel.register(conn, selectors.EVENT_READ, read)
+
+
+def read(conn: socket.socket, mask: int):
+    data = conn.recv(1000)
+    if data:
+        log.append(f"echoing {data!r}")
+        conn.send(data.upper())
+    else:
+        log.append("closing")
+        sel.unregister(conn)
+        conn.close()
+
+
+def pump():
+    for key, mask in sel.select(timeout=5):
+        callback = key.data
+        callback(key.fileobj, mask)
+
+
+listener = socket.create_server(("127.0.0.1", 0))
+listener.setblocking(False)
+print(listener.getblocking(), listener.gettimeout())
+try:
+    listener.accept()
+except BlockingIOError as e:
+    print("BlockingIOError:", e.errno == errno.EAGAIN)
+sel.register(listener, selectors.EVENT_READ, accept)
+port = listener.getsockname()[1]
+
+for message in (b"first", b"second"):
+    c = socket.create_connection(("127.0.0.1", port), timeout=5)
+    pump()  # accept
+    c.sendall(message)
+    pump()  # echo
+    print(c.recv(100))
+    c.close()
+    pump()  # closing
+print(log)
+print(len(sel.get_map()), sel.get_key(listener).events == selectors.EVENT_READ)
+sel.unregister(listener)
+listener.close()
+sel.close()
+try:
+    sel.get_key(listener)
+except RuntimeError as e:
+    print("RuntimeError:", e)
+
+# ---- selectors: data typed by an annotation, files and file descriptors ---------------------
+
+
+@dataclass
+class Pipe:
+    name: str
+    received: int = 0
+
+
+def watch_pipes():
+    pipes: selectors.DefaultSelector[int, Pipe | None] = selectors.DefaultSelector()
+    r1, w1 = os.pipe()
+    r2, w2 = os.pipe()
+    key = pipes.register(r1, selectors.EVENT_READ, Pipe("one"))
+    print(key.fd == r1, key.fileobj == r1, key.events, key.data)
+    pipes.register(r2, selectors.EVENT_READ, Pipe("two"))
+    pipes.register(w2, selectors.EVENT_WRITE)  # (no data: None)
+    for key, mask in pipes.select(0):
+        print("ready:", key.data, mask)
+    os.write(w1, b"abc")
+    seen: list[str] = []  # (sorted: the order of files ready at once depends on the platform in Python)
+    for key, mask in pipes.select(0):
+        if key.data is not None:
+            key.data.received += len(os.read(key.fd, 100))
+            seen.append(f"read: {key.data}")
+        else:
+            seen.append(f"writable: {mask == selectors.EVENT_WRITE}")
+    print(sorted(seen))
+    pipes.modify(w2, selectors.EVENT_WRITE, Pipe("writer"))
+    print(pipes.get_key(w2).data)
+    os.close(w1)  # the reader then sees end of file
+    print([(k.data.name if k.data else None, m) for k, m in pipes.select(0) if k.fd == r1])
+    print(os.read(r1, 100))
+    print(sorted(pipes.get_map()) == sorted([r1, r2, w2]), pipes.get_map()[r2].data)
+    print(pipes.unregister(r1).data)
+
+    for events in (0, 4):
+        try:
+            pipes.register(r1, events)
+        except ValueError as e:
+            print("ValueError:", e)
+    try:
+        pipes.register(r2, selectors.EVENT_READ)
+    except KeyError as e:
+        print("KeyError:", "is already registered" in str(e))
+    try:
+        pipes.unregister(r1)
+    except KeyError as e:
+        print("KeyError:", str(e) == repr(f"{r1} is not registered"))
+    try:
+        pipes.get_key(r1)
+    except KeyError as e:
+        print("KeyError:", str(e) == repr(f"{r1} is not registered"))
+    try:
+        pipes.modify(r1, selectors.EVENT_READ)
+    except KeyError as e:
+        print("KeyError:", "is not registered" in str(e))
+    try:
+        pipes.register(-1, selectors.EVENT_READ)
+    except ValueError as e:
+        print("ValueError:", e)
+    pipes.close()
+    print(len(pipes.get_map()) if pipes.get_map() else 0)
+    for fd in (r1, r2, w2):
+        os.close(fd)
+
+
+watch_pipes()
+
+
+def service(key: selectors.SelectorKey[socket.socket, None], mask: int) -> bytes:
+    return key.fileobj.recv(100) if mask & selectors.EVENT_READ else b""
+
+
+with selectors.DefaultSelector() as socks:
+    a = socket.create_server(("127.0.0.1", 0))
+    b = socket.create_connection(("127.0.0.1", a.getsockname()[1]), timeout=5)
+    c, _ = a.accept()
+    print(c.getblocking())
+    socks.register(c, selectors.EVENT_READ)
+    b.sendall(b"over a socket")
+    print([service(k, m) for k, m in socks.select(5)])
+    c.close()  # unregistering still works once it's closed
+    print(socks.unregister(c).events)
+    try:
+        socks.register(c, selectors.EVENT_READ)
+    except ValueError as e:
+        print("ValueError:", e)
+    a.close()
+    b.close()
+
+pr, pw = os.pipe()
+reader = os.fdopen(pr, "rb")
+with selectors.DefaultSelector() as files:
+    files.register(reader, selectors.EVENT_READ, "the reader")
+    os.write(pw, b"through a file")
+    for key, mask in files.select(1):
+        print(key.data, key.fileobj.fileno() == pr, os.read(key.fd, 100))
+reader.close()
+os.close(pw)
+
+
+def on_read(fd: int, mask: int):
+    print("on_read:", os.read(fd, 100), mask)
+
+
+cr, cw = os.pipe()
+with selectors.DefaultSelector() as calls:
+    calls.register(cr, selectors.EVENT_READ, on_read)
+    os.write(cw, b"called through key.data")
+    for key, mask in calls.select(1):
+        key.data(key.fileobj, mask)
+os.close(cr)
+os.close(cw)

@@ -91,6 +91,8 @@ URL_PARTS = BuiltinClass("urllib.parse.ParseResult", "sd::urlparse::Parts", VALU
 TEMPDIR = BuiltinClass("TemporaryDirectory", "sd::tempfile::TemporaryDirectory")  # removed when done
 NORMAL_DIST = BuiltinClass("NormalDist", "sd::statistics::NormalDist", IMMUTABLE)  # statistics
 LINEAR_REGRESSION = BuiltinClass("LinearRegression", "sd::statistics::LinearRegression", IMMUTABLE)
+POLL = BuiltinClass(  # select.poll(): the descriptors it watches, in registration order
+    "select.poll", "sd::select::Poll", unsendable="a poll object (give each thread its own)")
 EXIT_STACK = BuiltinClass(  # contextlib.ExitStack: copies share the stack of exits
     "ExitStack", "sd::contextlib::ExitStack",
     unsendable="an ExitStack (the exits it holds belong to this thread's code)")
@@ -240,6 +242,90 @@ class FutureType(Type):
 
     def __str__(self) -> str:
         return f"Future[{self.elem}]"
+
+
+class SelectorSlot:
+    """What a selector watches and carries: the type of its file objects (a socket, a file
+    or an int) and of the data registered with them. Unknown until an annotation says, or
+    its first register() decides; selectors passed where another is expected are unified
+    (a union-find: `link` points to the slot that decides)."""
+
+    def __init__(self, fileobj: Type | None = None, data: Type | None = None, decided_at: Loc | None = None):
+        self.fileobj, self.data, self.decided_at = fileobj, data, decided_at
+        self.link: SelectorSlot | None = None
+
+    def root(self) -> SelectorSlot:
+        slot = self
+        while slot.link is not None:
+            slot = slot.link
+        return slot
+
+    def decide(self, fileobj: Type, data: Type, at: Loc | None) -> None:
+        self.fileobj, self.data, self.decided_at = fileobj, strip_sig(data), at
+
+
+class SelectorType(Type):
+    """selectors.DefaultSelector[F, D]: watches F objects (socket, file or int), each with
+    data of type D. A handle: copies share the registrations. Selectors whose types are
+    still unknown are told apart by identity (their slot); known ones by their types."""
+
+    def __init__(self, slot: SelectorSlot | None = None):
+        self.slot = slot or SelectorSlot()
+
+    @property
+    def known(self) -> bool:
+        return self.slot.root().fileobj is not None
+
+    @property
+    def fileobj(self) -> Type | None:
+        return self.slot.root().fileobj
+
+    @property
+    def data(self) -> Type | None:
+        return self.slot.root().data
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, SelectorType):
+            return False
+        a, b = self.slot.root(), other.slot.root()
+        return a is b or (a.fileobj is not None and (a.fileobj, a.data) == (b.fileobj, b.data))
+
+    def __hash__(self) -> int:
+        return hash("DefaultSelector")
+
+    def __str__(self) -> str:
+        return f"DefaultSelector[{self.fileobj}, {self.data}]" if self.known else "DefaultSelector"
+
+    __repr__ = __str__
+
+
+def unify_selectors(src: SelectorType, dst: SelectorType) -> bool:
+    """A selector stored where another is expected: they're the same selector type from now
+    on (whichever is still unknown takes the other's types)."""
+    a, b = src.slot.root(), dst.slot.root()
+    if a is b:
+        return True
+    if a.fileobj is not None and b.fileobj is not None:
+        return (a.fileobj, a.data) == (b.fileobj, b.data)
+    if a.fileobj is None:
+        a.link = b
+    else:
+        b.link = a
+    return True
+
+
+@dataclass(frozen=True)
+class SelectorKeyType(Type):
+    """selectors.SelectorKey[F, D]: a registration (`fileobj`, `fd`, `events`, `data`)."""
+
+    fileobj: Type
+    data: Type
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data", strip_sig(self.data))
+
+    def __str__(self) -> str:
+        return f"SelectorKey[{self.fileobj}, {self.data}]"
 
 
 @dataclass(frozen=True)
@@ -720,6 +806,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return True
     if src == INT and dst == FLOAT:
         return True
+    if isinstance(src, SelectorType) and isinstance(dst, SelectorType):
+        return unify_selectors(src, dst)
     if isinstance(src, StructType) and src.enum is not None and src.enum.mixin is not None and not isinstance(dst, StructType):
         return assignable(src.enum.mixin, dst)  # an IntEnum member is an int, a StrEnum member a str
     if isinstance(src, StructType) and isinstance(dst, StructType):

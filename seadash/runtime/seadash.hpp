@@ -109,6 +109,7 @@ SD_EXCEPTION(PermissionError, OSError)
 SD_EXCEPTION(IsADirectoryError, OSError)
 SD_EXCEPTION(NotADirectoryError, OSError)
 SD_EXCEPTION(TimeoutError, OSError)
+SD_EXCEPTION(BlockingIOError, OSError)
 SD_EXCEPTION(ConnectionError, OSError)
 SD_EXCEPTION(BrokenPipeError, ConnectionError)
 SD_EXCEPTION(ConnectionAbortedError, ConnectionError)
@@ -3853,6 +3854,9 @@ inline const std::string& raw(const std::string& s) { return s; }
         case ECONNABORTED: throw with.template operator()<ConnectionAbortedError>();
         case EPIPE: throw with.template operator()<BrokenPipeError>();
         case ETIMEDOUT: throw with.template operator()<TimeoutError>();
+        case EAGAIN:  // (EWOULDBLOCK too: the same number on Linux and macOS)
+        case EINPROGRESS:
+        case EALREADY: throw with.template operator()<BlockingIOError>();
         case ENOENT: throw with.template operator()<FileNotFoundError>();
         case EEXIST: throw with.template operator()<FileExistsError>();
         case EACCES:

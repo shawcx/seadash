@@ -40,7 +40,7 @@ from .flow import walk as walk_nodes
 from .threads import MUTATING_METHODS  # (a parameter changed by one of these is passed by value)
 from .types import (
     SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
-    BuiltinClass, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
+    BuiltinClass, SelectorKeyType, SelectorType, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION, SIGNAL_HANDLER,
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
@@ -237,6 +237,9 @@ class CodeGen:
 
     # ---- types ---------------------------------------------------------------
 
+    def selector_types(self, fileobj: Type, data: Type) -> str:
+        return f"{self.cpp_type(fileobj)}, {'std::nullopt_t' if data == NONE else self.cpp_type(data)}"
+
     def cpp_type(self, t: Type) -> str:
         match t:
             case _ if t == INT:
@@ -261,6 +264,10 @@ class CodeGen:
                 return "sd::structmod::Struct"
             case FutureType(elem):
                 return f"sd::futures::Future<{self.cpp_type(elem)}>"
+            case SelectorType():  # (one that never had anything registered watches ints)
+                return f"sd::selectors::Selector<{self.selector_types(t.fileobj or INT, t.data or NONE)}>"
+            case SelectorKeyType(fileobj, data):
+                return f"sd::selectors::SelectorKey<{self.selector_types(fileobj, data)}>"
             case ParserType() | SubParsersType():
                 return "sd::argparse::ArgumentParser"
             case NamespaceType():
@@ -1255,7 +1262,7 @@ class CodeGen:
             return
         if info.kind == "file":
             enter, exit_call = ctx, f"{ctx}->close()"
-        elif info.kind == "socket":
+        elif info.kind in ("socket", "selector"):
             enter, exit_call = ctx, f"{ctx}.close()"
         elif info.kind == "process":
             enter, exit_call = ctx, f"{ctx}.sd_exit()"
@@ -1281,7 +1288,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind not in ("file", "socket", "process", "tempdir", "executor", "response", "connection", "server"):  # still call __enter__ for its effects
+        elif info.kind not in ("file", "socket", "selector", "process", "tempdir", "executor", "response", "connection", "server"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -3297,7 +3304,7 @@ class CodeGen:
             fn = e.ty
             given = [self.expr_as(a, p) for a, p in zip(e.args[1:], fn.params)]
             return f"{r}.callback({', '.join([f'{self.cpp_type(fn)}({self.expr(e.args[0])})', *given])})"
-        if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType, BuiltinClass, HTTPServerType)):
+        if isinstance(recv_type, (SyncType, ParserType, FutureType, StructType, BuiltinClass, HTTPServerType, SelectorType)):
             handler = builtins.method_for(recv_type, name)
             codes = []
             for i, (pname, ptype, *default) in enumerate(handler.params):
@@ -3311,7 +3318,8 @@ class CodeGen:
                         code = self.sent(node, code)  # the receiving thread gets it: moved if we're done with it
                     codes.append(code)
             dot = "->" if isinstance(recv_type, StructType) else "."  # (a built-in exception: HTTPError.read())
-            return f"{r}{dot}{name}({', '.join(codes)})"
+            method = "register_" if name == "register" else name  # (a C++ keyword: selectors, select.poll)
+            return f"{r}{dot}{method}({', '.join(codes)})"
         match recv_type:
             case VarTupleType(elem):
                 return f"{r}.{name}({self.expr_as(e.args[0], elem)})"
