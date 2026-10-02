@@ -1,0 +1,10 @@
+# An empty list, dict or set compared with something takes its type from the other side.
+x = [1]
+print(x == [], x != [], [] == x, x > [])
+t = ([1], [2])
+print(t == ([], [2]), t == ([1], [2]))
+d = {"a": 1}
+print(d != {}, {} == d)
+s = {1}
+print(s == set(), s > set())
+print([] == [1], [[]] == [[1]])

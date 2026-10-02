@@ -3181,10 +3181,14 @@ class Checker:
 
     def check_compare(self, e: A.Compare) -> Type:
         left = e.left
-        lt = self.check_expr(left)
+        if needs_context(left) and e.comparators and not needs_context(e.comparators[0]):
+            lt = self.check_expr(left, self.check_expr(e.comparators[0]))  # [] == xs: the list's type
+        else:
+            lt = self.check_expr(left)
         e.dunder = []
         for op, right in zip(e.ops, e.comparators):
-            rt = self.check_expr(right)
+            hint = lt if op in ("==", "!=", "<", "<=", ">", ">=") else None  # xs == []: the same type
+            rt = self.check_expr(right, hint)
             # N.ONE < 2: an IntEnum member compares as its value (codegen decays it the same way)
             lv = enum_mixin(lt) if enum_decays(op, lt, rt) else lt
             rv = enum_mixin(rt) if enum_decays(op, rt, lt, right=True) else rt
