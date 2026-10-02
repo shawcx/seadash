@@ -2979,3 +2979,8 @@ def test_copyfileobj_needs_files_of_one_kind():
         "shutil.copyfileobj() argument 'fdst' must be TextIO, not BytesIO")
     assert err("import shutil\nshutil.copyfileobj('a', 'b')\n").message == (
         "shutil.copyfileobj() needs a file to read, not str")
+
+
+def test_a_default_can_name_an_imported_value():
+    assert variables(ok("import sys\ndef log(message: str, out=sys.stdout) -> None:\n    print(message, file=out)\n"
+                        "log('x')\n")) == []

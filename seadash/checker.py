@@ -732,10 +732,15 @@ class Checker:
 
     def default_type(self, p: A.Param) -> Type:
         """An unannotated parameter's type, from its default (as `n = 0` types a variable)."""
+        saved = self.scope, self.state
+        if self.scope is None:  # (signatures resolve before any code runs: imports are known, not globals)
+            self.scope, self.state = FunctionScope(None, None, set(), []), State()
         try:
             t = self.check_expr(p.default)
         except CheckError:
             t = UNKNOWN
+        finally:
+            self.scope, self.state = saved
         if t in (NONE, UNKNOWN) or contains_unknown(t):
             raise self.error(f"can't tell the type of parameter '{p.name}' from its default; annotate it, "
                              f"e.g. `{p.name}: int | None = None`", p)
