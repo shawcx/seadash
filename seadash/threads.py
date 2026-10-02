@@ -36,7 +36,7 @@ from . import ast as A
 from .errors import CheckError, Loc
 from .types import (
     element_type,
-    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, EXECUTOR, IMMUTABLE, LOCKED, VALUE, BuiltinClass, HTTPServerType,
+    BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, EXECUTOR, IMMUTABLE, LOCKED, VALUE, BuiltinClass, HTTPServerType,
     DefaultDictType, DequeType, DictType, FutureType, SelectorKeyType, SelectorType, GeneratorType, MatchType, PatternType, ProcessType, VarTupleType, FileType, FuncInfo, FuncType, ListType, OptionalType, SetType, StructType, SyncType, TupleType, Type, Var,
 )
 
@@ -87,9 +87,11 @@ def could_hold(t: Type, target: Type, seen: frozenset = frozenset()) -> bool:
 
 
 def holds_references(t: Type) -> bool:
-    """Does a value of type t contain a list, dict or set (a shared reference)?"""
+    """Does a value of type t contain a list, dict, set or bytearray (a shared reference)?"""
     match t:
         case ListType() | SetType() | DictType() | DequeType() | DefaultDictType():
+            return True
+        case _ if t == BYTEARRAY:
             return True
         case OptionalType(inner) | VarTupleType(inner):
             return holds_references(inner)
@@ -144,7 +146,7 @@ def deeply_immutable(t: Type, seen: frozenset = frozenset()) -> bool:
 def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
     """Why a value of type `t` can't be handed to another thread, or None if it can."""
     match t:
-        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE):
+        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, BYTEARRAY, NONE, JSON_VALUE):  # (a bytearray is copied)
             return None
         case SyncType() | HTTPServerType():
             return None
@@ -190,7 +192,7 @@ def not_a_value(t: Type) -> str | None:
     """Why a @value class can't have a field of type t (it has identity: copying the class
     would share it), or None. A @value class is a value all the way down."""
     match t:
-        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, NONE, JSON_VALUE):
+        case _ if t in (INT, FLOAT, BOOL, STR, BYTES, BYTEARRAY, NONE, JSON_VALUE):  # (a bytearray is copied with it)
             return None
         case BuiltinClass() if t.threads in (IMMUTABLE, VALUE):
             return None

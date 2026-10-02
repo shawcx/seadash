@@ -49,7 +49,7 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - `math`: `fsum` (an exactly rounded sum; `sum()` adds floats left to right).
 - `copy`: `__deepcopy__` and `deepcopy(x, memo)` (they need a type for the memo); copying exceptions.
 - Built-in functions: `callable`, `id`, `issubclass`, `type`, `getattr`/`hasattr`/`setattr`, `frozenset`,
-  `bytearray`, `memoryview`, `complex`, `slice`; `isinstance` on anything but class instances.
+  `memoryview`, `complex`, `slice`; `isinstance` on anything but class instances.
 - Built-in types: printing a `range` or a dict view (`print(d.keys())`), keeping a `range` in a
   variable or indexing it, `float.as_integer_ratio` (the ratio often needs more than 64 bits),
   `int.real`/`imag`/`numerator`/`denominator`/`conjugate`, `tuple * n`, `f.encoding`, `%` formatting.

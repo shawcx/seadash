@@ -1470,6 +1470,78 @@ inline std::string repr_bytes(const bytes& b) {
     return out;
 }
 
+inline char byte_value(std::int64_t x) {
+    if (x < 0 || x > 255) raise("ValueError", "byte must be in range(0, 256)");
+    return static_cast<char>(x);
+}
+
+// bytearray: a mutable sequence of bytes, and like a list a shared reference (after
+// `b = a`, changing b changes a). Where a function takes bytes, a bytearray converts to
+// bytes (a copy), so it goes wherever bytes go.
+struct bytearray {
+    using sd_is_handle = void;
+    std::shared_ptr<std::string> p;
+    bytearray() : p(std::make_shared<std::string>()) {}
+    explicit bytearray(std::string s) : p(std::make_shared<std::string>(std::move(s))) {}
+    explicit bytearray(const bytes& b) : bytearray(b.data) {}
+    operator bytes() const { return bytes(*p); }
+    std::string& data() const { return *p; }
+    std::size_t size() const { return p->size(); }
+    bool empty() const { return p->empty(); }
+    char operator[](std::size_t i) const { return (*p)[i]; }
+    void push_back(char c) { p->push_back(c); }
+    auto begin() const { return p->cbegin(); }
+    auto end() const { return p->cend(); }
+    const void* identity() const { return p.get(); }
+    bool sd_unique() const { return p.use_count() == 1; }
+    bytearray sd_value_copy(CopyMemo& memo) const {
+        if (const bytearray* seen = memo.find(*this)) return *seen;
+        bytearray out(*p);
+        memo.add(*this, out);
+        return out;
+    }
+
+    bytearray copy() const { return bytearray(*p); }
+    void append(std::int64_t x) { p->push_back(byte_value(x)); }
+    template <class It>
+    void extend(It&& items);  // (below, with iter)
+    void insert(std::int64_t i, std::int64_t x) {
+        char c = byte_value(x);
+        auto n = static_cast<std::int64_t>(p->size());
+        if (i < 0) i = std::max<std::int64_t>(i + n, 0);
+        p->insert(p->begin() + std::min(i, n), c);
+    }
+    std::int64_t pop(std::int64_t i = -1) {
+        if (p->empty()) raise("IndexError", "pop from empty bytearray");
+        auto n = static_cast<std::int64_t>(p->size());
+        if (i < 0) i += n;
+        if (i < 0 || i >= n) raise("IndexError", "pop index out of range");
+        auto c = static_cast<unsigned char>((*p)[static_cast<std::size_t>(i)]);
+        p->erase(p->begin() + i);
+        return c;
+    }
+    void remove(std::int64_t x) {
+        auto at = p->find(byte_value(x));
+        if (at == std::string::npos) raise("ValueError", "value not found in bytearray");
+        p->erase(at, 1);
+    }
+    void clear() { p->clear(); }
+    void reverse() { std::reverse(p->begin(), p->end()); }
+    std::string sd_repr() const {  // (in double quotes, a ' is still escaped, as in Python)
+        std::string r = repr_bytes(bytes(*p));
+        if (r[1] == '"') {
+            std::string escaped;
+            for (char c : r) escaped += c == '\'' ? std::string("\\'") : std::string(1, c);
+            r = escaped;
+        }
+        return "bytearray(" + r + ")";
+    }
+    bool operator==(const bytearray& o) const { return *p == *o.p; }
+    auto operator<=>(const bytearray& o) const { return *p <=> *o.p; }
+};
+inline bytearray operator+(const bytearray& a, const bytes& b) { return bytearray(*a.p + b.data); }
+inline bytearray operator+(const bytearray& a, const bytearray& b) { return bytearray(*a.p + *b.p); }
+
 // ============================================================================
 // repr / str / print
 // ============================================================================
@@ -2057,6 +2129,9 @@ inline std::string index(const std::string& s, std::int64_t i) {
 inline std::int64_t index(const bytes& b, std::int64_t i) {
     return static_cast<unsigned char>(b.data[norm_index(i, b.size(), "index")]);
 }
+inline std::int64_t index(const bytearray& b, std::int64_t i) {
+    return static_cast<unsigned char>(b.data()[norm_index(i, b.size(), "bytearray")]);
+}
 template <class K, class V>
 V& index(dict<K, V>& d, const std::type_identity_t<K>& k) {
     return d.at(k);
@@ -2164,9 +2239,9 @@ decltype(auto) iter(T&& x) {
     using U = std::remove_cvref_t<T>;
     if constexpr (std::is_same_v<U, std::string>) {
         return chars(x);
-    } else if constexpr (std::is_same_v<U, bytes>) {
+    } else if constexpr (std::is_same_v<U, bytes> || std::is_same_v<U, bytearray>) {
         std::vector<std::int64_t> out;  // looping over bytes gives ints, like Python
-        for (unsigned char c : x.data) out.push_back(c);
+        for (unsigned char c : x) out.push_back(c);
         return out;
     } else if constexpr (is_dict_like<U>::value) {
         return x.sd_keys();
@@ -2647,6 +2722,7 @@ Seq repeat(const Seq& s, std::int64_t n) {
     return out;
 }
 inline bytes repeat(const bytes& b, std::int64_t n) { return bytes(repeat(b.data, n)); }
+inline bytearray repeat(const bytearray& b, std::int64_t n) { return bytearray(repeat(b.data(), n)); }
 
 template <class T, class X>
 bool contains(const std::vector<T>& v, const X& x) {
@@ -2682,6 +2758,8 @@ inline bool contains(const bytes& b, std::int64_t byte) {
     if (byte < 0 || byte > 255) raise("ValueError", "byte must be in range(0, 256)");
     return b.data.find(static_cast<char>(byte)) != std::string::npos;
 }
+inline bool contains(const bytearray& b, const bytes& sub) { return b.data().find(sub.data) != std::string::npos; }
+inline bool contains(const bytearray& b, std::int64_t byte) { return b.data().find(byte_value(byte)) != std::string::npos; }
 inline bool contains(const range& r, std::int64_t x) { return r.contains(x); }
 template <class... Ts, class X>
 bool contains(const std::tuple<Ts...>& t, const X& x) {
@@ -3604,7 +3682,8 @@ bytes bytes_join(const bytes& sep, It&& parts) {
     for (auto&& part : iter(std::forward<It>(parts))) {
         if (!first) out += sep.data;
         first = false;
-        out += part.data;
+        if constexpr (requires { part.data(); }) out += part.data();  // (a bytearray)
+        else out += part.data;
     }
     return bytes(out);
 }
@@ -4006,8 +4085,84 @@ bytes to_bytes(It&& it) {
     return out;
 }
 
-// Module functions that take bytes also accept str (as its UTF-8 bytes).
+template <class It>
+void bytearray::extend(It&& items) {
+    std::string add;  // (first: `b.extend(b)` adds b once)
+    for (auto&& v : iter(std::forward<It>(items))) add += byte_value(v);
+    *p += add;
+}
+
+// bytearray(), bytearray(n), bytearray(b"..."), bytearray(ints), bytearray(s, encoding)
+inline bytearray to_bytearray() { return bytearray(); }
+inline bytearray to_bytearray(std::int64_t n) { return bytearray(to_bytes(n)); }
+inline bytearray to_bytearray(const bytes& b) { return bytearray(b); }
+inline bytearray to_bytearray(const bytearray& b) { return b.copy(); }
+template <class It>
+bytearray to_bytearray(It&& it) {
+    bytearray out;
+    out.extend(std::forward<It>(it));
+    return out;
+}
+inline bytearray bytearray_fromhex(const std::string& s) { return bytearray(bytes_fromhex(s)); }
+
+// A bytes method's result, as the bytearray method gives it.
+inline bytearray as_bytearray(const bytes& b) { return bytearray(b); }
+inline list<bytearray> as_bytearray(const std::vector<bytes>& parts) {
+    list<bytearray> out;
+    for (const auto& b : parts) out.push_back(bytearray(b));
+    return out;
+}
+inline std::tuple<bytearray, bytearray, bytearray> as_bytearray(const std::tuple<bytes, bytes, bytes>& t) {
+    return {bytearray(std::get<0>(t)), bytearray(std::get<1>(t)), bytearray(std::get<2>(t))};
+}
+
+// b += x and b *= n change b itself, as in Python.
+inline void iadd(const bytearray& b, const bytes& x) { b.data() += x.data; }
+inline void iadd(const bytearray& b, const bytearray& x) { b.data() += x.data(); }
+inline void imul(const bytearray& b, std::int64_t n) { b.data() = repeat(b.data(), n); }
+
+inline void set_item(const bytearray& b, std::int64_t i, std::int64_t x) {
+    b.data()[norm_index(i, b.size(), "bytearray")] = byte_value(x);
+}
+inline void del_item(const bytearray& b, std::int64_t i) {
+    b.data().erase(norm_index(i, b.size(), "bytearray"), 1);
+}
+inline void del_slice(const bytearray& b, opt_int lo, opt_int hi, opt_int step) {
+    auto r = slice_bounds(static_cast<std::int64_t>(b.size()), lo, hi, step);
+    std::string& d = b.data();
+    if (r.step == 1) {
+        if (r.start < r.stop) d.erase(static_cast<std::size_t>(r.start), static_cast<std::size_t>(r.stop - r.start));
+        return;
+    }
+    std::vector<bool> drop(d.size());
+    for (std::int64_t k = 0, i = r.start; k < r.count(); ++k, i += r.step) drop[static_cast<std::size_t>(i)] = true;
+    std::string out;
+    for (std::size_t i = 0; i < d.size(); ++i)
+        if (!drop[i]) out += d[i];
+    d = out;
+}
+// b[lo:hi:step] = bytes, a bytearray or ints
+template <class It>
+void set_slice(const bytearray& b, opt_int lo, opt_int hi, opt_int step, It&& items) {
+    std::string src;
+    if constexpr (std::is_same_v<std::remove_cvref_t<It>, bytes>) src = items.data;
+    else if constexpr (std::is_same_v<std::remove_cvref_t<It>, bytearray>) src = items.data();
+    else for (auto&& v : iter(std::forward<It>(items))) src += byte_value(v);
+    auto r = slice_bounds(static_cast<std::int64_t>(b.size()), lo, hi, step);
+    std::string& d = b.data();
+    if (r.step == 1) {
+        d.replace(static_cast<std::size_t>(r.start), static_cast<std::size_t>(std::max(r.start, r.stop) - r.start), src);
+        return;
+    }
+    if (static_cast<std::int64_t>(src.size()) != r.count())
+        raise("ValueError", "attempt to assign bytes of size " + std::to_string(src.size()) + " to extended slice of size " +
+                                std::to_string(r.count()));
+    for (std::int64_t k = 0; k < r.count(); ++k) d[static_cast<std::size_t>(r.start + k * r.step)] = src[static_cast<std::size_t>(k)];
+}
+
+// Module functions that take bytes also accept str (as its UTF-8 bytes), and a bytearray.
 inline const std::string& raw(const bytes& b) { return b.data; }
+inline const std::string& raw(const bytearray& b) { return b.data(); }
 inline const std::string& raw(const std::string& s) { return s; }
 
 // ============================================================================

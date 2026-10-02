@@ -1,0 +1,28 @@
+# bytearray where seadash differs from Python: a @value class's bytearray is its own (copied
+# with it), and a thread gets a copy.
+import threading
+
+from seadash import value
+
+
+@value
+class Packet:
+    payload: bytearray
+
+
+def worker(data: bytearray) -> None:
+    data.append(33)
+    print("thread:", data)
+
+
+p = Packet(bytearray(b"one"))
+q = p
+q.payload.append(33)
+print(p.payload, q.payload)
+shared = bytearray(b"abc")
+t = threading.Thread(target=worker, args=(shared,))
+t.start()
+t.join()
+print(shared)
+x: bytes = bytes(shared)
+print(x)

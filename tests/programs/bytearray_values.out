@@ -1,0 +1,4 @@
+bytearray(b'one') bytearray(b'one!')
+thread: bytearray(b'abc!')
+bytearray(b'abc')
+b'abc'

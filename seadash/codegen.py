@@ -41,7 +41,7 @@ from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
 from .flow import walk as walk_nodes
 from .threads import MUTATING_METHODS  # (a parameter changed by one of these is passed by value)
 from .types import (
-    SYNC_CPP, BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
+    SYNC_CPP, BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
     BuiltinClass, SelectorKeyType, SelectorType, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION, SIGNAL_HANDLER,
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
@@ -258,6 +258,8 @@ class CodeGen:
                 return "std::string"
             case _ if t == BYTES:
                 return "sd::bytes"
+            case _ if t == BYTEARRAY:
+                return "sd::bytearray"
             case _ if t == JSON_VALUE:
                 return "sd::json::Value"
             case BuiltinClass():
@@ -1730,6 +1732,8 @@ class CodeGen:
                 if isinstance(container.ty, DictType):
                     key = self.expr_as(index, container.ty.key)
                     self.line(f"{c}[{key}] = {self.coerce(code, ty, target.ty)};")
+                elif container.ty == BYTEARRAY:  # (checks the byte)
+                    self.line(f"sd::set_item({c}, {self.expr(index)}, {code});")
                 else:
                     self.line(f"sd::index({c}, {self.expr(index)}) = {self.coerce(code, ty, target.ty)};")
             case A.TupleLit(elts) | A.ListLit(elts) if isinstance(ty, TupleType):
@@ -1780,6 +1784,10 @@ class CodeGen:
 
     def aug_assign(self, s: A.AugAssign, target: A.Expr, op: str, value: A.Expr) -> None:
         read_var, read_type, result = s.sym
+        if read_type == BYTEARRAY and result == BYTEARRAY and op in ("+", "*"):  # b += x, b *= n: b itself changes
+            current = self.var_code(read_var, read_type) if isinstance(target, A.Name) else self.expr(target)
+            self.line(f"sd::{'iadd' if op == '+' else 'imul'}({current}, {self.expr(value)});")
+            return
         if isinstance(target, A.Index) and target.dunder is not None:
             # obj[k] += v -> obj.__setitem__(k, obj.__getitem__(k) + v), evaluating obj and k once
             owner = target.value.ty
@@ -3030,7 +3038,7 @@ class CodeGen:
             case "dict.fromkeys":
                 value = self.expr_as(e.args[1], e.ty.value) if len(e.args) == 2 else f"{self.cpp_type(e.ty.value)}{{}}"
                 return f"sd::dict_fromkeys<{self.cpp_type(e.ty.key)}, {self.cpp_type(e.ty.value)}>({a}, {value})"
-            case "str.maketrans" | "bytes.maketrans" | "bytes.fromhex":
+            case "str.maketrans" | "bytes.maketrans" | "bytes.fromhex" | "bytearray.fromhex":
                 return f"sd::{name.replace('.', '_')}({', '.join(args)})"
             case "int.from_bytes" | "float.fromhex":  # (with keywords and defaults)
                 check = builtins.TYPE_FUNCTIONS[tuple(name.split("."))]
@@ -3151,6 +3159,10 @@ class CodeGen:
                 return f"sd::str_encode({a}, {self.expr(e.args[1] if len(e.args) == 2 else e.keywords[0].value)})"
             case "bytes":
                 return f"sd::to_bytes({a or ''})"
+            case "bytearray" if len(e.args) == 2 or e.keywords:  # bytearray(text, "utf-8")
+                return f"sd::bytearray(sd::str_encode({a}, {self.expr(e.args[1] if len(e.args) == 2 else e.keywords[0].value)}))"
+            case "bytearray":
+                return f"sd::to_bytearray({a or ''})"
             case "round":
                 return f"sd::round({', '.join(args)})"
         raise NotImplementedError(f"codegen for builtin {name}()")
@@ -3271,8 +3283,10 @@ class CodeGen:
         if recv_type == STR and name == "format_map":
             vt = e.args[0].ty.value
             return f"sd::str_format_map({r}, {args[0]}, {cpp_string(str(strip_optional(vt)).split('[')[0])[:-1]})"
-        if recv_type in (STR, BYTES, INT, FLOAT):
-            prefix = str(recv_type)
+        if recv_type == BYTEARRAY and name in builtins.BYTEARRAY_OWN_METHODS:  # b.append(x)...
+            return f"{r}.{name}({', '.join(args)})"
+        if recv_type in (STR, BYTES, BYTEARRAY, INT, FLOAT):
+            prefix = "bytes" if recv_type == BYTEARRAY else str(recv_type)
             handler = builtins.method_for(recv_type, name)
             if hasattr(handler, "params"):  # keywords and defaults: s.split(maxsplit=1), s.find(x, 2)
                 codes = []
@@ -3280,7 +3294,10 @@ class CodeGen:
                     node = e.args[i] if i < len(e.args) else self.keyword(e, pname)
                     codes.append(default[0] if node is None else self.expr_as(node, handler.resolve(ptype, recv_type)))
                 rest = "".join(", " + c for c in codes)
-            return f"sd::{prefix}_{name}({r}{rest})"
+            code = f"sd::{prefix}_{name}({r}{rest})"
+            if recv_type == BYTEARRAY and BYTEARRAY in (e.ty, getattr(e.ty, "elem", None), *getattr(e.ty, "elts", ())):
+                return f"sd::as_bytearray({code})"  # (b.upper() is a bytearray too)
+            return code
         if isinstance(recv_type, FileType) and name == "getvalue":  # a StringIO / BytesIO
             return f"sd::io::getvalue({r})"
         if isinstance(recv_type, FileType):
@@ -3668,10 +3685,12 @@ def is_synchronized(st: StructType) -> bool:
 
 
 def holds_references(t: Type) -> bool:
-    """Does a value of type t contain a list, dict or set (which a struct must copy, not share)?
-    Structs inside copy themselves; class instances are always shared."""
+    """Does a value of type t contain a list, dict, set or bytearray (which a struct must copy,
+    not share)? Structs inside copy themselves; class instances are always shared."""
     match t:
         case ListType() | SetType() | DictType() | DequeType() | CounterType() | DefaultDictType():
+            return True
+        case _ if t == BYTEARRAY:
             return True
         case OptionalType(inner) | VarTupleType(inner):
             return holds_references(inner)

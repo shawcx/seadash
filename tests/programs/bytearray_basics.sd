@@ -1,0 +1,99 @@
+# bytearray: building, changing (items, slices, methods, += in place), the bytes methods
+# (giving bytearrays), bytes-like arguments to the library, and Python's errors.
+import hashlib
+import io
+import struct
+import zlib
+
+b = bytearray(b"hello")
+print(b, len(b), b[0], b[-1], b[1:3])
+b[0] = 72
+b.append(33)
+b.extend(b" world")
+b.extend([33, 33])
+print(b)
+c = b
+c.insert(0, 62)
+print(b, b.pop(), b.pop(0), b)
+b.remove(33)
+del b[0]
+del b[1:3]
+print(b)
+b[0:2] = b"HE"
+b[-1:] = [63, 63]
+print(b, b == b"HElo world?", b"x" + b, b + b"!", b * 2)
+for x in bytearray(b"ab"):
+    print(x)
+print(bytearray(3), bytearray([1, 2, 255]), bytearray("héllo", "utf-8"), bytearray.fromhex("de ad"))
+print(b.upper(), b.split(b" "), b.decode(), b.hex(), b.find(b"lo"), b"lo" in b, 72 in b)
+d = bytearray(b"abc")
+d += b"def"
+e = d
+e *= 2
+print(d, e is d)
+print(bytes(d), bytearray(d) == d, bytearray(d) is d)
+d.reverse()
+print(d, d.copy(), len(d.copy()))
+d.clear()
+print(d, bool(d), bool(bytearray(b"x")))
+print(repr(bytearray(b"it's")), str(bytearray(b'"q"')))
+print(bytearray(b"b") > bytearray(b"a"), bytearray(b"a") < b"b", b"a" == bytearray(b"a"))
+print(bytearray(b"a,b,c").partition(b","))
+
+
+def checksum(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:12]
+
+
+buf = bytearray()
+buf.extend(struct.pack("<HI", 7, 1000))
+buf += "xyz".encode()
+print(checksum(buf), struct.unpack("<HI", buf[:6]), zlib.crc32(buf), len(zlib.compress(buf)) > 0)
+f = io.BytesIO()
+f.write(buf)
+print(f.getvalue(), str(buf[6:], "utf-8"), bytes(buf))
+print(b"-".join([bytearray(b"a"), bytearray(b"b")]), bytearray(b"-").join([b"x", b"y"]))
+print(sorted([bytearray(b"b"), bytearray(b"a")]), f"{bytearray(b'q')}", [bytearray(b"z")])
+
+def fail(i: int) -> None:
+    if i == 0:
+        bytearray(b"a").append(300)
+    elif i == 1:
+        bytearray().pop()
+    elif i == 2:
+        bytearray(b"ab").pop(5)
+    elif i == 3:
+        bytearray(b"a").remove(9)
+    elif i == 4:
+        bytearray(-1)
+    elif i == 5:
+        print(bytearray(b"abc")[5])
+    elif i == 6:
+        bytearray([1, 256])
+    else:
+        bytearray(b"a").insert(0, -1)
+
+
+for i in range(8):
+    try:
+        fail(i)
+    except ValueError as e:
+        print("ValueError", e)
+    except IndexError as e:
+        print("IndexError", e)
+b = bytearray(b"abcdef")
+try:
+    b[::2] = b"xy"
+except ValueError as e:
+    print("ValueError", e)
+try:
+    b[0] = 256
+except ValueError as e:
+    print("ValueError", e)
+try:
+    b[10] = 1
+except IndexError as e:
+    print("IndexError", e)
+b[::2] = b"XYZ"
+del b[::2]
+print(b, b.count(b"b"), b.startswith(b"b"), b.strip(b"bf"), b.zfill(6))

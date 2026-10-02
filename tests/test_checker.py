@@ -324,7 +324,7 @@ def test_is_between_an_optional_and_an_object():
     print(xs is [1])
     """)
     assert err(fn("print(a is b)", params="a: int?, b: int")).message == (
-        "'is' is for None checks, class instances, files, lists, dicts and sets; use '==' to compare values")
+        "'is' is for None checks, class instances, files, lists, dicts, sets and bytearrays; use '==' to compare values")
 
 
 # ---- functions --------------------------------------------------------------
@@ -570,7 +570,7 @@ def test_expression_types(expr, ty):
     ("1 == 'a'", "comparing int with str using '==' is always False"),
     ("1 < 'a'", "'<' isn't supported between int and str"),
     ("'a' in [1]", "a str can never be in a list[int]"),
-    ("len(5)", "len() argument must be a str, list, dict, set or tuple, not int"),
+    ("len(5)", "len() argument must be a str, bytes, list, dict, set or tuple, not int"),
     ("len()", "len() takes exactly 1 argument (0 given)"),
     ("[1].append('x')", "list.append() argument must be int, not str"),
     ("'abc'.nope()", "str has no method 'nope'"),
@@ -2928,7 +2928,7 @@ def test_signal_types():
     ("signal.signal('TERM', signal.SIG_IGN)\n", "signal.signal() argument must be int, not str"),
     ("signal.signal(signal.SIGEMT, signal.SIG_IGN)\n", "module 'signal' has no member 'SIGEMT'"),
     ("print(signal.SIG_DFL is 0)\n",
-     "'is' is for None checks, class instances, files, lists, dicts and sets; use '==' to compare values"),
+     "'is' is for None checks, class instances, files, lists, dicts, sets and bytearrays; use '==' to compare values"),
 ])
 def test_signal_errors(src, msg):
     assert err(SIGNAL + src).message == msg
@@ -3002,6 +3002,29 @@ def test_pprint_takes_any_value():
         "s: str", "p: pprint.PrettyPrinter", "t: str"]
     assert err("import pprint\npprint.pprint([1], stream='out')\n").message == (
         "pprint.pprint() argument 'stream' must be TextIO?, not str")
+
+
+def test_bytearray_types_and_errors():
+    assert variables(ok("b = bytearray(b'x')\nn = b[0]\nc = b[1:]\nu = b.upper()\nparts = b.split()\nd = b + b'y'\n"
+                        "e = b'y' + b\nk = b.pop()\n")) == [
+        "b: bytearray", "n: int", "c: bytearray", "u: bytearray", "parts: list[bytearray]", "d: bytearray", "e: bytes",
+        "k: int"]
+    cases = [
+        ("b = bytearray(b'x')\ny: bytes = b",
+         "'y' is declared as bytes, but this is a bytearray; write bytes(b) for a copy (or declare it bytearray)"),
+        ("def f(b: bytearray) -> bytes:\n    return b",
+         "'f' returns bytes, but this is a bytearray; write bytes(b) for a copy (or declare it bytearray)"),
+        ("d = {bytearray(b'x'): 1}", "dict keys must be int, float, str, bool, or a tuple of those; not bytearray "
+                                     "(a bytearray can change, so it's unhashable: use bytes(...))"),
+        ("b = bytearray(b'x')\nb.append('a')", "bytearray.append() argument must be int, not str"),
+        ("b = bytearray(b'x')\nb[0] = 'a'", "can't store str in a bytearray"),
+        ("b = bytearray(b'x')\nb[0:1] = 'ab'", "can only assign bytes or ints (0-255) to a bytearray slice, not str"),
+        ("b = bytearray('x')", 'bytearray(str) needs an encoding: bytearray(s, "utf-8")'),
+        ("b = bytearray(b'x')\nb.extend(['a'])", "bytearray.extend() takes bytes or ints (0-255), not list[str]"),
+        ("b = bytearray(b'x')\nb += 's'", "unsupported operand types for +: bytearray and str (convert with s.encode() or b.decode())"),
+    ]
+    for source, message in cases:
+        assert err(source + "\n").message == message, source
 
 
 def test_zipfile_types_and_errors():

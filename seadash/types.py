@@ -29,6 +29,7 @@ FLOAT = Prim("float")
 BOOL = Prim("bool")
 STR = Prim("str")
 BYTES = Prim("bytes")
+BYTEARRAY = Prim("bytearray")  # mutable, and a shared reference like a list; it goes where bytes go (a copy)
 NONE = Prim("None")
 JSON_VALUE = Prim("json.Value")  # a dynamically typed JSON value (the json module)
 UNKNOWN = Prim("?")  # only while inferring literals: the element type of an empty []
@@ -113,7 +114,7 @@ TIMEDELTA = BuiltinClass("timedelta", "sd::datetime::timedelta", IMMUTABLE)
 TIMEZONE = BuiltinClass("timezone", "sd::datetime::timezone", IMMUTABLE)
 DATETIME_TYPES = (DATE, TIME, DATETIME, TIMEDELTA, TIMEZONE)
 
-PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "None": NONE}
+PRIMITIVES = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "bytes": BYTES, "bytearray": BYTEARRAY, "None": NONE}
 
 
 @dataclass(frozen=True)
@@ -804,12 +805,13 @@ def is_hashable(t: Type) -> bool:
 def assignable(src: Type, dst: Type) -> bool:
     """Can a value of type `src` be stored where `dst` is expected?
 
-    Implicit conversions are deliberately few: int -> float, and T / None -> T?.
-    Containers are invariant (a list[int] is not a list[float]).
+    Implicit conversions are deliberately few: int -> float, T / None -> T?, and bytearray ->
+    bytes (a copy, for an argument: see Checker.no_bytearray). Containers are invariant (a
+    list[int] is not a list[float]).
     """
     if src == dst:
         return True
-    if src == INT and dst == FLOAT:
+    if (src, dst) in ((INT, FLOAT), (BYTEARRAY, BYTES)):
         return True
     if isinstance(src, SelectorType) and isinstance(dst, SelectorType):
         return unify_selectors(src, dst)
@@ -892,7 +894,7 @@ def element_type(t: Type) -> Type | None:
             return key
         case Prim("str"):
             return STR
-        case Prim("bytes"):
+        case Prim("bytes") | Prim("bytearray"):
             return INT
         case Prim("json.Value"):
             return JSON_VALUE  # iterating a JSON array

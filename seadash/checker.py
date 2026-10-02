@@ -38,7 +38,7 @@ from . import builtins, flow, threads
 from .errors import CheckError, Loc
 from .parser import parse
 from .types import (
-    BINARY_FILE, BOOL, BuiltinClass, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
+    BINARY_FILE, BOOL, BuiltinClass, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, PRIMITIVES, SOCKET, STR, TEMPDIR, TEXT_FILE,
     DATE, DATETIME, DATETIME_TYPES, TIME, TIMEDELTA, UUID_T, SQLITE_CONNECTION, StructFormatType,
     SYNC_ARITY, SelectorType, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
@@ -1418,7 +1418,8 @@ class Checker:
 
     def check_hashable(self, t: Type, what: str, node: A.Node) -> None:
         if not is_hashable(t):
-            raise self.error(f"{what} must be int, float, str, bool, or a tuple of those; not {t}", node)
+            hint = " (a bytearray can change, so it's unhashable: use bytes(...))" if t == BYTEARRAY else ""
+            raise self.error(f"{what} must be int, float, str, bool, or a tuple of those; not {t}{hint}", node)
 
     # =========================================================================
     # Statements
@@ -1518,12 +1519,12 @@ class Checker:
                     if isinstance(ct, StructType) and self.dunder(ct, "__delitem__") is None:
                         raise self.error(f"{ct.name} doesn't support item deletion: give it a __delitem__ method", target)
                     if isinstance(index, A.Slice):
-                        if not isinstance(ct, ListType):
+                        if not isinstance(ct, ListType) and ct != BYTEARRAY:
                             raise self.error(f"'del' of a slice needs a list, not {ct}", target)
                         parts = [p if p is not None else A.NoneLit(loc=index.loc) for p in (index.lower, index.upper, index.step)]
                         call = A.Call(A.Attribute(container, "__delslice__", loc=target.loc), parts, loc=target.loc)
                     else:
-                        if not isinstance(ct, (StructType, ListType, DictType, DequeType, CounterType, DefaultDictType)):
+                        if not isinstance(ct, (StructType, ListType, DictType, DequeType, CounterType, DefaultDictType)) and ct != BYTEARRAY:
                             raise self.error(f"{ct} doesn't support item deletion", target)
                         if isinstance(ct, (ListType, DequeType)):
                             self.expect_type(index, INT, f"{'list' if isinstance(ct, ListType) else 'deque'} index")
@@ -1579,6 +1580,7 @@ class Checker:
         t = self.check_expr(value, declared)
         if not assignable(t, declared):
             raise self.error(f"'{target.id}' is declared as {declared}, but the value is {t}", value)
+        self.no_bytearray(t, declared, value, f"'{target.id}' is declared as {declared}")
         self.bind(target, declared, value, exact=True)
         if isinstance(t, FuncType) and t.sig is not None and isinstance(entry := self.state.names[target.id], Bound):
             self.state.names[target.id] = Bound(entry.var, t)  # (which function it holds, for keywords and defaults)
@@ -1668,6 +1670,7 @@ class Checker:
                 self.check_synchronized_access(owner, obj, attr, target)
                 if not assignable(t, f.type):
                     raise self.error(f"field '{attr}' is {f.type}, can't assign {t}", value)
+                self.no_bytearray(t, f.type, value, f"field '{attr}' is {f.type}")
                 target.ty = f.type
                 target.sym = f
                 self.note_attr_assignment(target, f.type, t)
@@ -1683,6 +1686,18 @@ class Checker:
                 if isinstance(ct, StructType):
                     raise self.error(f"{ct.name} doesn't support item assignment (define __setitem__)", target)
                 match ct:
+                    case _ if ct == BYTEARRAY and isinstance(index, A.Slice):  # b[a:b] = bytes, or ints
+                        for part in (index.lower, index.upper, index.step):
+                            if part is not None:
+                                self.expect_type(part, INT, "slice index")
+                        if t not in (BYTES, BYTEARRAY) and element_type(t) != INT:
+                            raise self.error(f"can only assign bytes or ints (0-255) to a bytearray slice, not {t}", value)
+                        index.ty = ct
+                        target.ty = ct
+                        return
+                    case _ if ct == BYTEARRAY:
+                        self.expect_type(index, INT, "bytearray index")
+                        slot = INT
                     case ListType(elem) if isinstance(index, A.Slice):  # xs[a:b:c] = any iterable of items
                         for part in (index.lower, index.upper, index.step):
                             if part is not None:
@@ -1883,7 +1898,15 @@ class Checker:
                 )
             if not assignable(t, scope.ret):
                 raise self.error(f"'{name}' should return {scope.ret}, not {t}", value)
+            self.no_bytearray(t, scope.ret, value, f"'{name}' returns bytes")
         self.state.dead = True
+
+    def no_bytearray(self, t: Type, declared: Type, value: A.Expr, what: str) -> None:
+        """A bytearray goes where bytes are expected as an argument (as a copy), but isn't kept
+        where bytes are declared: in Python that would still be the (changeable) bytearray."""
+        if t == BYTEARRAY and strip_optional(declared) == BYTES:
+            raise self.error(f"{what}, but this is a bytearray; write bytes({describe_short(value)}) for a copy "
+                             f"(or declare it bytearray)", value)
 
     def check_raise(self, stmt: A.Raise, exc: A.Expr | None, cause: A.Expr | None) -> None:
         if exc is None:
@@ -2364,7 +2387,7 @@ class Checker:
             case _ if inner == JSON_VALUE:
                 elem_types = [JSON_VALUE] * len(items)
                 star_type = ListType(JSON_VALUE)
-            case _ if inner in (STR, BYTES):
+            case _ if inner in (STR, BYTES, BYTEARRAY):
                 raise self.never_matches(p, t, f"sequence patterns don't match {with_article(inner)} (as in Python); "
                                                f"compare it, or use a guard")
             case _:
@@ -2589,7 +2612,7 @@ class Checker:
         return state
 
     def check_truthy(self, t: Type, e: A.Expr) -> None:
-        ok = t in (INT, FLOAT, BOOL, STR, BYTES, JSON_VALUE, PATH, *DATETIME_TYPES) or isinstance(
+        ok = t in (INT, FLOAT, BOOL, STR, BYTES, BYTEARRAY, JSON_VALUE, PATH, *DATETIME_TYPES) or isinstance(
             t, (ListType, DictType, SetType, TupleType, OptionalType, FileType, DequeType, MatchType, VarTupleType,
                 GeneratorType)
         ) or bool(self.dunder(t, "__bool__") or self.dunder(t, "__len__")) or (
@@ -3124,6 +3147,8 @@ class Checker:
                     return widened
                 if l == r and (l in (STR, BYTES) or isinstance(l, ListType)):
                     return l
+                if {l, r} <= {BYTES, BYTEARRAY}:  # the left one's type, as in Python
+                    return l
                 if isinstance(l, TupleType) and isinstance(r, TupleType):
                     return TupleType(l.elts + r.elts)
                 if isinstance(l, VarTupleType) and l == r:
@@ -3136,9 +3161,9 @@ class Checker:
             case "*":
                 if numeric:
                     return widened
-                if (l in (STR, BYTES) or isinstance(l, ListType)) and r == INT:
+                if (l in (STR, BYTES, BYTEARRAY) or isinstance(l, ListType)) and r == INT:
                     return l
-                if l == INT and (r in (STR, BYTES) or isinstance(r, ListType)):
+                if l == INT and (r in (STR, BYTES, BYTEARRAY) or isinstance(r, ListType)):
                     return r
             case "/":
                 if numeric:
@@ -3176,7 +3201,7 @@ class Checker:
                     f"{maybe} might be None; check it first, e.g. `if {describe_short(operand)} is not None:`", operand
                 )
         hint = ""
-        if {l, r} == {STR, BYTES}:
+        if STR in (l, r) and {l, r} & {BYTES, BYTEARRAY}:
             hint = " (convert with s.encode() or b.decode())"
         elif op == "+" and STR in (l, r):
             hint = " (convert with str(...), or use an f-string)"
@@ -3243,13 +3268,13 @@ class Checker:
             ordered = (is_numeric(lt) and is_numeric(rt)) or (
                 lt == rt and (lt in (STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T)
                               or isinstance(lt, (TupleType, ListType, VarTupleType, SetType, CmpKeyType)))  # (sets: subset and superset)
-            ) or mixed_tuples(lt, rt)
+            ) or mixed_tuples(lt, rt) or {lt, rt} <= {BYTES, BYTEARRAY}
             if not ordered:
                 owner = lt if isinstance(lt, StructType) else rt
                 hint = self.dunder_hint(owner, COMPARE_DUNDERS[op][0])
                 raise self.error(f"'{op}' isn't supported between {lt} and {rt}{hint}", e)
         elif op in ("==", "!="):
-            if not (is_numeric(lt) and is_numeric(rt)) and join(lt, rt) is None:
+            if not (is_numeric(lt) and is_numeric(rt)) and join(lt, rt) is None and not {lt, rt} <= {BYTES, BYTEARRAY}:
                 raise self.error(f"comparing {lt} with {rt} using '{op}' is always {op == '!='}", e)
         elif op in ("in", "not in"):
             match rt:
@@ -3265,8 +3290,8 @@ class Checker:
                     ok = any(join(lt, t) for t in elts)
                 case _ if rt == STR:
                     ok = lt == STR
-                case _ if rt == BYTES:
-                    ok = lt in (BYTES, INT)
+                case _ if rt in (BYTES, BYTEARRAY):
+                    ok = lt in (BYTES, BYTEARRAY, INT)
                 case _ if rt == JSON_VALUE:
                     ok = lt == STR  # a key of a JSON object
                 case ClassRefType(st) if st.enum is not None:
@@ -3287,13 +3312,14 @@ class Checker:
             same_object = (isinstance(enum_t, StructType) and enum_t.enum is not None and join(lt, rt) is not None) or lo == ro and (
                 (isinstance(lo, StructType) and lo.kind == "class")
                 or isinstance(lo, (ListType, DictType, SetType, DequeType, CounterType, DefaultDictType))
+                or lo == BYTEARRAY
                 or lo == builtins.SIGNAL_HANDLER  # getsignal(s) is signal.SIG_DFL
             ) or (isinstance(lo, FileType) and isinstance(ro, FileType) and lo.binary == ro.binary)  # f is sys.stdout
             if not (is_none_check or same_object):
                 if isinstance(right, A.NoneLit):
                     raise self.error(f"{lt} can never be None (only T? types can)", e)
                 raise self.error(
-                    f"'{op}' is for None checks, class instances, files, lists, dicts and sets; use '==' to compare values", e
+                    f"'{op}' is for None checks, class instances, files, lists, dicts, sets and bytearrays; use '==' to compare values", e
                 )
 
     def check_attribute(self, e: A.Attribute, value: A.Expr, attr: str, expected: Type | None = None) -> Type:
@@ -3431,7 +3457,7 @@ class Checker:
             e.dunder = Dunder(m)
             return m.ret
         if isinstance(index, A.Slice):
-            if not (isinstance(vt, (ListType, VarTupleType)) or vt in (STR, BYTES)):
+            if not (isinstance(vt, (ListType, VarTupleType)) or vt in (STR, BYTES, BYTEARRAY)):
                 raise self.error(f"{vt} can't be sliced", e)
             for part in (index.lower, index.upper, index.step):
                 if part is not None:
@@ -3471,8 +3497,8 @@ class Checker:
             case _ if vt == STR:
                 self.expect_type(index, INT, "string index")
                 return STR
-            case _ if vt == BYTES:
-                self.expect_type(index, INT, "bytes index")
+            case _ if vt in (BYTES, BYTEARRAY):
+                self.expect_type(index, INT, f"{vt} index")
                 return INT
             case _ if vt == JSON_VALUE:
                 it = self.check_expr(index)

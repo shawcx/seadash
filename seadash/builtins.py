@@ -15,7 +15,7 @@ from . import ast as A
 from .errors import CheckError
 from .errors import Loc
 from .types import (
-    BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
+    BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
     BINARY_FILE, TEXT_FILE, STRING_IO, BYTES_IO,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
@@ -217,7 +217,7 @@ def printable(t: Type) -> bool:
 
 
 def sized(t: Type) -> bool:
-    return t in (STR, BYTES, JSON_VALUE, HTTP_HEADERS) or isinstance(t, (ListType, DictType, SetType, TupleType, DequeType, VarTupleType)) or bool(
+    return t in (STR, BYTES, BYTEARRAY, JSON_VALUE, HTTP_HEADERS) or isinstance(t, (ListType, DictType, SetType, TupleType, DequeType, VarTupleType)) or bool(
         user_dunder(t, "__len__")
     ) or (isinstance(t, IterType) and t.kind in ("keys", "values", "items", "range")) or (  # len(d.keys()), len(range(n))
         isinstance(t, ClassRefType) and t.st.enum is not None) or (  # len(Color)
@@ -225,12 +225,16 @@ def sized(t: Type) -> bool:
 
 
 def ordered(t: Type) -> bool:
-    return t in (INT, FLOAT, STR, BYTES, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T) or isinstance(t, (TupleType, ListType, VarTupleType, CmpKeyType)) or bool(user_dunder(t, "__lt__")) or (
+    return t in (INT, FLOAT, STR, BYTES, BYTEARRAY, PATH, DATE, TIME, DATETIME, TIMEDELTA, UUID_T) or isinstance(t, (TupleType, ListType, VarTupleType, CmpKeyType)) or bool(user_dunder(t, "__lt__")) or (
         isinstance(t, StructType) and t.enum is not None and t.enum.mixin is not None)  # IntEnum, StrEnum
 
 
+def unhashable_hint(t: Type) -> str:
+    return " (a bytearray can change, so it's unhashable: use bytes(...))" if t == BYTEARRAY else ""
+
+
 def bytes_like(t: Type) -> bool:
-    return t in (BYTES, STR)
+    return t in (BYTES, BYTEARRAY, STR)
 
 
 # ---- built-in functions -----------------------------------------------------
@@ -297,14 +301,14 @@ def open_mode(ctx: CallContext, mode_node: A.Expr | None) -> Type:
 
 def b_len(ctx: CallContext) -> Type:
     ctx.arity(1)
-    ctx.need(0, sized, "a str, list, dict, set or tuple")
+    ctx.need(0, sized, "a str, bytes, list, dict, set or tuple")
     return INT
 
 
 def b_str(ctx: CallContext) -> Type:
     n = ctx.arity(0, 2, keywords=("encoding",))
     if n == 2 or ctx.call.keywords:  # str(data, "utf-8") is data.decode("utf-8")
-        if n == 0 or ctx.arg(0) != BYTES:
+        if n == 0 or ctx.arg(0) not in (BYTES, BYTEARRAY):
             what = "decoding str is not supported" if n and ctx.args[0].ty == STR else "str() with an encoding needs bytes to decode"
             raise ctx.error(what, ctx.args[0] if n else None)
         encoding_argument(ctx, n)
@@ -624,7 +628,7 @@ def b_set(ctx: CallContext) -> Type:
     if ctx.arity(0, 1):
         elem = ctx.iterable(0)
         if not is_hashable(elem):
-            raise ctx.error(f"set elements must be int, float, str, bool, or a tuple of those; not {elem}")
+            raise ctx.error(f"set elements must be int, float, str, bool, or a tuple of those; not {elem}" + unhashable_hint(elem))
         return SetType(elem)
     if isinstance(ctx.expected, SetType):
         return ctx.expected
@@ -690,7 +694,7 @@ def b_dict(ctx: CallContext) -> Type:
         if not (isinstance(pair, TupleType) and len(pair.elts) == 2):
             raise ctx.error(f"dict() needs a dict or (key, value) pairs, not {t}", ctx.args[0])
         if not is_hashable(pair.elts[0]):
-            raise ctx.error(f"dict keys must be int, float, str, bool, or a tuple of those; not {pair.elts[0]}")
+            raise ctx.error(f"dict keys must be int, float, str, bool, or a tuple of those; not {pair.elts[0]}" + unhashable_hint(pair.elts[0]))
         ctx.call.pairs = True
         return DictType(*pair.elts)
     if isinstance(ctx.expected, DictType):
@@ -727,6 +731,25 @@ def b_bytes(ctx: CallContext) -> Type:
         raise ctx.error(f"bytes() needs a length or a list of ints (0-255), not {t}", ctx.args[0])
     mark_tuple_iterable(ctx.args[0], t, INT)
     return BYTES
+
+
+def b_bytearray(ctx: CallContext) -> Type:
+    """bytearray(), bytearray(n), bytearray(b"..."), bytearray(ints), bytearray(s, encoding)."""
+    n = ctx.arity(0, 2, keywords=("encoding",))
+    if n == 2 or ctx.call.keywords:
+        if n == 0 or ctx.arg(0) != STR:
+            raise ctx.error("encoding without a string argument", ctx.args[0] if n else None)
+        encoding_argument(ctx, n)
+        return BYTEARRAY
+    if not n:
+        return BYTEARRAY
+    t = ctx.arg(0)
+    if t == STR:
+        raise ctx.error('bytearray(str) needs an encoding: bytearray(s, "utf-8")', ctx.args[0])
+    if t not in (INT, BYTES, BYTEARRAY) and element_type(t) != INT:
+        raise ctx.error(f"bytearray() needs a length, bytes or a list of ints (0-255), not {t}", ctx.args[0])
+    mark_tuple_iterable(ctx.args[0], t, INT)
+    return BYTEARRAY
 
 
 def b_ord(ctx: CallContext) -> Type:
@@ -785,6 +808,7 @@ FUNCTIONS: dict[str, Callable[[CallContext], Type]] = {
     "all": b_any_all,
     "input": b_input,
     "bytes": b_bytes,
+    "bytearray": b_bytearray,
     "open": b_open,
     "ord": b_ord,
     "chr": b_chr,
@@ -1017,7 +1041,7 @@ def bytes_fromhex(ctx: CallContext) -> Type:
 
 # `str.maketrans(...)`, `bytes.fromhex(...)`: called on the type itself.
 TYPE_FUNCTIONS = {("str", "maketrans"): str_maketrans, ("bytes", "maketrans"): bytes_maketrans,
-                  ("bytes", "fromhex"): bytes_fromhex}
+                  ("bytes", "fromhex"): bytes_fromhex, ("bytearray", "fromhex"): returns(BYTEARRAY, 1, 1, (STR,))}
 
 
 STR_METHODS = {
@@ -1039,7 +1063,7 @@ STR_METHODS = {
 def bytes_join(ctx: CallContext) -> Type:
     ctx.arity(1)
     elem = ctx.iterable(0)
-    if elem != BYTES:
+    if elem not in (BYTES, BYTEARRAY):
         raise ctx.error(f"bytes.join() needs bytes items, not {elem}", ctx.args[0])
     return BYTES
 
@@ -1103,7 +1127,7 @@ def dict_fromkeys(ctx: CallContext) -> Type:
     n = ctx.arity(1, 2)
     key = ctx.iterable(0)
     if not is_hashable(key):
-        raise ctx.error(f"dict keys must be int, float, str, bool, or a tuple of those; not {key}", ctx.args[0])
+        raise ctx.error(f"dict keys must be int, float, str, bool, or a tuple of those; not {key}" + unhashable_hint(key), ctx.args[0])
     hint = ctx.expected.value if isinstance(ctx.expected, DictType) else None
     if n == 2:
         value = ctx.arg(1, hint)
@@ -1327,6 +1351,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = STR_METHODS
         case _ if t == BYTES:
             table = BYTES_METHODS
+        case _ if t == BYTEARRAY:
+            table = BYTEARRAY_METHODS
         case _ if t == INT:
             table = INT_METHODS
         case _ if t == FLOAT:
@@ -1804,7 +1830,7 @@ def sequence_elem(t: Type) -> Type | None:
             return elts[0]
     if t == STR:
         return STR
-    if t == BYTES:
+    if t in (BYTES, BYTEARRAY):
         return INT
     return None
 
@@ -2068,6 +2094,56 @@ def sync_method(result, *params):
 STR_METHODS.update(text_methods(STR, '" "s'))
 BYTES_METHODS.update(text_methods(BYTES, 'sd::bytes(" "s)'))
 BYTES_METHODS["translate"] = sync_method(BYTES, ("table", OptionalType(BYTES)), ("delete", BYTES, "sd::bytes()"))
+
+
+def as_bytearray_type(t: Type) -> Type:
+    """What a bytes method gives as a bytearray method: bytearrays where it gave bytes."""
+    if t == BYTES:
+        return BYTEARRAY
+    if isinstance(t, ListType):
+        return ListType(as_bytearray_type(t.elem))
+    if isinstance(t, TupleType):
+        return TupleType(tuple(as_bytearray_type(e) for e in t.elts))
+    return t
+
+
+def bytearray_method(handler):
+    """A bytes method on a bytearray (codegen converts its result with sd::as_bytearray)."""
+    def wrapped(ctx: CallContext) -> Type:
+        return as_bytearray_type(handler(ctx))
+    for attr in ("params", "resolve"):  # (keywords and defaults)
+        if hasattr(handler, attr):
+            setattr(wrapped, attr, getattr(handler, attr))
+    return wrapped
+
+
+def bytearray_extend(ctx: CallContext) -> Type:
+    ctx.arity(1)
+    t = ctx.arg(0)
+    if t not in (BYTES, BYTEARRAY) and element_type(t) != INT:
+        raise ctx.error(f"bytearray.extend() takes bytes or ints (0-255), not {t}", ctx.args[0])
+    mark_tuple_iterable(ctx.args[0], t, INT)
+    return NONE
+
+
+# The methods bytearray has of its own (members of sd::bytearray), then those it shares with bytes.
+BYTEARRAY_OWN_METHODS = {
+    "append": returns(NONE, args=(INT,)),
+    "extend": bytearray_extend,
+    "insert": returns(NONE, args=(INT, INT)),
+    "pop": returns(INT, 0, 1, (INT,)),
+    "remove": returns(NONE, args=(INT,)),
+    "clear": returns(NONE),
+    "reverse": returns(NONE),
+    "copy": returns(BYTEARRAY),
+}
+BYTEARRAY_METHODS = {
+    **{name: bytearray_method(h) for name, h in BYTES_METHODS.items()},
+    **BYTEARRAY_OWN_METHODS,
+    # (`del b[i]` and `del b[a:b:c]`, as the checker writes them)
+    "__delitem__": returns(NONE, args=(INT,)),
+    "__delslice__": returns(NONE, args=(OptionalType(INT), OptionalType(INT), OptionalType(INT))),
+}
 
 INT_METHODS = {
     "bit_length": sync_method(INT),
@@ -3938,7 +4014,7 @@ def hash_data(ctx: CallContext, node: A.Expr, what: str) -> None:
     t = ctx.checker.check_expr(node, BYTES)
     if t == STR:
         raise ctx.error(f"{what}: strings must be encoded before hashing; use s.encode()", node)
-    if t != BYTES:
+    if t not in (BYTES, BYTEARRAY):
         raise ctx.error(f"{what} must be bytes, not {t}", node)
 
 
@@ -4601,7 +4677,7 @@ EXCEPTION_METHODS = {  # methods of built-in classes (by C++ name): HTTPError is
 
 def url_data(ctx: CallContext, node: A.Expr, what: str) -> None:
     t = ctx.checker.check_expr(node, BYTES)
-    if t != BYTES:
+    if t not in (BYTES, BYTEARRAY):
         hint = "; use s.encode() (or urlencode(fields).encode() for a form)" if t == STR else ""
         raise ctx.error(f"{what} must be bytes, not {t}{hint}", node)
 
@@ -4694,7 +4770,7 @@ def http_request(ctx: CallContext) -> Type:
     ctx.checker.expect_type(args["url"], STR, "request() url")
     if "body" in args and not isinstance(args["body"], A.NoneLit):
         t = ctx.checker.check_expr(args["body"])
-        if t not in (BYTES, STR):
+        if t not in (BYTES, BYTEARRAY, STR):
             raise ctx.error(f"request() body must be bytes or str, not {t}", args["body"])
     if "headers" in args:
         ctx.checker.expect_type(args["headers"], DictType(STR, STR), "request() headers")

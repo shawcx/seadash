@@ -1,0 +1,32 @@
+bytearray(b'hello') 5 104 111 bytearray(b'el')
+bytearray(b'Hello! world!!')
+bytearray(b'Hello! world!') 33 62 bytearray(b'Hello! world!')
+bytearray(b'eo world!')
+bytearray(b'HE world??') False b'xHE world??' bytearray(b'HE world??!') bytearray(b'HE world??HE world??')
+97
+98
+bytearray(b'\x00\x00\x00') bytearray(b'\x01\x02\xff') bytearray(b'h\xc3\xa9llo') bytearray(b'\xde\xad')
+bytearray(b'HE WORLD??') [bytearray(b'HE'), bytearray(b'world??')] HE world?? 484520776f726c643f3f -1 False True
+bytearray(b'abcdefabcdef') True
+b'abcdefabcdef' True False
+bytearray(b'fedcbafedcba') bytearray(b'fedcbafedcba') 12
+bytearray(b'') False True
+bytearray(b"it\'s") bytearray(b'"q"')
+True True True
+(bytearray(b'a'), bytearray(b','), bytearray(b'b,c'))
+9941b9d737ee (7, 1000) 545030348 True
+b'\x07\x00\xe8\x03\x00\x00xyz' xyz b'\x07\x00\xe8\x03\x00\x00xyz'
+b'a-b' bytearray(b'x-y')
+[bytearray(b'a'), bytearray(b'b')] bytearray(b'q') [bytearray(b'z')]
+ValueError byte must be in range(0, 256)
+IndexError pop from empty bytearray
+IndexError pop index out of range
+ValueError value not found in bytearray
+ValueError negative count
+IndexError bytearray index out of range
+ValueError byte must be in range(0, 256)
+ValueError byte must be in range(0, 256)
+ValueError attempt to assign bytes of size 2 to extended slice of size 3
+ValueError byte must be in range(0, 256)
+IndexError bytearray index out of range
+bytearray(b'bdf') 1 True bytearray(b'd') bytearray(b'000bdf')
