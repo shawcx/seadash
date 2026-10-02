@@ -1,7 +1,7 @@
 # A key-value server: one thread per connection, all sharing one store.
 #
 #   sd run examples/kv_server.sd --port 7000
-#   nc localhost 7000
+#   nc 127.0.0.1 7000      # not localhost: on macOS, AirPlay also listens on 7000
 #   SET greeting hello world
 #   GET greeting
 #
