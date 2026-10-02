@@ -1,0 +1,48 @@
+# **kwargs: the other keyword arguments, as a dict; f(**d): arguments from a dict.
+from dataclasses import dataclass
+
+
+def tag(name: str, /, **attrs: str) -> str:
+    inner = "".join(f' {k}="{v}"' for k, v in attrs.items())
+    return f"<{name}{inner}>"
+
+
+def connect(host: str, port: int = 80, *, timeout: int = 5) -> str:
+    return f"{host}:{port} ({timeout}s)"
+
+
+def report(title: str, **counts: int) -> str:
+    total = sum(counts.values())
+    return f"{title}: {total} {sorted(counts.items())}"
+
+
+@dataclass
+class Logger:
+    prefix: str
+
+    def log(self, message: str, **fields: int) -> str:
+        return f"{self.prefix} {message} {fields}"
+
+
+print(tag("a"), tag("a", href="/home", title="Home"), tag("img", name="logo"))
+print(report("fruit", apples=3, pears=2), report("none"))
+options = {"port": 8080, "timeout": 1}
+print(connect("h", **options), connect(host="i", **{"timeout": 9}))
+settings = {"host": "j"}
+print(connect(**settings))
+extra = {"bananas": 4}
+print(report("more", apples=1, **extra))
+print(Logger("[app]").log("started", pid=42, **{"port": 80}))
+try:
+    print(connect("k", **{"port": 1, "colour": 2}))
+except TypeError as e:
+    print("TypeError:", e)
+no_host: dict[str, str] = {}
+try:
+    print(connect(**no_host))
+except TypeError as e:
+    print("TypeError:", e)
+try:
+    print(connect("l", port=2, **{"port": 3}))
+except TypeError as e:
+    print("TypeError:", "got multiple values for keyword argument 'port'" in str(e))

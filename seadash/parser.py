@@ -580,6 +580,21 @@ class Parser:
                 if not self.accept(","):
                     break
                 continue
+            if params and params[-1].double_star:
+                raise self.error("arguments cannot follow var-keyword argument", self.peek().loc)
+            if self.accept("**"):  # **kwargs: the other keyword arguments
+                tok = self.expect_name("parameter name")
+                if tok.value in seen:
+                    raise self.error(f"duplicate parameter '{tok.value}'", tok.loc)
+                seen.add(tok.value)
+                annotation = self.parse_type() if self.accept(":") else None
+                if self.at("="):
+                    raise self.error("var-keyword argument cannot have default value", self.peek().loc)
+                params.append(A.Param(tok.value, annotation, None, False, "normal", True, loc=tok.loc))
+                bare_star = None
+                if not self.accept(","):
+                    break
+                continue
             star = self.accept("*") is not None
             if star and keyword_only:
                 raise self.error("* argument may appear only once", self.peek().loc)
@@ -892,6 +907,7 @@ class Parser:
         self.expect("(")
         args: list[A.Expr] = []
         keywords: list[A.Keyword] = []
+        double_star: list[A.Expr] = []
         while not self.at(")"):
             if self.at_kind(K.NAME) and self.at("=", 1):
                 name = self.next()
@@ -899,9 +915,11 @@ class Parser:
                 if any(k.name == name.value for k in keywords):
                     raise self.error(f"keyword argument repeated: '{name.value}'", name.loc)
                 keywords.append(A.Keyword(name.value, self.parse_expr(), loc=name.loc))
-            elif self.at("**"):
-                raise self.error("'**' arguments aren't supported yet; pass the keywords by name")
+            elif self.accept("**"):  # f(**d)
+                double_star.append(self.parse_expr())
             else:
+                if double_star:
+                    raise self.error("positional argument follows keyword argument unpacking")
                 if keywords:
                     raise self.error("positional argument follows keyword argument")
                 arg = self.parse_star_or(self.parse_named_expr)
@@ -914,7 +932,7 @@ class Parser:
             if not self.accept(","):
                 break
         self.expect(")", " to close function call")
-        return A.Call(func, args, keywords, loc=func.loc)
+        return A.Call(func, args, keywords, double_star, loc=func.loc)
 
     def parse_subscript(self) -> A.Expr:
         first = self.parse_subscript_item()

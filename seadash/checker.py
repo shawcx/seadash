@@ -742,12 +742,13 @@ class Checker:
         resolved: list[Param] = []
         for p in params:
             if p.annotation is None:
-                example = f"*{p.name}: str" if p.star else f"{p.name}: int"
+                example = f"*{p.name}: str" if p.star else f"**{p.name}: int" if p.double_star else f"{p.name}: int"
                 raise self.error(
                     f"parameter '{p.name}' needs a type annotation, e.g. `{example}`", p
                 )
             t = self.resolve_type(p.annotation)
-            resolved.append(Param(p.name, VarTupleType(t) if p.star else t, p.default, p.loc, p.star, p.kind))
+            t = VarTupleType(t) if p.star else DictType(STR, t) if p.double_star else t
+            resolved.append(Param(p.name, t, p.default, p.loc, p.star, p.kind, p.double_star))
         ret = self.resolve_type(node.returns) if node.returns else NONE
         info = FuncInfo(node.name, resolved, ret, node, owner, module=self.module_name, kind=kind)
         if has_yield(node.body):
@@ -4215,7 +4216,7 @@ class Checker:
         if len(stars) > 1 or k != len(e.args) - 1:
             raise self.error(f"only the last positional argument of {what} can be unpacked from a list "
                              f"(a tuple can be unpacked anywhere)", e.args[stars[-1] if len(stars) > 1 else k])
-        plain = [p for p in params if not p.star and p.kind != "kwonly"]
+        plain = [p for p in params if not p.star and not p.double_star and p.kind != "kwonly"]
         if k >= len(plain):  # all of it goes to *args (match_args checks that there is one)
             return
         keywords = {kw.name for kw in e.keywords}
@@ -4238,9 +4239,11 @@ class Checker:
         in order. A `*args` parameter's slot is a tuple of the remaining positional arguments.
         Parameters before `/` can't be passed by keyword, those after `*` or `*args` only can."""
         self.spread_list_argument(e, params, what)
-        positional = [p for p in params if not p.star and p.kind != "kwonly"]
+        positional = [p for p in params if not p.star and not p.double_star and p.kind != "kwonly"]
         star = next((p for p in params if p.star), None)
-        slots: dict[str, A.Expr | None] = {p.name: None for p in params if not p.star}
+        kwargs = next((p for p in params if p.double_star), None)
+        named = [p for p in params if not p.star and not p.double_star]
+        slots: dict[str, A.Expr | None] = {p.name: None for p in named}
         rest = None
         if star is not None:
             rest = A.TupleLit(list(e.args[len(positional):]), loc=e.loc)
@@ -4255,30 +4258,50 @@ class Checker:
                 if not assignable(t, star.type.elem):
                     raise self.error(f"*{star.name} of {what} takes {star.type.elem} arguments, not {t}", arg)
         elif len(e.args) > len(positional):
-            if len(positional) < len(params):  # (some are keyword-only: say so, as Python does)
+            if len(positional) < len(named):  # (some are keyword-only: say so, as Python does)
                 raise self.error(f"{what} takes {plural(len(positional), 'positional argument')} but "
                                  f"{len(e.args)} were given", e)
-            raise self.error(f"{what} takes {plural(len(params), 'argument')} but {len(e.args)} were given", e)
+            raise self.error(f"{what} takes {plural(len(named), 'argument')} but {len(e.args)} were given", e)
         for p, arg in zip(positional, e.args):
             slots[p.name] = arg
-        by_name = {p.name: p for p in params if not p.star}
+        by_name = {p.name: p for p in named}
+        extra: list[A.Keyword] = []  # keywords for **kwargs
         posonly = [kw.name for kw in e.keywords if kw.name in by_name and by_name[kw.name].kind == "posonly"]
-        if posonly:
+        if posonly and kwargs is None:
             raise self.error(f"{what} got some positional-only arguments passed as keyword arguments: "
                              f"'{', '.join(posonly)}'", e)
         for kw in e.keywords:
-            if kw.name not in by_name:
-                raise self.error(f"{what} got an unexpected keyword argument '{kw.name}'", kw)
+            if kw.name not in by_name or by_name[kw.name].kind == "posonly":
+                if kwargs is None:
+                    raise self.error(f"{what} got an unexpected keyword argument '{kw.name}'", kw)
+                extra.append(kw)
+                continue
             if slots[kw.name] is not None:
                 raise self.error(f"{what} got multiple values for argument '{kw.name}'", kw)
             slots[kw.name] = kw.value
+        source = self.double_star_source(e, what)
+        fillable: list[str] = []
+        if source is not None:  # f(**d): what's still open comes from d, when it runs
+            value_type = source.ty.value
+            for p in named:
+                if slots[p.name] is None and p.kind != "posonly" and assignable(value_type, p.type):
+                    kind = "keyword-only argument" if p.kind == "kwonly" else "positional argument"
+                    slots[p.name] = A.KwGet(source, p.name, p.default, f"{what} missing 1 required {kind}: '{p.name}'",
+                                            loc=source.loc)
+                    slots[p.name].ty = p.type
+                    fillable.append(p.name)
         out: list[A.Expr | None] = []
         for p in params:
             if p.star:
                 out.append(rest)
                 continue
+            if p.double_star:
+                out.append(self.kwargs_slot(p, extra, source, [q.name for q in named if q.kind != "posonly"], what, e))
+                continue
             arg = slots[p.name]
             out.append(arg)
+            if isinstance(arg, A.KwGet):
+                continue
             if arg is None:
                 if p.default is None:
                     kind = "keyword-only argument" if p.kind == "kwonly" else "argument"
@@ -4287,7 +4310,46 @@ class Checker:
             t = self.check_expr(arg, p.type)
             if not assignable(t, p.type):
                 raise self.error(f"argument '{p.name}' of {what} must be {p.type}, not {t}", arg)
+        if source is not None:
+            by_position = [p.name for p in positional[:len(e.args)]]
+            e.kw_check = (source, fillable, [kw.name for kw in e.keywords], by_position, kwargs is not None, what)
         return out
+
+    def double_star_source(self, e: A.Call, what: str) -> A.Expr | None:
+        """The dict of f(**d), checked: str keys. (One per call.)"""
+        if not e.double_star:
+            return None
+        if len(e.double_star) > 1:
+            raise self.error(f"only one '**' dict can be passed to {what}; merge them first: f(**(a | b))",
+                             e.double_star[1])
+        source = e.double_star[0]
+        t = self.check_expr(source)
+        if not isinstance(t, DictType) or t.key != STR:
+            raise self.error(f"{what} argument after ** must be a dict with str keys, not {t}", source)
+        return source
+
+    def kwargs_slot(self, p: Param, extra: list[A.Keyword], source: A.Expr | None, known: list[str], what: str,
+                    e: A.Call) -> A.Expr:
+        """**kwargs: a dict of the keywords no other parameter took (and, with f(**d), d's other keys)."""
+        values = p.type.value
+        for kw in extra:
+            t = self.check_expr(kw.value, values)
+            if not assignable(t, values):
+                raise self.error(f"**{p.name} of {what} takes {values} values, not {t}", kw.value)
+        keys: list[A.Expr | None] = [A.StrLit(kw.name, loc=kw.loc) for kw in extra]
+        vals: list[A.Expr] = [kw.value for kw in extra]
+        for k in keys:
+            k.ty = STR
+        if source is not None:
+            if not assignable(source.ty.value, values):
+                raise self.error(f"**{p.name} of {what} takes {values} values, not {source.ty.value} (from **)", source)
+            more = A.KwRest(source, known, loc=source.loc)
+            more.ty = DictType(STR, source.ty.value)
+            keys.append(None)
+            vals.append(more)
+        d = A.DictLit(keys, vals, loc=e.loc)
+        d.ty = p.type
+        return d
 
 
 # ---- helpers ----------------------------------------------------------------

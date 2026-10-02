@@ -374,7 +374,7 @@ def fills_defaults(src: FuncType, dst: FuncType) -> bool:
         return False
     given, rest = src.sig.params[:len(dst.params)], src.sig.params[len(dst.params):]
     return (all(not p.star and p.kind != "kwonly" for p in given) and tuple(p.type for p in given) == dst.params
-            and all(p.star or p.default is not None for p in rest))
+            and all(p.star or p.double_star or p.default is not None for p in rest))
 
 
 def filled_for(ft: Type, given: tuple) -> FuncType | None:
@@ -492,6 +492,7 @@ class Param:
     loc: Loc
     star: bool = False  # `*args: T`: type is tuple[T, ...], filled from the remaining positional arguments
     kind: str = "normal"  # or "posonly" (before `/`), "kwonly" (after `*` or `*args`): by name only
+    double_star: bool = False  # `**kwargs: T`: type is dict[str, T], filled from the other keyword arguments
 
 
 @dataclass(eq=False)
@@ -518,7 +519,8 @@ class FuncInfo:
     lazy: bool = False  # @functools.cached_property: a getter whose value is kept after the first time
 
     def __str__(self) -> str:
-        params = ", ".join(f"*{p.name}: {p.type.elem}" if p.star else f"{p.name}: {p.type}" for p in self.params)
+        params = ", ".join(f"*{p.name}: {p.type.elem}" if p.star else f"**{p.name}: {p.type.value}" if p.double_star
+                           else f"{p.name}: {p.type}" for p in self.params)
         return f"def {self.name}({params}) -> {self.ret}"
 
     def value_type(self) -> FuncType:

@@ -4349,6 +4349,33 @@ template <class K, class V, class D>
 void add_pairs(const dict<K, V>& out, const D& d) {
     for (const auto& [k, v] : d) out[static_cast<K>(k)] = static_cast<V>(v);
 }
+// f(**d): every key must name a parameter not otherwise given (or go to **kwargs).
+template <class V>
+void kw_check(const dict<std::string, V>& d, std::initializer_list<std::string_view> fillable,
+              std::initializer_list<std::string_view> by_keyword, std::initializer_list<std::string_view> by_position,
+              bool has_rest, std::string_view what) {
+    auto in = [](std::initializer_list<std::string_view> names, const std::string& k) {
+        return std::find(names.begin(), names.end(), k) != names.end();
+    };
+    for (const auto& [k, v] : d) {
+        if (in(by_keyword, k)) raise("TypeError", std::string(what) + " got multiple values for keyword argument '" + k + "'");
+        if (in(by_position, k)) raise("TypeError", std::string(what) + " got multiple values for argument '" + k + "'");
+        if (!has_rest && !in(fillable, k)) raise("TypeError", std::string(what) + " got an unexpected keyword argument '" + k + "'");
+    }
+}
+template <class T, class V>
+T kw_get(const dict<std::string, V>& d, const std::string& name, std::string_view missing) {
+    if (const V* v = d.find(name)) return static_cast<T>(*v);
+    raise("TypeError", std::string(missing));
+}
+template <class V>
+dict<std::string, V> kw_rest(const dict<std::string, V>& d, std::initializer_list<std::string_view> known) {
+    dict<std::string, V> out;
+    for (const auto& [k, v] : d)
+        if (std::find(known.begin(), known.end(), k) == known.end()) out[k] = v;
+    return out;
+}
+
 template <class K, class V>
 dict<K, V> dict_or(const dict<K, V>& a, const dict<K, V>& b) {  // a | b
     dict<K, V> out = a.copy();

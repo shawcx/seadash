@@ -267,6 +267,7 @@ class Call(Expr):
     func: Expr
     args: list[Expr] = field(default_factory=list)
     keywords: list[Keyword] = field(default_factory=list)
+    double_star: list[Expr] = field(default_factory=list)  # f(**d): dicts whose keys name the arguments
 
 
 @dataclass
@@ -281,6 +282,25 @@ class Starred(Expr):
     call (`f(*args)`). (`**d` in a dict display is a None key in DictLit.)"""
 
     value: Expr
+
+
+@dataclass
+class KwGet(Expr):
+    """f(**d): the argument for parameter `name`, read from the dict `source` when it runs
+    (its `default` if the key is missing, else a TypeError: `missing` says what's missing)."""
+
+    source: Expr
+    name: str
+    default: Expr | None
+    missing: str
+
+
+@dataclass
+class KwRest(Expr):
+    """f(**d) into **kwargs: the dict's keys that name no other parameter."""
+
+    source: Expr
+    known: list[str]
 
 
 @dataclass
@@ -540,6 +560,7 @@ class Param(Node):
     default: Expr | None = None
     star: bool = False  # `*args`: the rest of the positional arguments, as a tuple
     kind: str = "normal"  # or "posonly" (before `/`), "kwonly" (after `*` or `*args`)
+    double_star: bool = False  # `**kwargs`: the other keyword arguments, as a dict
 
 
 @dataclass

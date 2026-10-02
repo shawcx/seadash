@@ -50,11 +50,11 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
   `int.real`/`imag`/`numerator`/`denominator`/`conjugate`, `tuple * n`, `f.encoding`, `%` formatting.
 - Statements: augmented assignment to a slice (`xs[1:3] += ys`); unpacking a list into other builtins
   (`max(*xs)`; a tuple works), into parameters with defaults, or into zip/chain/product alongside other
-  arguments (`zip(a, *rows)`); `f(**kwargs)`.
+  arguments (`zip(a, *rows)`); `**d` into builtins, or more than one `**d` in a call.
 - Decorators on nested functions (other than `@functools.wraps`).
 - `contextlib`: `chdir`, `redirect_stdout`/`redirect_stderr`, `ContextDecorator`, `ExitStack.push`, async
   context managers. Generators can't `yield` in an `except`/`finally` block (C++ can't suspend there).
-- Functions: `**kwargs`, default values in nested functions and lambdas, and keywords or defaults when
+- Functions: default values in nested functions and lambdas, and keywords or defaults when
   calling a function held in a parameter, field or container (its signature isn't known there).
 - No tracebacks for uncaught exceptions.
 

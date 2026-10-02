@@ -332,7 +332,7 @@ class CodeGen:
         params = [f"{self.cpp_type(t)} sd_a{i}" for i, t in enumerate(dst.params)]
         args = [f"sd_a{i}" for i in range(len(dst.params))]
         for p in src.sig.params[len(dst.params):]:
-            args.append(f"{self.cpp_type(p.type)}{{}}" if p.star else self.expr_as(p.default, p.type))
+            args.append(f"{self.cpp_type(p.type)}{{}}" if p.star or p.double_star else self.expr_as(p.default, p.type))
         call = f"sd_f({', '.join(args)})"
         body = f"{call};" if dst.ret == NONE else f"return {call};"
         return f"[sd_f = {code}]({', '.join(params)}) mutable -> {self.cpp_type(dst.ret)} {{ {body} }}"
@@ -1867,6 +1867,15 @@ class CodeGen:
                 return self.name(e)
             case A.Starred(value):  # print(*xs): the items, where a builtin takes them
                 return f"sd::spread({self.expr(value)})"
+            case A.KwGet(source, name, default, missing):  # f(**d): this parameter's argument, from d
+                t = self.cpp_type(e.ty)
+                if default is None:
+                    return f"sd::kw_get<{t}>({self.expr(source)}, {cpp_string(name)}, {cpp_string(missing)})"
+                return (f"[&]() -> {t} {{ if (auto* sd_v = {self.expr(source)}.find({cpp_string(name)})) "
+                        f"return static_cast<{t}>(*sd_v); return {self.expr_as(default, e.ty)}; }}()")
+            case A.KwRest(source, known):  # f(**d) into **kwargs: d's other keys
+                names = ", ".join(cpp_string(n) for n in known)
+                return f"sd::kw_rest({self.expr(source)}, {{{names}}})"
             case A.ListLit(elts) | A.SetLit(elts) if any(isinstance(x, A.Starred) for x in elts):  # [*xs, 1]
                 return self.starred_display(self.cpp_type(e.ty), elts, e.ty.elem)
             case A.ListLit(elts) | A.SetLit(elts):
@@ -2420,7 +2429,10 @@ class CodeGen:
     # =========================================================================
 
     def call(self, e: A.Call) -> str:
-        if spread := getattr(e, "spread", None):  # f(*args): each argument as written, once, in order
+        spread = getattr(e, "spread", None) or []
+        if (kw := getattr(e, "kw_check", None)) is not None:  # f(**d): d once, its keys checked first
+            spread = [*spread, kw[0]]
+        if spread:  # f(*args): each argument as written, once, in order
             decls = []
             for x in spread:
                 tmp = self.fresh("a")
@@ -2431,6 +2443,11 @@ class CodeGen:
                 quoted = ", ".join(cpp_string(n) for n in names)
                 decls.append(f"sd::check_spread({self.precomputed[id(source)]}.size(), {want}, {before}, "
                              f"{cpp_string(what)}, {{{quoted}}});")
+            if kw is not None:
+                source, fillable, by_keyword, by_position, has_rest, what = kw
+                names = lambda xs: "{" + ", ".join(cpp_string(x) for x in xs) + "}"
+                decls.append(f"sd::kw_check({self.precomputed[id(source)]}, {names(fillable)}, {names(by_keyword)}, "
+                             f"{names(by_position)}, {'true' if has_rest else 'false'}, {cpp_string(what)});")
             try:
                 inner = self.call_inner(e)
             finally:

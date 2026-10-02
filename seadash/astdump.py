@@ -207,7 +207,7 @@ def tparams(names: list[str]) -> str:
 
 
 def param(p: A.Param) -> str:
-    text = ("*" if p.star else "") + p.name
+    text = ("*" if p.star else "**" if p.double_star else "") + p.name
     if p.annotation:
         text += f": {p.annotation}"
     if p.default:

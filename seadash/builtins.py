@@ -40,6 +40,9 @@ class CallContext:
         self.checker = checker
         self.call = call
         self.what = what  # e.g. "len()" or "list.append()", for messages
+        if call.double_star:
+            raise CheckError(f"{what} can't take its arguments from a dict with '**' yet; pass them by name",
+                             call.double_star[0].loc)
         self.expected = expected
         self.receiver = receiver
 
@@ -5150,8 +5153,8 @@ def functools_partial(ctx: CallContext) -> Type:
             target, params, ret = func.sym, func.sym.params, func.sym.ret
         else:  # a function value: its parameters have no names or defaults
             params, ret = [Param(f"argument {i + 1}", p, None, func.loc) for i, p in enumerate(t.params)], t.ret
-    if any(p.star for p in params):
-        raise ctx.error("partial() of a function with *args isn't supported yet; use a lambda", func)
+    if any(p.star or p.double_star for p in params):
+        raise ctx.error("partial() of a function with *args or **kwargs isn't supported yet; use a lambda", func)
     what = f"partial({func.id if isinstance(func, A.Name) else 'f'})"
     if len(given) > len(params):
         raise ctx.error(f"{what} gives {len(given)} arguments, but the function takes {len(params)}", given[len(params)])

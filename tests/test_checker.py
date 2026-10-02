@@ -2633,3 +2633,24 @@ def test_star_builtin_types():
     assert variables(ok("import itertools\nrows = [[1], [2]]\nz = list(zip(*rows))\np = list(itertools.product(*rows))\n"
                         "c = list(itertools.chain(*rows))\n")) == [
         "rows: list[list[int]]", "z: list[tuple[int, ...]]", "p: list[tuple[int, ...]]", "c: list[int]"]
+
+
+KWARGS_F = "def f(a: int, b: str = 'x') -> int:\n    return a\n"
+KWARGS_K = "def k(a: int, **rest: int) -> int:\n    return a\n"
+
+
+@pytest.mark.parametrize("src,msg", [
+    (KWARGS_F + "d = {'a': 1}\nf(**d, **d)\n", "only one '**' dict can be passed to f(); merge them first: f(**(a | b))"),
+    (KWARGS_F + "f(**[1])\n", "f() argument after ** must be a dict with str keys, not list[int]"),
+    ("d = {'sep': ','}\nprint(1, **d)\n", "print() can't take its arguments from a dict with '**' yet; pass them by name"),
+    (KWARGS_K + "k(1, x='s')\n", "**rest of k() takes int values, not str"),
+    (KWARGS_K + "d = {'x': 's'}\nk(1, **d)\n", "**rest of k() takes int values, not str (from **)"),
+    ("def g(**opts):\n    pass\n", "parameter 'opts' needs a type annotation, e.g. `**opts: int`"),
+])
+def test_kwargs_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_kwargs_types():
+    info = ok(KWARGS_K + "def g(**opts: str) -> int:\n    return len(opts)\n")
+    assert [str(f) for f in info.functions] == ["def k(a: int, **rest: int) -> int", "def g(**opts: str) -> int"]
