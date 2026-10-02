@@ -365,6 +365,35 @@ struct BaseHTTPRequestHandler : std::enable_shared_from_this<BaseHTTPRequestHand
         if (writing < 0) raise_os(errno, std::nullopt);
         wfile = socket_writer(writing);
     }
+    // The same over TLS: rfile and wfile read and write through the connection's SSL (which
+    // the server frees after sd_finish).
+    void sd_setup_tls(SSL* ssl, std::tuple<std::string, std::int64_t> address) {
+        client_address = std::move(address);
+        Cookie reader{ssl,
+                      [](void* p, char* buf, std::size_t n) -> std::int64_t {
+                          int k = SSL_read(static_cast<SSL*>(p), buf, static_cast<int>(std::min<std::size_t>(n, 1u << 30)));
+                          if (k > 0) return k;
+                          int err = SSL_get_error(static_cast<SSL*>(p), k);
+                          if (err == SSL_ERROR_ZERO_RETURN || (err == SSL_ERROR_SYSCALL && errno == 0)) return 0;
+                          errno = errno ? errno : EIO;
+                          return -1;
+                      },
+                      nullptr, [](void*) { return 0; }};
+        Cookie writer{ssl, nullptr,
+                      [](void* p, const char* buf, std::size_t n) -> std::int64_t {
+                          int k = SSL_write(static_cast<SSL*>(p), buf, static_cast<int>(std::min<std::size_t>(n, 1u << 30)));
+                          if (k > 0) return k;
+                          errno = errno ? errno : EPIPE;
+                          return -1;
+                      },
+                      [](void*) { return 0; }};
+        std::FILE* in = cookie_file(reader, true);
+        std::FILE* out = cookie_file(writer, false);
+        if (!in || !out) raise_os(errno, std::nullopt);
+        std::setvbuf(out, nullptr, _IONBF, 0);  // (sent as it's written, as on a plain socket)
+        rfile = std::make_shared<BinaryFile>(in, "<socket>", "rb");
+        wfile = std::make_shared<BinaryFile>(out, "<socket>", "wb");
+    }
     void sd_handle() {  // handle(): the connection's requests, until one closes it
         close_connection = true;
         handle_one_request();
@@ -708,6 +737,7 @@ public:
 private:
     struct State {
         socket::Socket sock;
+        std::shared_ptr<ssl::SSLContext> tls;  // (HTTPS: httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True))
         std::tuple<std::string, std::int64_t> address;
         Factory make;
         bool threading = false;
@@ -724,10 +754,21 @@ private:
     };
     std::shared_ptr<State> s_;
 
-    static void process(const std::shared_ptr<State>& s, socket::Socket conn, std::tuple<std::string, std::int64_t> addr) {
+    static void process(const std::shared_ptr<State>& s, socket::Socket conn, std::tuple<std::string, std::int64_t> addr,
+                        SSL* ssl = nullptr) {
+        struct FreeTls {  // (after the handler is done with it)
+            SSL* ssl;
+            ~FreeTls() {
+                if (ssl) {
+                    SSL_shutdown(ssl);
+                    SSL_free(ssl);
+                }
+            }
+        } free_tls{ssl};
         try {
             std::shared_ptr<BaseHTTPRequestHandler> h = s->make();
-            h->sd_setup(static_cast<int>(conn.fileno()), addr);
+            if (ssl) h->sd_setup_tls(ssl, addr);
+            else h->sd_setup(static_cast<int>(conn.fileno()), addr);
             try {
                 h->sd_handle();
             } catch (...) {
@@ -760,13 +801,23 @@ private:
             if (::poll(&p, 1, 0) <= 0) return;
         }
         auto [conn, addr] = s.sock.accept();
+        SSL* ssl = nullptr;
+        if (s.tls) {  // the handshake, as Python's SSLSocket.accept() does it; one that fails is dropped
+            try {
+                ssl = ssl::accept_tls(static_cast<int>(conn.fileno()), *s.tls);
+            } catch (const Thrown& t) {
+                if (!isinstance<OSError>(t)) throw;
+                conn.close();
+                return;
+            }
+        }
         if (!s.threading) {
-            process(s_, std::move(conn), std::move(addr));
+            process(s_, std::move(conn), std::move(addr), ssl);
             return;
         }
         std::lock_guard lk(s.mu);
-        s.workers.emplace_back([state = s_, conn = std::move(conn), addr = std::move(addr)]() mutable {
-            process(state, std::move(conn), std::move(addr));
+        s.workers.emplace_back([state = s_, conn = std::move(conn), addr = std::move(addr), ssl]() mutable {
+            process(state, std::move(conn), std::move(addr), ssl);
         });
     }
 
@@ -789,6 +840,14 @@ public:
                 throw;
             }
         }
+    }
+    // httpd.socket, and `httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)` for HTTPS
+    socket::Socket get_socket() const { return s_->sock; }
+    void set_socket(const ssl::SSLSocket& wrapped) {
+        if (!wrapped.server_side() || wrapped.raw_socket().fileno() != s_->sock.fileno())
+            raise("ValueError", "httpd.socket can only be set to the server's own socket, wrapped for TLS: "
+                                "ctx.wrap_socket(httpd.socket, server_side=True)");
+        s_->tls = wrapped.context();
     }
     void server_bind() {
         s_->sock.bind(s_->address);

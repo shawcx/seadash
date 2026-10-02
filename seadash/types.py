@@ -59,6 +59,7 @@ COPIED = "copied"  # copied to the other thread, but it has identity: not for a 
 LOCKED = "locked"  # locks itself: every thread uses the same one
 
 SOCKET = BuiltinClass("socket", "sd::socket::Socket", LOCKED)
+SSL_SOCKET = BuiltinClass("ssl.SSLSocket", "sd::ssl::SSLSocket", LOCKED)  # (its TLS calls take turns on a lock)
 TYPE_OBJECT = BuiltinClass("type", "sd::type_object", IMMUTABLE)  # type(x): its __name__, compared with classes
 TARFILE = BuiltinClass("tarfile.TarFile", "sd::tarfile::TarFile")  # a handle on the archive; iterating gives TarInfos
 TARINFO = BuiltinClass("tarfile.TarInfo", "sd::tarfile::TarInfo")  # a handle, with settable fields

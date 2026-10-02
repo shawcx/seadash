@@ -1,0 +1,10 @@
+200 b'hello /one'
+201 b'OVER TLS'
+200 hello /thread
+b'hello /again'
+b'hello /ip'
+SSLCertVerificationError
+hostname mismatch
+b'desserts' True localhost
+ValueError check_hostname requires server_hostname
+FileNotFoundError

@@ -9,6 +9,7 @@ Programs are compiled in parallel once per test session (g++ is the slow part).
 """
 
 import os
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -52,7 +53,9 @@ def test_program(name: str, binaries, tmp_path):
     if isinstance(binary, str):
         pytest.fail(binary, pytrace=False)
 
-    # Each program runs in its own empty directory, so file tests can write freely.
+    # Each program runs in its own empty directory, so file tests can write freely (with
+    # certs/, the test certificates, for the HTTPS programs).
+    shutil.copytree(PROGRAMS.parent / "certs", tmp_path / "certs")
     result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10, cwd=tmp_path)
 
     expected_out = (PROGRAMS / f"{name}.out").read_text()

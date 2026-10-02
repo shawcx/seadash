@@ -1,0 +1,112 @@
+# TLS on both sides, against tests/certs (copied to certs/ where the test runs): an HTTPS
+# server (httpd.socket wrapped for TLS) and http.client verifying it with cafile=, a raw TLS
+# echo over wrapped sockets, a connection copied to a thread (with its own copy of the
+# context), and the errors. (valid Python: the same output)
+import http.client
+import http.server
+import queue
+import socket
+import ssl
+import threading
+
+CERT = "certs/localhost.pem"
+KEY = "certs/localhost.key"
+
+
+class Hello(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        body = f"hello {self.path}".encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        data = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        self.send_response(201)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data.upper())
+
+    def log_message(self, format: str, *args: str) -> None:
+        pass
+
+
+def fetch(conn: http.client.HTTPConnection, path: str, out: queue.Queue[str]) -> None:
+    conn.request("GET", path)
+    r = conn.getresponse()
+    out.put(f"{r.status} {r.read().decode()}")
+
+
+def echo(listener: ssl.SSLSocket) -> None:
+    conn, _ = listener.accept()
+    data = conn.recv(100)
+    conn.sendall(data[::-1])
+    conn.close()
+
+
+def main() -> None:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Hello)
+    server_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    server_ctx.load_cert_chain(CERT, KEY)
+    server.socket = server_ctx.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_port
+
+    client_ctx = ssl.create_default_context(cafile=CERT)
+    conn = http.client.HTTPSConnection("localhost", port, context=client_ctx, timeout=5.0)
+    conn.request("GET", "/one")
+    r = conn.getresponse()
+    print(r.status, r.read())
+    conn.request("POST", "/two", body=b"over tls", headers={"Content-Type": "text/plain"})
+    r = conn.getresponse()
+    print(r.status, r.read())
+
+    out: queue.Queue[str] = queue.Queue()
+    t = threading.Thread(target=fetch, args=(conn, "/thread", out))  # still used below: a copy
+    t.start()
+    t.join()
+    print(out.get())
+    conn.request("GET", "/again")
+    print(conn.getresponse().read())
+
+    by_ip = http.client.HTTPSConnection("127.0.0.1", port, context=client_ctx, timeout=5.0)
+    by_ip.request("GET", "/ip")
+    print(by_ip.getresponse().read())
+
+    try:
+        http.client.HTTPSConnection("localhost", port, context=ssl.create_default_context(), timeout=5.0).request("GET", "/")
+    except ssl.SSLCertVerificationError:
+        print("SSLCertVerificationError")
+    wrong = socket.create_connection(("127.0.0.1", port))
+    try:
+        client_ctx.wrap_socket(wrong, server_hostname="example.com")
+    except ssl.SSLCertVerificationError:
+        print("hostname mismatch")
+    wrong.close()
+
+    listener = server_ctx.wrap_socket(socket.create_server(("127.0.0.1", 0)), server_side=True)
+    echo_port = listener.getsockname()[1]
+    threading.Thread(target=echo, args=(listener,), daemon=True).start()
+    raw = socket.create_connection(("127.0.0.1", echo_port))
+    with client_ctx.wrap_socket(raw, server_hostname="localhost") as tls:
+        tls.sendall(b"stressed")
+        print(tls.recv(100), tls.version() in ("TLSv1.2", "TLSv1.3"), tls.server_hostname)
+
+    try:
+        client_ctx.wrap_socket(socket.socket())
+    except ValueError as e:
+        print("ValueError", e)
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain("certs/missing.pem")
+    except FileNotFoundError:
+        print("FileNotFoundError")
+    conn.close()  # (server_close() waits for the handlers, which wait for more on keep-alive connections)
+    by_ip.close()
+    server.shutdown()
+    server.server_close()
+
+
+main()

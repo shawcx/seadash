@@ -1649,6 +1649,12 @@ class Checker:
                 if isinstance(owner, StructType) and owner.enum is not None:
                     raise self.error(f"{owner.name} is an enum: its members can't be changed (cannot set attribute "
                                      f"'{attr}')", target)
+                if isinstance(owner, HTTPServerType) and attr == "socket":  # httpd.socket = ctx.wrap_socket(httpd.socket, ...)
+                    if t != builtins.SSL_SOCKET:
+                        raise self.error("httpd.socket can only be set to the server's socket wrapped for TLS: "
+                                         "`httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)`", value)
+                    target.sym, target.ty = ("server_socket", attr), t
+                    return
                 if isinstance(owner, BuiltinClass) and attr in owner.setters:  # zinfo.compress_type = ZIP_DEFLATED
                     want = owner.setters[attr]
                     if not assignable(t, want):
@@ -2054,7 +2060,7 @@ class Checker:
             return WithInfo("file", t, None, False)
         if isinstance(t, SyncType) and t.kind in ("Lock", "RLock"):
             return WithInfo("lock", BOOL, None, False)
-        if t == SOCKET:
+        if t in (SOCKET, builtins.SSL_SOCKET):
             return WithInfo("socket", t, None, False)
         if isinstance(t, SelectorType):  # `with selectors.DefaultSelector() as sel:` closes it at the end
             return WithInfo("selector", t, None, False)

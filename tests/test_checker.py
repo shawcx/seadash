@@ -3050,6 +3050,19 @@ def test_bytearray_types_and_errors():
         assert err(source + "\n").message == message, source
 
 
+def test_tls_server_errors():
+    handler = ("import http.server, socket, ssl\nclass H(http.server.BaseHTTPRequestHandler):\n"
+               "    def do_GET(self) -> None:\n        pass\n"
+               "server = http.server.HTTPServer(('127.0.0.1', 0), H)\nctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)\n")
+    assert variables(ok(handler + "server.socket = ctx.wrap_socket(server.socket, server_side=True)\n"
+                        "s = ctx.wrap_socket(socket.socket(), server_side=True)\nv = s.version()\n")) == [
+        "server: HTTPServer", "ctx: SSLContext", "s: ssl.SSLSocket", "v: str?"]
+    assert err(handler + "server.socket = socket.socket()\n").message == (
+        "httpd.socket can only be set to the server's socket wrapped for TLS: "
+        "`httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)`")
+    assert err(handler + "ctx.wrap_socket(3)\n").message == "SSLContext.wrap_socket() argument 'sock' must be socket, not int"
+
+
 def test_os_walk_stat_and_prefix_tuples():
     assert variables(ok("import os\nw = os.walk('.')\ns = os.stat('x')\nm = s.st_mtime_ns\nb = 'a'.endswith(('a', 'b'))\n")) == [
         "w: Iterator[tuple[str, list[str], list[str]]]", "s: stat_result", "m: int", "b: bool"]

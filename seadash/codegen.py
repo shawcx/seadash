@@ -1756,6 +1756,8 @@ class CodeGen:
                 prefix = self.self_prefix(target.value.sym.type) if is_self(target.value) else (
                     f"{self.expr(target.value)}{'->' if getter.owner.kind == 'class' else '.'}")
                 self.line(f"{prefix}sd_cache_{getter.name} = {self.coerce(code, ty, getter.ret)};")
+            case A.Attribute() if isinstance(target.sym, tuple) and target.sym[0] == "server_socket":  # HTTPS
+                self.line(f"{self.expr(target.value)}.set_socket({code});")
             case A.Attribute() if isinstance(target.sym, tuple) and target.sym[0] == "builtin_set":  # zinfo.comment = b"..."
                 self.line(f"{self.expr(target.value)}.set_{target.sym[1]}({self.coerce(code, ty, target.ty)});")
             case A.Attribute() if isinstance(target.sym, tuple) and target.sym[0] == "property_set":
@@ -2293,6 +2295,8 @@ class CodeGen:
                 return f"sd::unwrap({self.attribute(inner)}, {cpp_string('.'.join(attr_chain(e)))[:-1]})"
             if isinstance(vt, ProcessType):
                 return self.process_attribute(obj, vt, e.sym[1], e.ty)
+            if isinstance(vt, HTTPServerType) and e.sym[1] == "socket":
+                return f"{obj}.get_socket()"
             if vt == STR_TEMPLATE:  # t.template
                 return f"{obj}.get_template()"
             if vt == UUID_T and e.sym[1] == "bytes":

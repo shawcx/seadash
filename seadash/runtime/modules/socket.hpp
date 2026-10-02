@@ -297,13 +297,40 @@ public:
     }
 };
 
+// Each of the host's addresses in turn ("localhost" may be ::1, then 127.0.0.1), as Python's
+// does: the first that connects, or the first one's error.
 inline Socket create_connection(const Address& addr, std::optional<double> timeout = std::nullopt) {
+    const auto& [host, port] = addr;
     socklen_t len = 0;
-    sockaddr_storage sa = resolve(addr, AF_UNSPEC, SOCK_STREAM, false, len);
-    Socket s(sa.ss_family, SOCK_STREAM);
-    s.settimeout(timeout);
-    s.connect(addr);
-    return s;
+    resolve(addr, AF_UNSPEC, SOCK_STREAM, false, len);  // (its errors, as Python gives them)
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* result = nullptr;
+    std::string service = std::to_string(port);
+    if (getaddrinfo(host.empty() ? nullptr : host.c_str(), service.c_str(), &hints, &result) != 0) resolve(addr, AF_UNSPEC, SOCK_STREAM, false, len);
+    std::vector<std::pair<int, std::string>> candidates;  // (family, numeric address)
+    for (addrinfo* ai = result; ai; ai = ai->ai_next) {
+        char numeric[INET6_ADDRSTRLEN] = {};
+        const void* where = ai->ai_family == AF_INET6 ? static_cast<const void*>(&reinterpret_cast<sockaddr_in6*>(ai->ai_addr)->sin6_addr)
+                                                      : static_cast<const void*>(&reinterpret_cast<sockaddr_in*>(ai->ai_addr)->sin_addr);
+        if (::inet_ntop(ai->ai_family, where, numeric, sizeof numeric)) candidates.emplace_back(ai->ai_family, numeric);
+    }
+    freeaddrinfo(result);
+    std::exception_ptr first;
+    for (const auto& [family, numeric] : candidates) {
+        Socket s(family, SOCK_STREAM);
+        try {
+            s.settimeout(timeout);
+            s.connect({numeric, port});
+            return s;
+        } catch (...) {
+            if (!first) first = std::current_exception();
+            s.close();
+        }
+    }
+    if (first) std::rethrow_exception(first);
+    raise("OSError", "getaddrinfo returns an empty list");
 }
 
 inline Socket create_server(const Address& addr, std::int64_t family = AF_INET,

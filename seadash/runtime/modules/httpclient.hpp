@@ -59,6 +59,7 @@ class HTTPMessage {
 
 public:
     void add(std::string k, std::string v) { items_.emplace_back(std::move(k), std::move(v)); }
+    std::string get(const std::string& name, const std::string& fallback) const { return get(name, std::optional(fallback)).value(); }
     std::optional<std::string> get(const std::string& name, std::optional<std::string> fallback = std::nullopt) const {
         for (const auto& [k, v] : items_)
             if (ascii_lower(k) == ascii_lower(name)) return v;
@@ -148,16 +149,6 @@ class Stream {
         buf_ += more;
         return true;
     }
-    // The certificate must be for this host (a name, or an IP address).
-    void check_certificate_names(const std::string& host) {
-#if OPENSSL_VERSION_MAJOR >= 4  // (SSL_set1_host is deprecated there)
-        in6_addr addr;
-        bool ip = ::inet_pton(AF_INET, host.c_str(), &addr) == 1 || ::inet_pton(AF_INET6, host.c_str(), &addr) == 1;
-        (void)(ip ? SSL_set1_ipaddr(ssl_, host.c_str()) : SSL_set1_dnsname(ssl_, host.c_str()));
-#else
-        (void)SSL_set1_host(ssl_, host.c_str());
-#endif
-    }
 
 public:
     Stream(const std::string& host, std::int64_t port, std::optional<double> timeout,
@@ -170,22 +161,11 @@ public:
             ::setsockopt(static_cast<int>(sock_.fileno()), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
         }
         if (!tls) return;
-        ssl_ = SSL_new(tls->native());
-        SSL_set_fd(ssl_, static_cast<int>(sock_.fileno()));
-        SSL_set_tlsext_host_name(ssl_, host.c_str());  // SNI
-        if (tls->check_hostname) check_certificate_names(host);
-        if (SSL_connect(ssl_) != 1) {  // (the destructor won't run: free what we have first)
-            long verify = SSL_get_verify_result(ssl_);
-            SSL_free(std::exchange(ssl_, nullptr));
+        try {
+            ssl_ = ssl::connect_tls(static_cast<int>(sock_.fileno()), *tls, host);
+        } catch (...) {
             sock_.close();
-            if (verify != X509_V_OK && tls->verify_mode != ssl::CERT_NONE) {
-                ERR_clear_error();
-                std::string why = verify == X509_V_ERR_HOSTNAME_MISMATCH
-                                      ? "Hostname mismatch, certificate is not valid for " + repr_str(host) + "."
-                                      : X509_verify_cert_error_string(verify);
-                raise<ssl::SSLCertVerificationError>("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: " + why);
-            }
-            ssl::SSLContext::failed("handshake failed");
+            throw;
         }
     }
     Stream(const Stream&) = delete;

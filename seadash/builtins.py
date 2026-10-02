@@ -15,7 +15,7 @@ from . import ast as A
 from .errors import CheckError
 from .errors import Loc
 from .types import (
-    BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, TYPE_OBJECT, TARFILE, TARINFO,
+    BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, SSL_SOCKET, STR, TYPE_OBJECT, TARFILE, TARINFO,
     BINARY_FILE, TEXT_FILE, STRING_IO, BYTES_IO,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
@@ -4747,13 +4747,37 @@ SSL_CERT_ERROR = StructType("SSLCertVerificationError", "class", None, base=SSL_
 MODULES["ssl"] = module_with_params(runtime_module(
     "ssl", "modules/ssl.hpp", ("ssl", "crypto"),
     SSLContext=(signature(SSL_CONTEXT, ("protocol", INT, "sd::ssl::PROTOCOL_TLS_CLIENT")), "sd::ssl::SSLContext_new"),
-    create_default_context=(signature(SSL_CONTEXT), "sd::ssl::create_default_context"),
+    create_default_context=(signature(SSL_CONTEXT, ("purpose", INT, "sd::ssl::PURPOSE_SERVER_AUTH"),
+                                      ("cafile", OptionalType(STR), "std::nullopt"), ("capath", OptionalType(STR), "std::nullopt"),
+                                      ("cadata", OptionalType(STR), "std::nullopt")), "sd::ssl::create_default_context"),
+    SSLSocket=NamedType("SSLSocket", SSL_SOCKET),
     _create_unverified_context=(signature(SSL_CONTEXT), "sd::ssl::create_unverified_context"),
     SSLError=SSL_ERROR,
     SSLCertVerificationError=SSL_CERT_ERROR,
-    **{c: (INT, f"sd::ssl::{c}") for c in ("CERT_NONE", "CERT_OPTIONAL", "CERT_REQUIRED", "PROTOCOL_TLS_CLIENT")},
+    **{c: (INT, f"sd::ssl::{c}") for c in ("CERT_NONE", "CERT_OPTIONAL", "CERT_REQUIRED", "PROTOCOL_TLS_CLIENT",
+                                            "PROTOCOL_TLS_SERVER")},
 ))
 MODULES["ssl"].members["SSLContext"].as_type = SSL_CONTEXT
+ADDRESS = TupleType((STR, INT))
+SSL_SOCKET.methods.update({
+    "send": sync_method(INT, ("data", BYTES)),
+    "sendall": sync_method(NONE, ("data", BYTES)),
+    "recv": sync_method(BYTES, ("bufsize", INT)),
+    "accept": sync_method(TupleType((SSL_SOCKET, ADDRESS))),
+    "connect": sync_method(NONE, ("address", ADDRESS)),
+    "close": sync_method(NONE),
+    "fileno": sync_method(INT),
+    "getpeername": sync_method(ADDRESS),
+    "getsockname": sync_method(ADDRESS),
+    "settimeout": sync_method(NONE, ("value", OptionalType(FLOAT))),
+    "version": sync_method(OptionalType(STR)),
+    "cipher": sync_method(OptionalType(TupleType((STR, STR, INT)))),
+})
+SSL_SOCKET.attributes.update({"server_side": lambda t: BOOL, "server_hostname": lambda t: OptionalType(STR),
+                              "context": lambda t: SSL_CONTEXT})
+MODULES["ssl"].members["Purpose"] = runtime_module(  # ssl.Purpose.SERVER_AUTH / CLIENT_AUTH
+    "ssl.Purpose", "modules/ssl.hpp", ("ssl", "crypto"),
+    SERVER_AUTH=(INT, "sd::ssl::PURPOSE_SERVER_AUTH"), CLIENT_AUTH=(INT, "sd::ssl::PURPOSE_CLIENT_AUTH"))
 
 # ---- urllib -------------------------------------------------------------------------------
 
@@ -4775,8 +4799,18 @@ HTTP_RESPONSE.attributes.update({
     "headers": lambda t: HTTP_HEADERS, "msg": lambda t: HTTP_HEADERS, "version": lambda t: INT,
     "closed": lambda t: BOOL,
 })
+def headers_get(ctx: CallContext) -> Type:
+    """headers.get(name, failobj=None): a str when the default is one (it can't be None then)."""
+    base = HEADERS_GET(ctx)
+    node = ctx.args[1] if len(ctx.args) > 1 else ctx.keyword_arg("failobj")
+    return STR if node is not None and node.ty == STR else base
+
+
+HEADERS_GET = sync_method(OPT_STR, ("name", STR), ("failobj", OneOf(STR, NONE, what="a str or None"), "std::nullopt"))
+headers_get.params, headers_get.resolve = HEADERS_GET.params, HEADERS_GET.resolve
+
 HTTP_HEADERS.methods.update({
-    "get": sync_method(OPT_STR, ("name", STR), ("failobj", OPT_STR, "std::nullopt")),
+    "get": headers_get,
     "get_all": sync_method(OptionalType(ListType(STR)), ("name", STR)),
     "items": sync_method(ListType(TupleType((STR, STR)))),
     "keys": sync_method(ListType(STR)),
@@ -4805,6 +4839,12 @@ URL_PARTS.attributes.update({
 EXCEPTION_METHODS = {  # methods of built-in classes (by C++ name): HTTPError is also a response
     "sd::ssl::SSLContext": {
         "load_default_certs": sync_method(NONE),
+        "load_cert_chain": sync_method(NONE, ("certfile", OneOf(STR, PATH, what="a str or Path")),
+                                       ("keyfile", OneOf(STR, PATH, NONE, what="a str, a Path or None"), "std::nullopt"),
+                                       ("password", OptionalType(STR), "std::nullopt")),
+        "wrap_socket": sync_method(SSL_SOCKET, ("sock", SOCKET), ("server_side", BOOL, "false"),
+                                   ("do_handshake_on_connect", BOOL, "true"), ("suppress_ragged_eofs", BOOL, "true"),
+                                   ("server_hostname", OPT_STR, "std::nullopt")),
         "load_verify_locations": sync_method(NONE, ("cafile", OPT_STR, "std::nullopt"), ("capath", OPT_STR, "std::nullopt"),
                                              ("cadata", OPT_STR, "std::nullopt")),
     },
@@ -5130,7 +5170,8 @@ HTTP_SERVER_METHODS = {
     "server_activate": sync_method(NONE),
     "fileno": sync_method(INT),
 }
-HTTP_SERVER_ATTRIBUTES = {"server_address": lambda t: TupleType((STR, INT)), "server_port": lambda t: INT}
+HTTP_SERVER_ATTRIBUTES = {"server_address": lambda t: TupleType((STR, INT)), "server_port": lambda t: INT,
+                          "socket": lambda t: SOCKET}  # (set only to itself wrapped for TLS: Checker.assign)
 HTTP_SERVER_MOD = Module("http.server", {
     "HTTPServer": Function("HTTPServer", http_server_new(False), as_type=HTTPServerType()),
     "ThreadingHTTPServer": Function("ThreadingHTTPServer", http_server_new(True), as_type=HTTPServerType(None, True)),

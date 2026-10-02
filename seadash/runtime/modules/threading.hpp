@@ -298,6 +298,10 @@ inline void run_thread(const std::shared_ptr<ThreadState>& s) {
     } catch (const Exit&) {
         // sys.exit() in a thread just ends the thread
     }
+    try {
+        s->fn = nullptr;  // the target and its arguments go now, as Python's run() deletes them (a connection closes)
+    } catch (...) {
+    }
     {
         std::lock_guard lk(s->mu);
         s->done = true;

@@ -6,14 +6,11 @@ in the README and in the design docs, not here.
 ## Next: HTTP
 
 1. **`http.client`** (done): `HTTPConnection`/`HTTPSConnection`, streaming `HTTPResponse`,
-   a client-side `ssl` module, and `urllib.request` rebuilt on them.
+   an `ssl` module, and `urllib.request` rebuilt on them.
 2. **`http.server`** (done): `HTTPServer`, `ThreadingHTTPServer`, `BaseHTTPRequestHandler`.
-   Not yet: `self.server` in a handler, `socketserver` as a module, HTTPS serving.
+   HTTPS serving (done). Not yet: `self.server` in a handler, `socketserver` as a module.
 3. **`SimpleHTTPRequestHandler`** (done), with `directory=` through `functools.partial`. Not
    yet: changing its `extensions_map`.
-
-Server-side TLS (`SSLContext.load_cert_chain`, `wrap_socket(server_side=True)`) would also
-make HTTPS testable locally; today HTTPS is only checked by hand against public hosts.
 
 ## Next: threads
 

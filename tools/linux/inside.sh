@@ -31,6 +31,7 @@ print(' '.join('-l' + l for l in translate(Path('$f').read_text(), Path('$f')).l
         echo "$san $n: does not build"; return
     fi
     d=$(mktemp -d)
+    cp -r tests/certs "$d/certs"  # (the HTTPS programs' certificate)
     if [ "$san" = thread ]; then
         (cd "$d" && TSAN_OPTIONS=halt_on_error=1 setarch "$(uname -m)" -R timeout 120 /tmp/$n.$san > out 2> err)
     else
