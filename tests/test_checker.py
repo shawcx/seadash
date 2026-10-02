@@ -3050,6 +3050,14 @@ def test_bytearray_types_and_errors():
         assert err(source + "\n").message == message, source
 
 
+def test_os_walk_stat_and_prefix_tuples():
+    assert variables(ok("import os\nw = os.walk('.')\ns = os.stat('x')\nm = s.st_mtime_ns\nb = 'a'.endswith(('a', 'b'))\n")) == [
+        "w: Iterator[tuple[str, list[str], list[str]]]", "s: stat_result", "m: int", "b: bool"]
+    assert err("x = 'a'.startswith(3)\n").message == "str.startswith() argument must be str or a tuple of str, not int"
+    assert err("x = 'a'.startswith(('a', 1))\n").message == (
+        "str.startswith() argument must be str or a tuple of str, not tuple[str, int]")
+
+
 def test_tarfile_types_and_errors():
     assert variables(ok("import tarfile\ntf = tarfile.open('a.tar')\nnames = tf.getnames()\nm = tf.getmember('x')\n"
                         "f = tf.extractfile(m)\nt = m.type\nfor x in tf:\n    print(x.name)\n")) == [

@@ -1,0 +1,15 @@
+. ['a', 'dirlink'] ['link', 'top.txt']
+a ['b'] ['one.txt']
+a/b [] ['two.txt']
+['.', 'a', 'a/b', 'skip', 'skip/inner']
+['.', 'a', 'a/b', 'dirlink', 'dirlink/b', 'skip', 'skip/inner']
+[] ['FileNotFoundError']
+top.txt True False top.txt
+True
+../b/c . y a/c
+7 0o100000 0o120000 True
+1600000000.25 1700000000.5 1600000000250000000
+2000000003
+True False True
+True True
+OSError True

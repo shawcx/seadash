@@ -29,8 +29,6 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 - `sqlite3`: `row_factory`/`sqlite3.Row`, `create_function`, iterating a cursor directly.
 - `uuid`: `u.int` (128 bits), `getnode()`.
 - `tarfile`: sparse files' contents, encodings other than UTF-8, `errorlevel=0`, Zstandard.
-- `os`: `walk`, `readlink`, `stat`, `utime`, `path.islink`, `path.relpath`, `path.realpath`; `pathlib.Path.readlink`;
-  `str.startswith`/`endswith` with a tuple.
 - `zipfile`: encrypted members (`pwd=`, `setpassword`), Zstandard members, `zipfile.Path`, `ZipInfo.from_file`, `PyZipFile`.
 - `fnmatch`, `glob`: bytes patterns and names.
 - `tomllib`: `parse_float=`; class patterns for dates and times on a `json.Value` (`case date():`).

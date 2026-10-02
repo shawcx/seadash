@@ -829,6 +829,21 @@ VALUES: dict[str, Value] = {
 # ---- methods on built-in types ----------------------------------------------
 
 
+def prefix_method(t: Type) -> Callable[[CallContext], Type]:
+    """s.startswith(prefix) / endswith: a prefix, or a tuple of them (any matches)."""
+
+    def handler(ctx: CallContext) -> Type:
+        ctx.arity(1)
+        arg = ctx.arg(0)
+        tuple_of = (isinstance(arg, TupleType) and arg.elts and all(assignable(e, t) for e in arg.elts)) or (
+            isinstance(arg, VarTupleType) and t == STR and arg.elem == STR)
+        if not (assignable(arg, t) or tuple_of):
+            raise ctx.error(f"{ctx.what} argument must be {t} or a tuple of {t}, not {arg}", ctx.args[0])
+        return BOOL
+
+    return handler
+
+
 def returns(t: Type | Callable[[Type], Type], lo: int = 0, hi: int | None = None, args: tuple = ()):
     """A method taking `args` (types, or functions of the receiver type) and returning `t`."""
 
@@ -1049,7 +1064,7 @@ STR_METHODS = {
     **{name: returns(STR) for name in ("upper", "lower", "title", "capitalize", "casefold")},
     **{name: returns(BOOL) for name in ("isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower",
                                         "isdecimal", "isnumeric", "isidentifier", "isprintable")},
-    **{name: returns(BOOL, args=(STR,)) for name in ("startswith", "endswith")},
+    **{name: prefix_method(STR) for name in ("startswith", "endswith")},
     "translate": str_translate,
     "format_map": str_format_map,
     "splitlines": returns(ListType(STR)),
@@ -1071,7 +1086,7 @@ def bytes_join(ctx: CallContext) -> Type:
 BYTES_METHODS = {
     "decode": returns(STR, 0, 1, (STR,)),
     "hex": returns(STR),
-    **{name: returns(BOOL, args=(BYTES,)) for name in ("startswith", "endswith")},
+    **{name: prefix_method(BYTES) for name in ("startswith", "endswith")},
     **{name: returns(BYTES) for name in ("upper", "lower", "title", "capitalize")},
     **{name: returns(BYTES, 0, 1, (BYTES,)) for name in ("strip", "lstrip", "rstrip")},
     **{name: returns(BOOL) for name in ("isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower")},
@@ -1618,6 +1633,15 @@ def module_with_params(mod: Module) -> Module:
     return mod
 
 
+STAT_RESULT = StructType("stat_result", "struct", None, builtin=True, cpp_name="sd::pathlib::StatResult")  # os.stat, Path.stat
+for _field, _t in (("st_size", INT), ("st_mode", INT), ("st_uid", INT), ("st_gid", INT), ("st_nlink", INT),
+                   ("st_ino", INT), ("st_dev", INT), ("st_mtime", FLOAT), ("st_atime", FLOAT), ("st_ctime", FLOAT),
+                   ("st_mtime_ns", INT), ("st_atime_ns", INT), ("st_ctime_ns", INT)):
+    STAT_RESULT.fields[_field] = Field(_field, _t, None, Loc(0, 0))
+
+OS_PATH_ARG = OneOf(STR, PATH, what="a str or Path")
+
+
 OS_PATH = module_with_params(runtime_module(
     "os.path", "modules/os.hpp",
     exists=(signature(BOOL, ("path", STR)), "sd::os::path::exists"),
@@ -1629,6 +1653,10 @@ OS_PATH = module_with_params(runtime_module(
     abspath=(signature(STR, ("path", STR)), "sd::os::path::abspath"),
     splitext=(signature(TupleType((STR, STR)), ("path", STR)), "sd::os::path::splitext"),
     getsize=(signature(INT, ("path", STR)), "sd::os::path::getsize"),
+    islink=(signature(BOOL, ("path", STR)), "sd::os::path::islink"),
+    relpath=(signature(STR, ("path", STR), ("start", OptionalType(STR), "std::nullopt")), "sd::os::path::relpath"),
+    realpath=(signature(STR, ("path", STR), ("strict", BOOL, "false")), "sd::os::path::realpath"),
+    normpath=(signature(STR, ("path", STR)), "sd::os::path::normpath"),
     sep=(STR, "sd::os::path::sep()"),
 ))
 
@@ -1647,6 +1675,16 @@ MODULES["os"] = module_with_params(runtime_module(
     chdir=(signature(NONE, ("path", STR)), "sd::os::chdir"),
     getenv=(os_getenv, "sd::os::getenv"),
     sep=(STR, "sd::os::path::sep()"),
+    stat=(signature(STAT_RESULT, ("path", OneOf(STR, PATH, INT, what="a str, a Path or a file descriptor")),
+                    ("follow_symlinks", BOOL, "true")), "sd::os::stat"),
+    lstat=(signature(STAT_RESULT, ("path", OS_PATH_ARG)), "sd::os::lstat"),
+    readlink=(signature(STR, ("path", OS_PATH_ARG)), "sd::os::readlink"),
+    utime=(signature(NONE, ("path", OS_PATH_ARG), ("times", OptionalType(TupleType((FLOAT, FLOAT))), "std::nullopt"),
+                     ("ns", OptionalType(TupleType((INT, INT))), "std::nullopt"), ("follow_symlinks", BOOL, "true")),
+           "sd::os::utime"),
+    walk=(signature(GeneratorType(TupleType((STR, ListType(STR), ListType(STR)))), ("top", STR), ("topdown", BOOL, "true"),
+                    ("onerror", OneOf(FuncType((EXCEPTIONS["OSError"],), NONE), NONE, what="a function (OSError) -> None"),
+                     "std::nullopt"), ("followlinks", BOOL, "false")), "sd::os::walk"),
     # file descriptors (the program closes what it opens)
     open=(signature(INT, ("path", STR), ("flags", INT), ("mode", INT, "511_i")), "sd::os::open"),
     close=(signature(NONE, ("fd", INT)), "sd::os::close"),
@@ -2523,16 +2561,13 @@ def path_open(ctx: CallContext) -> Type:
     return open_mode(ctx, ctx.args[0] if n == 1 else ctx.keyword_arg("mode"))
 
 
-STAT_RESULT = StructType("stat_result", "struct", None, builtin=True, cpp_name="sd::pathlib::StatResult")
-for _field, _t in (("st_size", INT), ("st_mode", INT), ("st_uid", INT), ("st_gid", INT), ("st_nlink", INT),
-                   ("st_ino", INT), ("st_mtime", FLOAT), ("st_atime", FLOAT), ("st_ctime", FLOAT)):
-    STAT_RESULT.fields[_field] = Field(_field, _t, None, Loc(0, 0))
 
 PATH.methods.update({
     **{name: sync_method(BOOL) for name in ("exists", "is_file", "is_dir", "is_symlink", "is_absolute")},
     **{name: sync_method(PATH) for name in ("absolute", "resolve", "expanduser")},
     "as_posix": sync_method(STR),
     "stat": sync_method(STAT_RESULT),
+    "readlink": sync_method(PATH),
     "read_text": sync_method(STR, ("encoding", OptionalType(STR), "std::nullopt")),
     "read_bytes": sync_method(BYTES),
     "write_text": sync_method(INT, ("data", STR), ("encoding", OptionalType(STR), "std::nullopt")),

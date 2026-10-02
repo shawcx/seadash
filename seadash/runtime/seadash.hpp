@@ -3016,6 +3016,21 @@ std::string str_join(const std::string& sep, It&& it) {
 }
 inline bool str_startswith(const std::string& s, const std::string& p) { return s.starts_with(p); }
 inline bool str_endswith(const std::string& s, const std::string& p) { return s.ends_with(p); }
+// s.startswith(("a", "b")): any of them
+template <class... Ts>
+bool str_startswith(const std::string& s, const std::tuple<Ts...>& ps) {
+    return std::apply([&](const auto&... p) { return (s.starts_with(p) || ...); }, ps);
+}
+template <class... Ts>
+bool str_endswith(const std::string& s, const std::tuple<Ts...>& ps) {
+    return std::apply([&](const auto&... p) { return (s.ends_with(p) || ...); }, ps);
+}
+inline bool str_startswith(const std::string& s, const vtuple<std::string>& ps) {
+    return std::any_of(ps.items.begin(), ps.items.end(), [&](const std::string& p) { return s.starts_with(p); });
+}
+inline bool str_endswith(const std::string& s, const vtuple<std::string>& ps) {
+    return std::any_of(ps.items.begin(), ps.items.end(), [&](const std::string& p) { return s.ends_with(p); });
+}
 inline std::int64_t str_find(const std::string& s, const std::string& sub) {
     auto pos = s.find(sub);
     return pos == std::string::npos ? -1 : static_cast<std::int64_t>(pos);
@@ -3678,6 +3693,14 @@ inline std::string bytes_hex(const bytes& b) {
 }
 inline bool bytes_startswith(const bytes& b, const bytes& p) { return b.data.starts_with(p.data); }
 inline bool bytes_endswith(const bytes& b, const bytes& p) { return b.data.ends_with(p.data); }
+template <class... Ts>
+bool bytes_startswith(const bytes& b, const std::tuple<Ts...>& ps) {
+    return std::apply([&](const auto&... p) { return (b.data.starts_with(bytes(p).data) || ...); }, ps);
+}
+template <class... Ts>
+bool bytes_endswith(const bytes& b, const std::tuple<Ts...>& ps) {
+    return std::apply([&](const auto&... p) { return (b.data.ends_with(bytes(p).data) || ...); }, ps);
+}
 inline std::int64_t bytes_find(const bytes& b, const bytes& sub) { return str_find(b.data, sub.data); }
 inline std::int64_t bytes_count(const bytes& b, const bytes& sub) { return str_count(b.data, sub.data); }
 

@@ -1,0 +1,47 @@
+# os.walk (pruning dirnames top-down, bottom-up, following links, onerror), os.readlink,
+# os.stat/lstat/utime, os.path.islink/relpath/realpath/normpath, Path.readlink, and
+# str.startswith/endswith with a tuple of prefixes.
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+tmp = tempfile.mkdtemp()
+os.makedirs(os.path.join(tmp, "a", "b"))
+os.makedirs(os.path.join(tmp, "skip", "inner"))
+for rel in ("top.txt", "a/one.txt", "a/b/two.txt", "skip/inner/x.txt"):
+    with open(os.path.join(tmp, rel), "w") as f:
+        f.write(rel)
+os.symlink("top.txt", os.path.join(tmp, "link"))
+os.symlink("a", os.path.join(tmp, "dirlink"))
+
+for dirpath, dirnames, filenames in os.walk(tmp):
+    dirnames.sort()
+    if "skip" in dirnames:
+        dirnames.remove("skip")
+    print(os.path.relpath(dirpath, tmp), dirnames, sorted(filenames))
+print(sorted(os.path.relpath(d, tmp) for d, _, _ in os.walk(tmp, topdown=False)))
+print(sorted(os.path.relpath(d, tmp) for d, _, _ in os.walk(tmp, followlinks=True)))
+errors: list[str] = []
+print(list(os.walk(os.path.join(tmp, "missing"), onerror=lambda e: errors.append(type(e).__name__))), errors)
+
+link = os.path.join(tmp, "link")
+print(os.readlink(link), os.path.islink(link), os.path.islink(os.path.join(tmp, "top.txt")), Path(link).readlink())
+print(os.path.realpath(link) == os.path.realpath(os.path.join(tmp, "top.txt")))
+print(os.path.relpath("/a/b/c", "/a/x"), os.path.relpath("/a", "/a"), os.path.relpath("x/y", "x"), os.path.normpath("a//b/../c/."))
+st = os.stat(os.path.join(tmp, "top.txt"))
+lst = os.lstat(link)
+print(st.st_size, oct(st.st_mode & 0o170000), oct(lst.st_mode & 0o170000), st.st_ino == os.stat(link).st_ino)
+os.utime(os.path.join(tmp, "top.txt"), (1700000000.5, 1600000000.25))
+st = os.stat(os.path.join(tmp, "top.txt"))
+print(st.st_mtime, st.st_atime, st.st_mtime_ns)
+os.utime(os.path.join(tmp, "top.txt"), ns=(1, 2_000_000_003))
+print(os.stat(os.path.join(tmp, "top.txt")).st_mtime_ns)
+print("x.tar.gz".endswith((".gz", ".bz2")), "x.zip".endswith((".gz", ".bz2")), "data".startswith(("da", "x")))
+exts = (".py", ".sd")
+print("main.sd".endswith(exts), b"\x1f\x8b".startswith((b"\x1f", b"BZ")))
+try:
+    os.readlink(os.path.join(tmp, "top.txt"))
+except OSError as e:
+    print(type(e).__name__, e.errno is not None)
+shutil.rmtree(tmp)

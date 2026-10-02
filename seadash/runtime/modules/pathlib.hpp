@@ -29,11 +29,33 @@ class Path;
 struct StatResult {
     std::int64_t st_size = 0, st_mode = 0, st_uid = 0, st_gid = 0, st_nlink = 0, st_ino = 0;
     double st_mtime_ = 0, st_atime_ = 0, st_ctime_ = 0;  // st_mtime etc. are C macros
+    std::int64_t st_dev = 0, st_mtime_ns = 0, st_atime_ns = 0, st_ctime_ns = 0;
     std::string sd_repr() const {
         return "os.stat_result(st_mode=" + std::to_string(st_mode) + ", st_size=" + std::to_string(st_size) +
                ", st_mtime=" + float_repr(st_mtime_) + ")";
     }
 };
+
+// os.stat's result from struct stat (times as Python makes its floats: seconds + nanoseconds * 1e-9)
+inline StatResult stat_result(const struct stat& st) {
+    auto secs = [](const timespec& t) { return static_cast<double>(t.tv_sec) + static_cast<double>(t.tv_nsec) * 1e-9; };
+    auto ns = [](const timespec& t) { return static_cast<std::int64_t>(t.tv_sec) * 1000000000 + t.tv_nsec; };
+    StatResult r;
+    r.st_size = st.st_size;
+    r.st_mode = st.st_mode;
+    r.st_uid = st.st_uid;
+    r.st_gid = st.st_gid;
+    r.st_nlink = static_cast<std::int64_t>(st.st_nlink);
+    r.st_ino = static_cast<std::int64_t>(st.st_ino);
+    r.st_dev = static_cast<std::int64_t>(st.st_dev);
+    r.st_mtime_ = secs(st.SD_ST_TIM(m));
+    r.st_atime_ = secs(st.SD_ST_TIM(a));
+    r.st_ctime_ = secs(st.SD_ST_TIM(c));
+    r.st_mtime_ns = ns(st.SD_ST_TIM(m));
+    r.st_atime_ns = ns(st.SD_ST_TIM(a));
+    r.st_ctime_ns = ns(st.SD_ST_TIM(c));
+    return r;
+}
 
 class Path {
     std::string p_;  // normalized: no empty or "." parts, no trailing slash; "." for empty
@@ -210,11 +232,13 @@ public:
     StatResult stat() const {
         auto st = stat_raw();
         if (!st) raise_os(errno, p_);
-        auto secs = [](const timespec& t) { return static_cast<double>(t.tv_sec) + t.tv_nsec / 1e9; };
-        return {static_cast<std::int64_t>(st->st_size), static_cast<std::int64_t>(st->st_mode),
-                static_cast<std::int64_t>(st->st_uid), static_cast<std::int64_t>(st->st_gid),
-                static_cast<std::int64_t>(st->st_nlink), static_cast<std::int64_t>(st->st_ino),
-                secs(st->SD_ST_TIM(m)), secs(st->SD_ST_TIM(a)), secs(st->SD_ST_TIM(c))};
+        return stat_result(*st);
+    }
+    Path readlink() const {  // p.readlink(): what a symlink points to
+        char buf[4096];
+        ssize_t n = ::readlink(p_.c_str(), buf, sizeof buf);
+        if (n < 0) raise_os(errno, p_);
+        return Path(std::string(buf, static_cast<std::size_t>(n)));
     }
     Path absolute() const { return is_absolute() ? *this : cwd() / *this; }
     Path resolve() const {  // absolute, with symlinks and ".." resolved; the path needn't exist

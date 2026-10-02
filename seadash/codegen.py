@@ -2560,14 +2560,18 @@ class CodeGen:
                 self.lambda_self -= 1
         return " ".join(code)
 
-    def bind_comprehension(self, target: A.Expr, source: str) -> list[str]:
+    def bind_comprehension(self, target: A.Expr, source: str, declared: set | None = None) -> list[str]:
+        declared = set() if declared is None else declared  # (`a, _, _`: the second _ is assigned, as in Python)
         if isinstance(target, A.Name):
             var: Var = target.sym
+            if var.cpp_name in declared:
+                return [f"{ident(var.cpp_name)} = {source};"]
+            declared.add(var.cpp_name)
             return [f"[[maybe_unused]] {self.cpp_type(var.type)} {ident(var.cpp_name)} = {source};"]
         tmp = self.fresh("t")
         out = [f"auto&& {tmp} = {source};"]
         for i, elt in enumerate(target.elts):
-            out.extend(self.bind_comprehension(elt, f"std::get<{i}>({tmp})"))
+            out.extend(self.bind_comprehension(elt, f"std::get<{i}>({tmp})", declared))
         return out
 
     # =========================================================================

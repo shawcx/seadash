@@ -2,10 +2,16 @@
 // std::filesystem, raising Python's OSError subclasses ([Errno 2] ...).
 #pragma once
 
-#include <filesystem>
+#include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+#include <filesystem>
+#include <variant>
+
+#include "pathlib.hpp"
 
 namespace sd::os {
 
@@ -133,9 +139,163 @@ inline std::int64_t getsize(const std::string& p) {
     return static_cast<std::int64_t>(size);
 }
 
+inline bool islink(const std::string& p) {
+    struct stat st;
+    return ::lstat(p.c_str(), &st) == 0 && S_ISLNK(st.st_mode);
+}
+inline std::string normpath(const std::string& path) {  // posixpath.normpath
+    if (path.empty()) return ".";
+    std::size_t slashes = path.starts_with('/') ? (path.starts_with("//") && !path.starts_with("///") ? 2 : 1) : 0;
+    std::vector<std::string> parts;
+    for (std::size_t start = 0; start <= path.size();) {
+        std::size_t end = std::min(path.find('/', start), path.size());
+        std::string comp = path.substr(start, end - start);
+        start = end + 1;
+        if (comp.empty() || comp == ".") continue;
+        if (comp != ".." || (!slashes && parts.empty()) || (!parts.empty() && parts.back() == "..")) parts.push_back(comp);
+        else if (!parts.empty()) parts.pop_back();
+    }
+    std::string out(slashes, '/');
+    for (std::size_t i = 0; i < parts.size(); ++i) out += (i ? "/" : "") + parts[i];
+    return out.empty() ? "." : out;
+}
+// os.path.relpath(path, start=os.curdir)
+inline std::string relpath(const std::string& p, const std::optional<std::string>& start = std::nullopt) {
+    if (p.empty()) raise("ValueError", "no path specified");
+    auto split = [](const std::string& x) {
+        std::string a = normpath(x.starts_with('/') ? x : fs::current_path().string() + "/" + x);
+        std::vector<std::string> parts;
+        for (std::size_t s = 0; s <= a.size();) {
+            std::size_t e = std::min(a.find('/', s), a.size());
+            if (e > s) parts.push_back(a.substr(s, e - s));
+            s = e + 1;
+        }
+        return parts;
+    };
+    auto from = split(start.value_or(".")), to = split(p);
+    std::size_t i = 0;
+    while (i < from.size() && i < to.size() && from[i] == to[i]) ++i;
+    std::string out;
+    for (std::size_t k = i; k < from.size(); ++k) out += (out.empty() ? "" : "/") + std::string("..");
+    for (std::size_t k = i; k < to.size(); ++k) out += (out.empty() ? "" : "/") + to[k];
+    return out.empty() ? "." : out;
+}
+// os.path.realpath(path, strict=False): absolute, with every symlink resolved
+inline std::string realpath(const std::string& p, bool strict = false) {
+    if (strict) {
+        struct stat st;
+        if (::stat(p.c_str(), &st) != 0) raise_os(errno, p);
+    }
+    return pathlib::Path(p).resolve().str();
+}
+
 }  // namespace path
 
 inline std::string getcwd() { return fs::current_path().string(); }
+
+// os.stat(path, follow_symlinks=True), os.lstat(path), os.stat(fd)
+inline pathlib::StatResult stat(const pathlib::Path& p, bool follow_symlinks = true) {
+    struct stat st;
+    if ((follow_symlinks ? ::stat(p.str().c_str(), &st) : ::lstat(p.str().c_str(), &st)) != 0) raise_os(errno, p.str());
+    return pathlib::stat_result(st);
+}
+inline pathlib::StatResult stat(std::int64_t fd, bool = true) {
+    struct stat st;
+    if (::fstat(static_cast<int>(fd), &st) != 0) raise_os(errno, std::nullopt);
+    return pathlib::stat_result(st);
+}
+inline pathlib::StatResult lstat(const pathlib::Path& p) { return stat(p, false); }
+
+// os.readlink(path)
+inline std::string readlink(const pathlib::Path& p) { return pathlib::Path(p).readlink().str(); }
+
+// os.utime(path, times=None, ns=None, follow_symlinks=True): times as (atime, mtime) seconds,
+// or ns as nanoseconds; neither is now
+inline void utime(const pathlib::Path& p, const std::optional<std::tuple<double, double>>& times = std::nullopt,
+                  const std::optional<std::tuple<std::int64_t, std::int64_t>>& ns = std::nullopt, bool follow_symlinks = true) {
+    if (times && ns) raise("ValueError", "utime: you may specify either 'times' or 'ns' but not both");
+    timespec ts[2];
+    auto from_seconds = [](double t) {
+        double sec = std::floor(t);
+        timespec out{static_cast<time_t>(sec), static_cast<long>(std::round((t - sec) * 1e9))};
+        if (out.tv_nsec >= 1000000000) {
+            ++out.tv_sec;
+            out.tv_nsec -= 1000000000;
+        }
+        return out;
+    };
+    auto from_ns = [](std::int64_t n) {
+        std::int64_t sec = n >= 0 ? n / 1000000000 : -((-n + 999999999) / 1000000000);
+        return timespec{static_cast<time_t>(sec), static_cast<long>(n - sec * 1000000000)};
+    };
+    timespec* which = ts;
+    if (times) {
+        ts[0] = from_seconds(std::get<0>(*times));
+        ts[1] = from_seconds(std::get<1>(*times));
+    } else if (ns) {
+        ts[0] = from_ns(std::get<0>(*ns));
+        ts[1] = from_ns(std::get<1>(*ns));
+    } else {
+        which = nullptr;  // (now)
+    }
+    if (::utimensat(AT_FDCWD, p.str().c_str(), which, follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW) != 0) raise_os(errno, p.str());
+}
+
+// os.walk(top, topdown=True, onerror=None, followlinks=False): (dirpath, dirnames, filenames)
+// for each directory, in the order the system lists them (as Python's scandir does). Changing
+// dirnames in place (top-down) decides which directories it goes into, as in Python.
+using WalkEntry = std::tuple<std::string, list<std::string>, list<std::string>>;
+template <class OnError = std::nullopt_t>
+Generator<WalkEntry> walk(std::string top, bool topdown = true, OnError onerror = std::nullopt, bool followlinks = false) {
+    std::vector<std::variant<std::string, WalkEntry>> stack{top};
+    auto join = [](const std::string& a, const std::string& b) { return a.empty() || a.ends_with('/') ? a + b : a + "/" + b; };
+    while (!stack.empty()) {
+        auto item = std::move(stack.back());
+        stack.pop_back();
+        if (auto* done = std::get_if<WalkEntry>(&item)) {
+            co_yield std::move(*done);
+            continue;
+        }
+        std::string dir = std::get<std::string>(item);
+        list<std::string> dirs, nondirs;
+        std::vector<std::string> walk_dirs;
+        DIR* d = ::opendir(dir.c_str());
+        if (!d) {
+            if constexpr (!std::is_same_v<OnError, std::nullopt_t>) {
+                try {
+                    raise_os(errno, dir);
+                } catch (const Thrown& t) {
+                    onerror(std::dynamic_pointer_cast<OSError>(t.exc));
+                }
+            }
+            continue;
+        }
+        while (dirent* e = ::readdir(d)) {
+            std::string name = e->d_name;
+            if (name == "." || name == "..") continue;
+            std::string path = join(dir, name);
+            struct stat st;
+            bool is_dir = e->d_type == DT_DIR ||
+                          ((e->d_type == DT_LNK || e->d_type == DT_UNKNOWN) && ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+            (is_dir ? dirs : nondirs).push_back(name);
+            if (!topdown && is_dir) {
+                bool symlink = e->d_type == DT_LNK || (e->d_type == DT_UNKNOWN && path::islink(path));
+                if (followlinks || !symlink) walk_dirs.push_back(path);
+            }
+        }
+        ::closedir(d);
+        if (topdown) {
+            co_yield WalkEntry{dir, dirs, nondirs};
+            for (std::size_t i = dirs.size(); i-- > 0;) {  // (the names as the loop left them)
+                std::string next = join(dir, dirs[i]);
+                if (followlinks || !path::islink(next)) stack.push_back(next);
+            }
+        } else {
+            stack.push_back(WalkEntry{dir, dirs, nondirs});
+            for (std::size_t i = walk_dirs.size(); i-- > 0;) stack.push_back(walk_dirs[i]);
+        }
+    }
+}
 
 inline std::vector<std::string> listdir(const std::string& p = ".") {
     std::error_code ec;
