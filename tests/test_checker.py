@@ -1026,6 +1026,55 @@ def test_json_accepts_structs_and_nested_types():
     """)
 
 
+@pytest.mark.parametrize("src,msg", [
+    ("import tomllib\nwith open('a.toml') as f:\n    d = tomllib.load(f)",
+     "tomllib.load() needs a file opened in binary mode, e.g. `open('config.toml', 'rb')` (Python raises TypeError for a text file)"),
+    ("import tomllib\nd = tomllib.loads(b'a = 1')", "tomllib.loads() argument must be str, not bytes"),
+    ("import tomllib\nx: int = tomllib.loads('')",
+     "a TOML document is a table, so tomllib.loads() can't produce int; annotate a class, a dict[str, ...] or json.Value"),
+    ("import tomllib\nx: list[int] = tomllib.loads('')",
+     "a TOML document is a table, so tomllib.loads() can't produce list[int]; annotate a class, a dict[str, ...] or json.Value"),
+    ("import tomllib\nx: dict[int, str] = tomllib.loads('')", "TOML table keys are strings, so dict[int, str] can't be decoded"),
+    ("import tomllib\nx: dict[str, bytes] = tomllib.loads('')", "bytes can't be decoded from TOML"),
+    ("import tomllib\nimport datetime\nclass C:\n    d: datetime.timedelta\nx: C = tomllib.loads('')",
+     "timedelta can't be decoded from TOML"),
+    ("import tomllib\nx = tomllib.loads('', parse_float=float)", "tomllib.loads() got an unexpected keyword argument 'parse_float'"),
+    ("import json\nimport datetime\ns = json.dumps({'d': datetime.date.today()})", "date can't be converted to or from JSON"),
+])
+def test_tomllib_errors(src, msg):
+    assert err(src).message == msg
+
+
+def test_tomllib_types():
+    info = ok("""
+        import json
+        import tomllib
+        from datetime import date, datetime, time
+        class Window:
+            opens: time
+            day: date
+            stamp: datetime?
+            tags: list[str]
+        class Config:
+            name: str
+            windows: list[Window]
+            extra: dict[str, json.Value]
+        def read(path: str) -> Config:
+            with open(path, "rb") as f:
+                return tomllib.load(f)
+        data = tomllib.loads("a = 1")
+        c: Config = tomllib.loads("")
+        v: json.Value = tomllib.loads("")
+        day: date = data["when"].as_date()
+        flags = (data["a"].is_date(), data["a"].is_time(), data["a"].is_datetime())
+        at = data["at"].as_time()
+        stamp = data["stamp"].as_datetime()
+    """)
+    types = {v.name: str(v.type) for v in info.globals}
+    assert types["data"] == "dict[str, json.Value]"
+    assert (types["at"], types["stamp"], types["flags"]) == ("time", "datetime", "tuple[bool, bool, bool]")
+
+
 @pytest.mark.parametrize("expr,ty", [
     ('{"a": [1.5], "b": []}', "dict[str, list[float]]"),
     ('{"a": [1.5], "b": [None]}', "dict[str, list[float?]]"),

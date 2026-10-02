@@ -1,0 +1,29 @@
+Example 2024-02-29 03:15:00 1.0 {8000, 8001} ('x', 5)
+2024-03-01 3 3
+Tom 1979-05-27 07:32:00-08:00 1979-05-27T07:32:00-08:00 1979
+alpha 10.0.0.1 80 ['frontend', 'eu']
+beta 10.0.0.2 8080 []
+Hammer 738594937 -
+Nail 284758393 gray
+None {'anything': [1, 'goes'], 'when': datetime.date(1979, 5, 27)}
+{"host": "10.0.0.1", "port": 80, "tags": ["frontend", "eu"]}
+localhost:22
+{'a': 1, 'b': 2}
+{'days': [datetime.date(2000, 1, 1), datetime.date(2000, 12, 31)]}
+Server(host='example.org', port=443, tags=['tls'])
+error: tomllib: expected a string at $.name, got an int
+error: tomllib: missing field 'day' at $
+error: tomllib: expected a date at $.day, got a datetime
+error: tomllib: expected a time at $.at, got a date
+error: tomllib: expected a datetime at $.stamp, got a date
+error: tomllib: expected an int at $.ports[1], got a string
+Event(name='x', day=datetime.date(2000, 1, 1), at=datetime.time(10, 0), stamp=datetime.datetime(2000, 1, 1, 10, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600))), ports=[])
+error: tomllib: expected a datetime at $.owner.dob, got an int
+True False 1979 250000
+UTC True False
+True False True
+TypeError: this json.Value is a date, not an int
+Invalid value | 22 2 9 | True
+Invalid value (at line 2, column 9)
+TOMLDecodeError: Integer out of range (at line 1, column 5)
+{'n': -9223372036854775808, 'h': 9223372036854775807}

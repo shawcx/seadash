@@ -1260,7 +1260,11 @@ JSON_VALUE_METHODS = {
     "as_bool": returns(BOOL),
     "as_list": returns(ListType(JSON_VALUE)),
     "as_dict": returns(DictType(STR, JSON_VALUE)),
-    **{name: returns(BOOL) for name in ("is_null", "is_int", "is_float", "is_str", "is_bool", "is_list", "is_dict")},
+    "as_date": returns(DATE),  # TOML's dates and times (tomllib)
+    "as_time": returns(TIME),
+    "as_datetime": returns(DATETIME),
+    **{name: returns(BOOL) for name in ("is_null", "is_int", "is_float", "is_str", "is_bool", "is_list", "is_dict",
+                                        "is_date", "is_time", "is_datetime")},
     "keys": returns(ListType(STR)),
     "values": returns(ListType(JSON_VALUE)),
     "items": returns(ListType(TupleType((STR, JSON_VALUE)))),
@@ -1609,29 +1613,35 @@ MODULES["typing"] = Module("typing", {
 # ---- json -------------------------------------------------------------------
 
 
-def json_problem(t: Type, decoding: bool, seen: frozenset = frozenset()) -> str | None:
-    """Why `t` can't be converted to/from JSON, or None if it can."""
+def json_problem(t: Type, decoding: bool, seen: frozenset = frozenset(), toml: bool = False) -> str | None:
+    """Why `t` can't be converted to/from JSON (or, with toml, decoded from TOML, which
+    has dates and times too), or None if it can."""
     match t:
         case _ if t in (INT, FLOAT, BOOL, STR, JSON_VALUE):
             return None
+        case _ if toml and t in (DATE, TIME, DATETIME):
+            return None
         case ListType(elem) | SetType(elem) | OptionalType(elem):
-            return json_problem(elem, decoding, seen)
+            return json_problem(elem, decoding, seen, toml)
         case TupleType(elts):
-            return next((p for e in elts if (p := json_problem(e, decoding, seen))), None)
+            return next((p for e in elts if (p := json_problem(e, decoding, seen, toml))), None)
         case DictType(key, value):
             keys_ok = key == STR if decoding else key in (STR, INT, FLOAT, BOOL)
             if not keys_ok:
-                return f"JSON object keys are strings, so {t} can't be {'decoded' if decoding else 'encoded'}"
-            return json_problem(value, decoding, seen)
+                return (f"{'TOML table' if toml else 'JSON object'} keys are strings, "
+                        f"so {t} can't be {'decoded' if decoding else 'encoded'}")
+            return json_problem(value, decoding, seen, toml)
         case StructType() if t.enum is not None:
             return f"{t} is an enum; convert its members with .value (and back with {t}(value))"
         case StructType() if not t.is_exception:
             if t in seen:
                 return None
             for f in t.all_fields().values():
-                if p := json_problem(f.type, decoding, seen | {t}):
+                if p := json_problem(f.type, decoding, seen | {t}, toml):
                     return p
             return None
+    if toml:
+        return f"{t} can't be decoded from TOML"
     return f"{t} can't be converted to or from JSON"
 
 
@@ -1691,6 +1701,52 @@ MODULES["json"] = module_with_params(runtime_module(
     JSONDecodeError=exception_class("JSONDecodeError", "sd::json::JSONDecodeError", "ValueError"),
 ))
 MODULES["json"].members["Value"] = NamedType("Value", JSON_VALUE)
+
+
+# ---- tomllib ----------------------------------------------------------------
+
+
+def toml_loads_fn(from_file: bool) -> Callable[[CallContext], Type]:
+    """tomllib.loads(text) / tomllib.load(file): decodes into the type the context asks for,
+    like json.loads, and without one gives the document as a dict[str, json.Value]."""
+
+    def handler(ctx: CallContext) -> Type:
+        ctx.arity(1)
+        if from_file:
+            if ctx.arg(0) == TEXT_FILE:
+                raise ctx.error(f"{ctx.what} needs a file opened in binary mode, e.g. `open('config.toml', 'rb')` "
+                                f"(Python raises TypeError for a text file)", ctx.args[0])
+            ctx.expect(0, BINARY_FILE)
+        else:
+            ctx.expect(0, STR)
+        target = ctx.expected
+        if target is None:
+            return DictType(STR, JSON_VALUE)
+        table = target.inner if isinstance(target, OptionalType) else target
+        if not (isinstance(table, DictType) or table == JSON_VALUE
+                or (isinstance(table, StructType) and not table.is_exception and table.enum is None)):
+            raise ctx.error(f"a TOML document is a table, so {ctx.what} can't produce {target}; "
+                            f"annotate a class, a dict[str, ...] or json.Value")
+        if problem := json_problem(target, decoding=True, toml=True):
+            raise ctx.error(problem)
+        return target
+
+    return handler
+
+
+def toml_decode_error() -> StructType:
+    st = exception_class("TOMLDecodeError", "sd::tomllib::TOMLDecodeError", "ValueError")
+    for name, t in (("msg", STR), ("doc", STR), ("pos", INT), ("lineno", INT), ("colno", INT)):
+        st.fields[name] = Field(name, t, None, Loc(0, 0))
+    return st
+
+
+MODULES["tomllib"] = runtime_module(
+    "tomllib", "modules/tomllib.hpp",
+    loads=(toml_loads_fn(False), "sd::tomllib::loads<{T}>"),
+    load=(toml_loads_fn(True), "sd::tomllib::load<{T}>"),
+    TOMLDecodeError=toml_decode_error(),
+)
 
 MODULES["__future__"] = Module("__future__", {"annotations": TypeAlias("annotations")})  # accepted, no effect
 

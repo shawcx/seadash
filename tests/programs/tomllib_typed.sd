@@ -1,0 +1,154 @@
+# seadash tomllib: decode a TOML document into the type you ask for, like json.loads
+# (Python's tomllib always gives dicts, so this program is seadash-only)
+import datetime
+import json
+import tomllib
+from dataclasses import dataclass
+from datetime import date, time
+
+
+@dataclass
+class Server:
+    host: str
+    port: int
+    tags: list[str] = []
+
+
+@dataclass
+class Owner:
+    name: str
+    dob: datetime.datetime
+
+
+@dataclass
+class Product:
+    name: str
+    sku: int
+    color: str?
+
+
+class Config:
+    title: str
+    owner: Owner
+    servers: dict[str, Server]
+    products: list[Product]
+    release: date
+    backup_at: time
+    ratio: float
+    ports: set[int]
+    pair: tuple[str, int]
+    extra: json.Value?
+    raw: json.Value
+
+
+text = """
+title = "Example"
+release = 2024-02-29
+backup_at = 03:15:00
+ratio = 1
+ports = [8001, 8000, 8001]
+pair = ["x", 5]
+raw = { anything = [1, "goes"], when = 1979-05-27 }
+
+[owner]
+name = "Tom"
+dob = 1979-05-27T07:32:00-08:00
+
+[servers.alpha]
+host = "10.0.0.1"
+port = 80
+tags = ["frontend", "eu"]
+
+[servers.beta]
+host = "10.0.0.2"
+port = 8080
+
+[[products]]
+name = "Hammer"
+sku = 738594937
+
+[[products]]
+name = "Nail"
+sku = 284758393
+color = "gray"
+"""
+
+config: Config = tomllib.loads(text)
+print(config.title, config.release, config.backup_at, config.ratio, config.ports, config.pair)
+print(config.release + datetime.timedelta(days=1), config.release.weekday(), config.backup_at.hour)
+print(config.owner.name, config.owner.dob, config.owner.dob.isoformat(), config.owner.dob.year)
+for name, server in config.servers.items():
+    print(name, server.host, server.port, server.tags)
+for p in config.products:
+    print(p.name, p.sku, p.color if p.color is not None else "-")
+print(config.extra, config.raw)
+print(json.dumps(config.servers["alpha"]))
+
+
+def describe(s: Server) -> str:
+    return f"{s.host}:{s.port}"
+
+
+print(describe(tomllib.loads('host = "localhost"\nport = 22')))
+counts: dict[str, int] = tomllib.loads("a = 1\nb = 2")
+print(counts)
+maybe: dict[str, list[date]]? = tomllib.loads("days = [2000-01-01, 2000-12-31]")
+print(maybe)
+
+with open("server.toml", "w") as f:
+    f.write('host = "example.org"\nport = 443\ntags = ["tls"]\n')
+with open("server.toml", "rb") as f:
+    from_file: Server = tomllib.load(f)
+print(from_file)
+
+@dataclass
+class Event:
+    name: str
+    day: date
+    at: time
+    stamp: datetime.datetime? = None
+    ports: list[int] = []
+
+
+for bad in ['name = 1\nday = 2000-01-01\nat = 10:00:00',
+            'name = "x"\nat = 10:00:00',
+            'name = "x"\nday = 2000-01-01T10:00:00\nat = 10:00:00',
+            'name = "x"\nday = 2000-01-01\nat = 2000-01-01',
+            'name = "x"\nday = 2000-01-01\nat = 10:00:00\nstamp = 2000-01-01',
+            'name = "x"\nday = 2000-01-01\nat = 10:00:00\nports = [1, "two"]',
+            'name = "x"\nday = 2000-01-01\nat = 10:00:00\nstamp = 2000-01-01T10:00:00+01:00']:
+    try:
+        event: Event = tomllib.loads(bad)
+        print(event)
+    except ValueError as e:
+        print("error:", e)
+try:
+    nested: Config = tomllib.loads('title = "t"\nowner = { name = "x", dob = 1 }')
+    print(nested.title)
+except ValueError as e:
+    print("error:", e)
+
+# Without a type, values are json.Value: dates and times too
+data = tomllib.loads("when = 1979-05-27\nat = 07:32:00.25\nstamp = 1979-05-27T07:32:00Z\nn = 3")
+when = data["when"]
+print(when.is_date(), when.is_datetime(), when.as_date().year, data["at"].as_time().microsecond)
+print(data["stamp"].as_datetime().tzinfo, data["stamp"].is_datetime(), data["n"].is_date())
+print(data["when"] == data["when"], data["when"] == data["stamp"], bool(data["at"]))
+try:
+    print(when.as_int())
+except TypeError as e:
+    print("TypeError:", e)
+
+# Errors carry Python 3.14's attributes; columns count characters, not bytes
+try:
+    tomllib.loads('name = "café"\nvalue = é')
+except tomllib.TOMLDecodeError as e:
+    print(e.msg, "|", e.pos, e.lineno, e.colno, "|", e.doc == 'name = "café"\nvalue = é')
+    print(e)
+
+# Integers are 64-bit: a larger one is an error (Python reads it as a big int)
+try:
+    print(tomllib.loads("n = 9223372036854775808"))
+except tomllib.TOMLDecodeError as e:
+    print("TOMLDecodeError:", e)
+print(tomllib.loads("n = -9223372036854775808\nh = 0x7FFFFFFFFFFFFFFF"))

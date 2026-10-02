@@ -1,0 +1,66 @@
+{'title': 'TOML Example', 'quoted key': 'literal \\n string', 'multi': 'Roses are red\tViolets are blue\nline continued', 'raw': 'C:\\Users\\nodejs\\templates', 'escapes': 'é😀 "quoted" \\', 'owner': {'name': 'Tom Preston-Werner', 'dob': datetime.datetime(1979, 5, 27, 7, 32, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=57600)))}, 'numbers': {'int': 99, 'neg': -17, 'big': 9223372036854775807, 'hex': 3735928559, 'oct': 493, 'bin': 214, 'float': 6.626e-34, 'exp': 5e+22, 'under': 224617.445991228, 'infs': [inf, -inf, inf], 'zero': -0.0}, 'dates': {'offset': datetime.datetime(1979, 5, 27, 0, 32, 0, 999999, tzinfo=datetime.timezone(datetime.timedelta(seconds=19800))), 'utc': datetime.datetime(1979, 5, 27, 7, 32, tzinfo=datetime.timezone.utc), 'local': datetime.datetime(1979, 5, 27, 7, 32), 'space': datetime.datetime(1979, 5, 27, 7, 32, 0, 500000), 'day': datetime.date(1979, 5, 27), 'time': datetime.time(7, 32), 'precise': datetime.time(0, 32, 0, 123456)}, 'database': {'enabled': True, 'ports': [8000, 8001, 8002], 'data': [['delta', 'phi'], [3.14], []], 'temp_targets': {'cpu': 79.5, 'case': 72.0}, 'mixed': [1, 'two', {'three': 3}, [4], datetime.date(1979, 5, 27)]}, 'servers': {'alpha': {'ip': '10.0.0.1', 'role': 'frontend'}, 'beta': {'ip': '10.0.0.2', 'site': {'google.com': True}}}, 'products': [{'name': 'Hammer', 'sku': 738594937}, {}, {'name': 'Nail', 'sku': 284758393, 'color': 'gray'}], 'fruits': [{'name': 'apple', 'physical': {'color': 'red'}, 'varieties': [{'name': 'red delicious'}, {'name': 'granny smith'}]}, {'name': 'banana'}]}
+title = TOML Example
+quoted key = literal \n string
+multi = Roses are red	Violets are blue
+line continued
+raw = C:\Users\nodejs\templates
+escapes = é😀 "quoted" \
+owner = {'name': 'Tom Preston-Werner', 'dob': datetime.datetime(1979, 5, 27, 7, 32, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=57600)))}
+numbers = {'int': 99, 'neg': -17, 'big': 9223372036854775807, 'hex': 3735928559, 'oct': 493, 'bin': 214, 'float': 6.626e-34, 'exp': 5e+22, 'under': 224617.445991228, 'infs': [inf, -inf, inf], 'zero': -0.0}
+dates = {'offset': datetime.datetime(1979, 5, 27, 0, 32, 0, 999999, tzinfo=datetime.timezone(datetime.timedelta(seconds=19800))), 'utc': datetime.datetime(1979, 5, 27, 7, 32, tzinfo=datetime.timezone.utc), 'local': datetime.datetime(1979, 5, 27, 7, 32), 'space': datetime.datetime(1979, 5, 27, 7, 32, 0, 500000), 'day': datetime.date(1979, 5, 27), 'time': datetime.time(7, 32), 'precise': datetime.time(0, 32, 0, 123456)}
+database = {'enabled': True, 'ports': [8000, 8001, 8002], 'data': [['delta', 'phi'], [3.14], []], 'temp_targets': {'cpu': 79.5, 'case': 72.0}, 'mixed': [1, 'two', {'three': 3}, [4], datetime.date(1979, 5, 27)]}
+servers = {'alpha': {'ip': '10.0.0.1', 'role': 'frontend'}, 'beta': {'ip': '10.0.0.2', 'site': {'google.com': True}}}
+products = [{'name': 'Hammer', 'sku': 738594937}, {}, {'name': 'Nail', 'sku': 284758393, 'color': 'gray'}]
+fruits = [{'name': 'apple', 'physical': {'color': 'red'}, 'varieties': [{'name': 'red delicious'}, {'name': 'granny smith'}]}, {'name': 'banana'}]
+1979-05-27 07:32:00-08:00 1979-05-27 07:32:00
+8001 3 True
+apple [{'name': 'red delicious'}, {'name': 'granny smith'}]
+banana None
+['big', 'bin', 'exp', 'float', 'hex', 'infs', 'int', 'neg', 'oct', 'under', 'zero']
+first port 8000 and 2 more
+{
+  "alpha": {
+    "ip": "10.0.0.1",
+    "role": "frontend"
+  },
+  "beta": {
+    "ip": "10.0.0.2",
+    "site": {
+      "google.com": true
+    }
+  }
+}
+TypeError: Object of type datetime is not JSON serializable
+{} {}
+{'a': 1, 'b': 'two'}
+{'nan': nan, 'inf': -inf}
+'\x08\x0c\r\n'
+{'server': {'host': 'localhost', 'port': 8080}}
+TOMLDecodeError: Cannot overwrite a value (at end of document)
+TOMLDecodeError: Invalid value (at end of document)
+TOMLDecodeError: Invalid value (at line 1, column 5)
+TOMLDecodeError: Unclosed array (at end of document)
+TOMLDecodeError: Unclosed array (at line 1, column 8)
+TOMLDecodeError: Duplicate inline table key 'b' (at line 1, column 19)
+TOMLDecodeError: Cannot mutate immutable namespace ('a',) (at end of document)
+TOMLDecodeError: Cannot declare ('a',) twice (at line 3, column 3)
+TOMLDecodeError: Cannot overwrite a value (at line 2, column 5)
+TOMLDecodeError: Cannot declare ('a', 'b') twice (at line 3, column 5)
+TOMLDecodeError: Cannot overwrite a value (at line 2, column 3)
+TOMLDecodeError: Cannot declare ('a',) twice (at line 2, column 3)
+TOMLDecodeError: Cannot mutate immutable namespace ('a',) (at line 2, column 4)
+TOMLDecodeError: Unterminated string (at end of document)
+TOMLDecodeError: Found invalid character '\n' (at line 1, column 8)
+TOMLDecodeError: Unescaped '\' in a string (at line 1, column 12)
+TOMLDecodeError: Escaped character is not a Unicode scalar value (at line 1, column 12)
+TOMLDecodeError: Invalid date or datetime (at line 1, column 5)
+TOMLDecodeError: Expected newline or end of document after a statement (at line 1, column 6)
+TOMLDecodeError: Expected newline or end of document after a statement (at line 1, column 6)
+TOMLDecodeError: Expected newline or end of document after a statement (at line 1, column 7)
+TOMLDecodeError: Invalid statement (at line 1, column 1)
+TOMLDecodeError: Expected ']' at the end of a table declaration (at end of document)
+TOMLDecodeError: Expected ']]' at the end of an array declaration (at line 1, column 8)
+TOMLDecodeError: Found invalid character '\x01' (at line 1, column 17)
+TOMLDecodeError: Illegal character '\x07' (at line 2, column 10)
+TOMLDecodeError: Invalid value (at line 1, column 7)
+ValueError: Cannot declare ('a',) twice (at line 3, column 3)

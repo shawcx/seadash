@@ -5,7 +5,14 @@
 //   Value           a dynamically typed JSON value, for data of unknown shape
 //
 // Parse errors use Python's messages: "Expecting value: line 1 column 1 (char 0)".
+//
+// tomllib shares Value and the typed decoder: a TOML document is a tree of the same
+// values plus dates and times, which JSON itself never produces.
 #pragma once
+
+#include <variant>
+
+#include "datetime.hpp"
 
 namespace sd::json {
 
@@ -19,7 +26,8 @@ struct JSONDecodeError : ValueError {
 // ============================================================================
 
 struct Value {
-    enum class Kind { Null, Bool, Int, Float, Str, List, Dict };
+    enum class Kind { Null, Bool, Int, Float, Str, List, Dict, Date, Time, DateTime };
+    using When = std::variant<datetime::date, datetime::time, datetime::datetime>;
     Kind kind = Kind::Null;
     bool b = false;
     std::int64_t i = 0;
@@ -28,6 +36,7 @@ struct Value {
     // Arrays and objects are shared: a Value is read-only once built, so sharing is invisible.
     std::shared_ptr<std::vector<Value>> arr_;
     std::shared_ptr<dict<std::string, Value>> obj_;
+    std::shared_ptr<const When> when_;  // a TOML date, time or datetime
 
     static Value boolean(bool x) {
         Value v;
@@ -65,6 +74,13 @@ struct Value {
         v.obj_ = std::make_shared<dict<std::string, Value>>();
         return v;
     }
+    template <class D>
+    static Value moment(D x) {
+        Value v;
+        v.kind = std::is_same_v<D, datetime::date> ? Kind::Date : std::is_same_v<D, datetime::time> ? Kind::Time : Kind::DateTime;
+        v.when_ = std::make_shared<const When>(std::move(x));
+        return v;
+    }
     void push(Value v) { arr_->push_back(std::move(v)); }
     void set(const std::string& key, Value v) { (*obj_)[key] = std::move(v); }
     const Value* find(const std::string& key) const { return kind == Kind::Dict ? obj_->find(key) : nullptr; }
@@ -79,9 +95,15 @@ struct Value {
             case Kind::Str: return "a string";
             case Kind::List: return "an array";
             case Kind::Dict: return "an object";
+            case Kind::Date: return "a date";
+            case Kind::Time: return "a time";
+            case Kind::DateTime: return "a datetime";
         }
         return "?";
     }
+    // The Python type name of a date or time, for messages: "date"
+    const char* moment_type() const { return kind == Kind::Date ? "date" : kind == Kind::Time ? "time" : "datetime"; }
+    bool is_moment() const { return kind == Kind::Date || kind == Kind::Time || kind == Kind::DateTime; }
     [[noreturn]] void wrong(const char* want) const {
         raise("TypeError", std::string("this json.Value is ") + a_name() + ", not " + want);
     }
@@ -112,6 +134,18 @@ struct Value {
         if (kind != Kind::Dict) wrong("an object");
         return *obj_;
     }
+    datetime::date as_date() const {
+        if (kind != Kind::Date) wrong("a date");
+        return std::get<datetime::date>(*when_);
+    }
+    datetime::time as_time() const {
+        if (kind != Kind::Time) wrong("a time");
+        return std::get<datetime::time>(*when_);
+    }
+    datetime::datetime as_datetime() const {
+        if (kind != Kind::DateTime) wrong("a datetime");
+        return std::get<datetime::datetime>(*when_);
+    }
     bool is_null() const { return kind == Kind::Null; }
     bool is_bool() const { return kind == Kind::Bool; }
     bool is_int() const { return kind == Kind::Int; }
@@ -119,6 +153,9 @@ struct Value {
     bool is_str() const { return kind == Kind::Str; }
     bool is_list() const { return kind == Kind::List; }
     bool is_dict() const { return kind == Kind::Dict; }
+    bool is_date() const { return kind == Kind::Date; }
+    bool is_time() const { return kind == Kind::Time; }
+    bool is_datetime() const { return kind == Kind::DateTime; }
 
     std::vector<std::string> keys() const {
         if (kind != Kind::Dict) wrong("an object");
@@ -155,11 +192,16 @@ struct Value {
             case Kind::Str: return !s.empty();
             case Kind::List: return !arr_->empty();
             case Kind::Dict: return !obj_->empty();
+            default: return true;  // dates and times
         }
-        return false;
     }
-    // str() of a string is the text itself, like Python; anything else prints as repr.
-    std::string sd_str() const { return kind == Kind::Str ? s : sd_repr(); }
+    // str() of a string is the text itself, like Python, and of a date its ISO form;
+    // anything else prints as repr.
+    std::string sd_str() const {
+        if (kind == Kind::Str) return s;
+        if (is_moment()) return std::visit([](const auto& w) { return w.sd_str(); }, *when_);
+        return sd_repr();
+    }
     // Prints like the equivalent Python object: {'a': [1, 2.5, None, True]}
     std::string sd_repr() const {
         switch (kind) {
@@ -170,8 +212,8 @@ struct Value {
             case Kind::Str: return repr_str(s);
             case Kind::List: return repr(*arr_);
             case Kind::Dict: return repr(*obj_);
+            default: return std::visit([](const auto& w) { return w.sd_repr(); }, *when_);
         }
-        return "?";
     }
     auto begin() const {
         if (kind != Kind::List) wrong("an array (only arrays can be looped over; use .keys() for objects)");
@@ -193,6 +235,7 @@ struct Value {
             case Kind::Str: return s == o.s;
             case Kind::List: return *arr_ == *o.arr_;
             case Kind::Dict: return *obj_ == *o.obj_;
+            case Kind::Date: case Kind::Time: case Kind::DateTime: return *when_ == *o.when_;
             default: return false;
         }
     }
@@ -409,14 +452,19 @@ inline Value parse(std::string_view text) { return Parser(text).parse_document()
 // Typed decoding: Value -> T
 // ============================================================================
 
+// Whether tomllib is decoding (see tomllib.hpp), for messages: TOML says "table" for an object.
+inline thread_local bool decoding_toml = false;
+inline const char* an_object() { return decoding_toml ? "a table" : "an object"; }
+
 [[noreturn]] inline void mismatch(const char* want, const Value& v, const std::string& path) {
-    raise("ValueError", std::string("json: expected ") + want + " at " + path + ", got " + v.a_name());
+    raise("ValueError", std::string(decoding_toml ? "tomllib" : "json") + ": expected " + want + " at " + path + ", got " +
+                            (v.is_dict() ? an_object() : v.a_name()));
 }
 inline void expect_object(const Value& v, const std::string& path) {
-    if (!v.is_dict()) mismatch("an object", v, path);
+    if (!v.is_dict()) mismatch(an_object(), v, path);
 }
 [[noreturn]] inline void missing_field(const std::string& name, const std::string& path) {
-    raise("ValueError", "json: missing field '" + name + "' at " + path);
+    raise("ValueError", std::string(decoding_toml ? "tomllib" : "json") + ": missing field '" + name + "' at " + path);
 }
 
 template <class T>
@@ -435,6 +483,15 @@ T decode(const Value& v, const std::string& path) {
     } else if constexpr (std::is_same_v<T, std::string>) {
         if (!v.is_str()) mismatch("a string", v, path);
         return v.s;
+    } else if constexpr (std::is_same_v<T, datetime::date>) {
+        if (!v.is_date()) mismatch("a date", v, path);
+        return v.as_date();
+    } else if constexpr (std::is_same_v<T, datetime::time>) {
+        if (!v.is_time()) mismatch("a time", v, path);
+        return v.as_time();
+    } else if constexpr (std::is_same_v<T, datetime::datetime>) {
+        if (!v.is_datetime()) mismatch("a datetime", v, path);
+        return v.as_datetime();
     } else if constexpr (is_optional<T>::value) {
         if (v.is_null()) return T{};
         return T(decode<typename T::value_type>(v, path));
@@ -452,7 +509,7 @@ T decode(const Value& v, const std::string& path) {
         }
         return out;
     } else if constexpr (is_dict<T>::value) {
-        if (!v.is_dict()) mismatch("an object", v, path);
+        if (!v.is_dict()) mismatch(an_object(), v, path);
         T out;
         for (const auto& [key, item] : *v.obj_) {
             using V = std::remove_cvref_t<decltype(out[key])>;
@@ -638,6 +695,8 @@ inline void write(std::string& out, const Value& v, const WriteOptions& o, std::
             out += '}';
             return;
         }
+        default:  // a TOML date or time: Python's json can't write them either
+            raise("TypeError", std::string("Object of type ") + v.moment_type() + " is not JSON serializable");
     }
 }
 

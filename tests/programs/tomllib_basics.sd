@@ -1,0 +1,156 @@
+# tomllib: TOML 1.0 documents as dicts of values (the output matches python3's)
+import json
+import tomllib
+
+doc = '''
+# This is a TOML document
+title = "TOML Example"
+"quoted key" = 'literal \\n string'
+multi = """
+Roses are red\\tViolets are blue
+line \\
+    continued"""
+raw = \'\'\'
+C:\\Users\\nodejs\\templates\'\'\'
+escapes = "\\u00e9\\U0001F600 \\"quoted\\" \\\\"
+
+[owner]
+name = "Tom Preston-Werner"
+dob = 1979-05-27T07:32:00-08:00
+
+[numbers]
+int = +99
+neg = -17
+big = 9_223_372_036_854_775_807
+hex = 0xDEAD_BEEF
+oct = 0o755
+bin = 0b1101_0110
+float = 6.626e-34
+exp = 5e+22
+under = 224_617.445_991_228
+infs = [inf, -inf, +inf]
+zero = -0.0
+
+[dates]
+offset = 1979-05-27T00:32:00.999999+05:30
+utc = 1979-05-27T07:32:00Z
+local = 1979-05-27T07:32:00
+space = 1979-05-27 07:32:00.5
+day = 1979-05-27
+time = 07:32:00
+precise = 00:32:00.1234567
+
+[database]
+enabled = true
+ports = [ 8000, 8001, 8002, ]
+data = [ ["delta", "phi"], [3.14], [] ]
+temp_targets = { cpu = 79.5, case = 72.0 }
+mixed = [ 1, "two", { three = 3 }, [4], 1979-05-27 ]
+
+[servers]
+alpha.ip = "10.0.0.1"
+alpha.role = "frontend"
+
+[servers.beta]
+ip = "10.0.0.2"
+site."google.com" = true
+
+[[products]]
+name = "Hammer"
+sku = 738594937
+
+[[products]]  # empty table within the array
+
+[[products]]
+name = "Nail"
+sku = 284758393
+color = "gray"
+
+[[fruits]]
+name = "apple"
+
+[fruits.physical]
+color = "red"
+
+[[fruits.varieties]]
+name = "red delicious"
+
+[[fruits.varieties]]
+name = "granny smith"
+
+[[fruits]]
+name = "banana"
+'''
+
+data = tomllib.loads(doc)
+print(data)
+for key, value in data.items():
+    print(key, "=", value)
+print(data["owner"]["dob"], data["dates"]["day"], data["dates"]["time"])
+print(data["database"]["ports"][1], len(data["products"]), "color" in data["products"][2])
+for fruit in data["fruits"]:
+    print(fruit["name"], fruit.get("varieties"))
+print(sorted(data["numbers"].keys()))
+
+match data["database"]:
+    case {"ports": [int(first), *rest], "enabled": True}:
+        print("first port", first, "and", len(rest), "more")
+    case _:
+        print("no match")
+
+print(json.dumps(data["servers"], indent=2))
+try:
+    print(json.dumps(data["dates"]))
+except TypeError as e:
+    print("TypeError:", e)
+
+print(tomllib.loads(""), tomllib.loads("# just a comment\n\n"))
+print(tomllib.loads("a = 1\r\nb = 'two'\r\n"))
+print(tomllib.loads('nan = nan\n"inf" = -inf'))
+print(repr(tomllib.loads('ctrl = "\\b\\f\\r\\n"')["ctrl"]))
+
+with open("config.toml", "w") as f:
+    f.write('[server]\nhost = "localhost"\nport = 8080\n')
+with open("config.toml", "rb") as f:
+    config = tomllib.load(f)
+print(config)
+
+bad_documents = [
+    "a = 1\na = 2",
+    "a = ",
+    "a = tru",
+    "a = [1, 2",
+    "a = [1 2]",
+    "a = { b = 1, b = 2 }",
+    "a = { b = 1 }\na.c = 2",
+    "[a]\nb = 1\n[a]",
+    "a.b = 1\n[a.b]",
+    "[a]\nb.c = 1\n[a.b]",
+    "a = 1\n[a]",
+    "[[a]]\n[a]",
+    "a = [1]\n[[a]]",
+    "a = \"unterminated",
+    "a = 'no\nnewlines'",
+    "a = \"bad \\q escape\"",
+    "a = \"\\uD800\"",
+    "a = 1979-02-30",
+    "a = 01",
+    "a = 1__000",
+    "a = 1 b = 2",
+    "= 1",
+    "[table",
+    "[[array]",
+    "a = 1 # comment \x01",
+    "x = \"tab\tok\"\ny = \"bell\x07\"",
+    "key = # missing value",
+]
+for bad in bad_documents:
+    try:
+        print(tomllib.loads(bad))
+    except tomllib.TOMLDecodeError as e:
+        print("TOMLDecodeError:", e)
+
+try:
+    tomllib.loads("[a]\nx = 1\n[a]")
+except ValueError as e:  # a TOMLDecodeError is a ValueError
+    print("ValueError:", e)
