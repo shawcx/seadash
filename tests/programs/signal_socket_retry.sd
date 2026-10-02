@@ -1,0 +1,33 @@
+# A signal arriving while a socket call waits doesn't fail the call: it's retried, as in Python.
+import signal
+import socket
+import threading
+import time
+from types import FrameType
+
+alarmed = threading.Event()
+
+
+def on_alarm(signum: int, frame: FrameType | None) -> None:
+    alarmed.set()
+
+
+def connect_later(port: int) -> None:
+    time.sleep(1.5)
+    with socket.create_connection(("127.0.0.1", port)) as c:
+        c.sendall(b"hi")
+
+
+signal.signal(signal.SIGALRM, on_alarm)
+with socket.socket() as server:
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    server.settimeout(5)
+    port: int = server.getsockname()[1]
+    t = threading.Thread(target=connect_later, args=(port,))
+    t.start()
+    signal.alarm(1)  # (arrives while accept() is waiting)
+    conn, _ = server.accept()
+    with conn:
+        print("accepted", conn.recv(2), alarmed.is_set())
+    t.join()

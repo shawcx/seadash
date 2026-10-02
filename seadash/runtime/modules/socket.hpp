@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
 
 namespace sd::socket {
@@ -25,6 +26,27 @@ struct gaierror : OSError {
 using Address = std::tuple<std::string, std::int64_t>;
 
 [[noreturn]] inline void fail() { raise_os(errno, std::nullopt); }
+
+// A system call interrupted by a signal is tried again, as Python does (PEP 475).
+template <class F>
+auto retrying(F call) {
+    decltype(call()) r;
+    do r = call();
+    while (r < 0 && errno == EINTR);
+    return r;
+}
+// poll() for one fd, retried after a signal with the time that's left (-1 waits forever).
+inline int poll_one(int fd, short events, double timeout_s) {
+    using clock = std::chrono::steady_clock;
+    auto deadline = clock::now() + std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(timeout_s));
+    while (true) {
+        pollfd p{fd, events, 0};
+        int ms = timeout_s < 0 ? -1 : static_cast<int>(std::max<std::int64_t>(0,
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - clock::now()).count()));
+        int rc = ::poll(&p, 1, ms);
+        if (rc >= 0 || errno != EINTR) return rc;
+    }
+}
 
 [[noreturn]] inline void timed_out() { raise<TimeoutError>("timed out"); }
 
@@ -90,8 +112,7 @@ class Socket {
     void wait_for(short events) const {
         auto t = timeout();
         if (!t) return;
-        pollfd p{handle(), events, 0};
-        int rc = ::poll(&p, 1, static_cast<int>(*t * 1000));
+        int rc = poll_one(handle(), events, *t);
         if (rc == 0 && *t == 0) raise_os(EAGAIN, std::nullopt);  // non-blocking: BlockingIOError, like Python
         if (rc == 0) timed_out();
         if (rc < 0) fail();
@@ -146,7 +167,14 @@ public:
         sockaddr_storage sa = resolve(addr, state().family, state().type, false, len);
         int fd = handle();
         if (!timeout()) {
-            if (::connect(fd, reinterpret_cast<sockaddr*>(&sa), len) != 0) fail();
+            if (::connect(fd, reinterpret_cast<sockaddr*>(&sa), len) == 0) return;
+            if (errno != EINTR) fail();
+            // Interrupted by a signal: the connection goes on; wait for it, as Python does.
+            if (poll_one(fd, POLLOUT, -1) < 0) fail();
+            int err = 0;
+            socklen_t errlen = sizeof err;
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen);
+            if (err != 0) raise_os(err, std::nullopt);
             return;
         }
         // With a timeout: connect without blocking, then wait for the result.
@@ -159,8 +187,7 @@ public:
             raise_os(err, std::nullopt);
         }
         if (err == EINPROGRESS) {
-            pollfd p{fd, POLLOUT, 0};
-            int ready = ::poll(&p, 1, static_cast<int>(*timeout() * 1000));
+            int ready = poll_one(fd, POLLOUT, *timeout());
             if (ready == 0) {
                 fcntl(fd, F_SETFL, flags);
                 timed_out();
@@ -183,7 +210,7 @@ public:
         wait_for(POLLIN);
         sockaddr_storage sa{};
         socklen_t len = sizeof sa;
-        int fd = ::accept(handle(), reinterpret_cast<sockaddr*>(&sa), &len);
+        int fd = retrying([&] { return ::accept(handle(), reinterpret_cast<sockaddr*>(&sa), &len); });
         if (fd < 0) fail();
         return {adopt(fd, state().family, state().type, std::nullopt), from_sockaddr(sa)};  // blocking, as in Python
     }
@@ -192,7 +219,7 @@ public:
     std::int64_t send(const B& data) {
         const std::string& d = raw(data);
         wait_for(POLLOUT);
-        ssize_t n = ::send(handle(), d.data(), d.size(), MSG_NOSIGNAL);  // EPIPE, not SIGPIPE, like Python
+        ssize_t n = retrying([&] { return ::send(handle(), d.data(), d.size(), MSG_NOSIGNAL); });  // (EPIPE, not SIGPIPE)
         if (n < 0) fail();
         return n;
     }
@@ -202,7 +229,7 @@ public:
         std::size_t sent = 0;
         while (sent < d.size()) {
             wait_for(POLLOUT);
-            ssize_t n = ::send(handle(), d.data() + sent, d.size() - sent, MSG_NOSIGNAL);
+            ssize_t n = retrying([&] { return ::send(handle(), d.data() + sent, d.size() - sent, MSG_NOSIGNAL); });
             if (n < 0) fail();
             sent += static_cast<std::size_t>(n);
         }
@@ -211,7 +238,7 @@ public:
         if (bufsize < 0) raise("ValueError", "negative buffersize in recv");
         wait_for(POLLIN);
         std::string buf(static_cast<std::size_t>(bufsize), '\0');
-        ssize_t n = ::recv(handle(), buf.data(), buf.size(), 0);
+        ssize_t n = retrying([&] { return ::recv(handle(), buf.data(), buf.size(), 0); });
         if (n < 0) fail();
         buf.resize(static_cast<std::size_t>(n));  // b"" means the other side closed
         return bytes(buf);
@@ -222,7 +249,7 @@ public:
         socklen_t len = 0;
         sockaddr_storage sa = resolve(addr, state().family, state().type, false, len);
         wait_for(POLLOUT);
-        ssize_t n = ::sendto(handle(), d.data(), d.size(), MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&sa), len);
+        ssize_t n = retrying([&] { return ::sendto(handle(), d.data(), d.size(), MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&sa), len); });
         if (n < 0) fail();
         return n;
     }
@@ -231,7 +258,7 @@ public:
         std::string buf(static_cast<std::size_t>(bufsize), '\0');
         sockaddr_storage sa{};
         socklen_t len = sizeof sa;
-        ssize_t n = ::recvfrom(handle(), buf.data(), buf.size(), 0, reinterpret_cast<sockaddr*>(&sa), &len);
+        ssize_t n = retrying([&] { return ::recvfrom(handle(), buf.data(), buf.size(), 0, reinterpret_cast<sockaddr*>(&sa), &len); });
         if (n < 0) fail();
         buf.resize(static_cast<std::size_t>(n));
         return {bytes(buf), from_sockaddr(sa)};
