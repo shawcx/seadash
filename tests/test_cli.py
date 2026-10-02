@@ -174,3 +174,108 @@ def test_debug_builds_print_tracebacks(tmp_path):
     assert r.stderr.replace(str(tmp_path.resolve()) + "/", "DIR/") == TRACEBACK_EXPECTED
     r = sd(["run", "main.sd"], "", tmp_path)  # optimized: no tracebacks
     assert "Traceback" not in r.stderr and r.stderr.endswith("KeyError: 'again'\n")
+
+
+# Generators (a paused one isn't on the stack), `yield from`, a @contextmanager, a generator
+# method and lambdas each have their frame; a caught exception's traceback starts at the handler.
+# Python's also shows contextlib's __exit__ frame, and says "division by zero".
+TRACEBACK_GENERATORS = """\
+import logging
+from contextlib import contextmanager
+from typing import Iterator
+
+
+def numbers(n: int) -> Iterator[int]:
+    for i in range(n):
+        if i == 2:
+            raise ValueError("two")
+        yield i
+
+
+def delegate() -> Iterator[int]:
+    yield from numbers(5)
+
+
+@contextmanager
+def managed() -> Iterator[None]:
+    yield
+    raise KeyError("exit")
+
+
+class Box:
+    items: list[int]
+
+    def __init__(self, items: list[int]) -> None:
+        self.items = items
+
+    def each(self) -> Iterator[int]:
+        for x in self.items:
+            yield 10 // x
+
+
+def main() -> None:
+    paused = numbers(5)
+    print(next(paused))
+    try:
+        for x in delegate():
+            print(x)
+    except ValueError:
+        logging.exception("delegate")
+    try:
+        with managed():
+            print("body")
+    except KeyError:
+        logging.exception("managed")
+    try:
+        print(list(Box([5, 0]).each()))
+    except ZeroDivisionError:
+        logging.exception("method")
+    counts = {"a": 1}
+    print(sorted(["a"], key=lambda k: counts[k]))
+    print(sorted(["a", "b"], key=lambda k: counts[k]))
+
+
+main()
+"""
+
+TRACEBACK_GENERATORS_EXPECTED = """\
+ERROR:root:delegate
+Traceback (most recent call last):
+  File "DIR/main.sd", line 38, in main
+    for x in delegate():
+  File "DIR/main.sd", line 14, in delegate
+    yield from numbers(5)
+  File "DIR/main.sd", line 9, in numbers
+    raise ValueError("two")
+ValueError: two
+ERROR:root:managed
+Traceback (most recent call last):
+  File "DIR/main.sd", line 43, in main
+    with managed():
+  File "DIR/main.sd", line 20, in managed
+    raise KeyError("exit")
+KeyError: 'exit'
+ERROR:root:method
+Traceback (most recent call last):
+  File "DIR/main.sd", line 48, in main
+    print(list(Box([5, 0]).each()))
+  File "DIR/main.sd", line 31, in each
+    yield 10 // x
+ZeroDivisionError: integer division or modulo by zero
+Traceback (most recent call last):
+  File "DIR/main.sd", line 56, in <module>
+    main()
+  File "DIR/main.sd", line 53, in main
+    print(sorted(["a", "b"], key=lambda k: counts[k]))
+  File "DIR/main.sd", line 53, in <lambda>
+    print(sorted(["a", "b"], key=lambda k: counts[k]))
+KeyError: 'b'
+"""
+
+
+def test_debug_tracebacks_show_generators_and_lambdas(tmp_path):
+    (tmp_path / "main.sd").write_text(TRACEBACK_GENERATORS)
+    r = sd(["run", "--debug", "main.sd"], "", tmp_path)
+    assert r.returncode == 1
+    assert r.stdout == "0\n0\n1\nbody\n['a']\n"
+    assert r.stderr.replace(str(tmp_path.resolve()) + "/", "DIR/") == TRACEBACK_GENERATORS_EXPECTED

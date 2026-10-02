@@ -207,7 +207,7 @@ class CodeGen:
         self.lambda_self = 0
         self.source_path = "<string>"
         self.source = ""
-        self.traced = True  # (not in a coroutine: a generator's frame would stay on the stack at each yield)
+        self.with_line = 0  # (the `with` statement being generated)
         # Structs/classes get JSON conversion hooks when the program imports json or tomllib (anywhere).
         self.uses_json = uses_json if uses_json is not None else any(m.name in ("json", "tomllib") for m in info.imports)
         # Classes get copy.copy / copy.deepcopy hooks when the program imports copy (anywhere).
@@ -972,9 +972,8 @@ class CodeGen:
     def function_body(self, fn: FuncInfo, header: str, coroutine_self: bool = False) -> None:
         self.func = fn
         self.open(header)
-        saved_traced, self.traced = self.traced, not has_yield(fn.node.body)
-        if self.traced:
-            self.line(f"SD_FRAME({cpp_string(fn.name)[:-1]});")
+        frame = "SD_GEN_FRAME" if has_yield(fn.node.body) else "SD_FRAME"  # (a generator's leaves the stack at each yield)
+        self.line(f"{frame}({cpp_string(fn.name)[:-1]});")
         if fn.owner is not None and fn.name != "__init__" and not is_static(fn) and is_synchronized(fn.owner):
             self.line("std::lock_guard<std::recursive_mutex> sd_lock(this->sd_mutex);  // Synchronized")
         if coroutine_self:  # a generator method's body reaches its object through sd_self
@@ -988,7 +987,6 @@ class CodeGen:
             self.lambda_self -= 1
         if isinstance(fn.ret, OptionalType) and not ends_with_return(fn.node.body):
             self.line("return std::nullopt;")
-        self.traced = saved_traced
         self.close()
         self.line()
 
@@ -1035,9 +1033,15 @@ class CodeGen:
     # Statements
     # =========================================================================
 
+    def line_on_exit(self, line: int) -> None:
+        """Leaving this C++ block (an iteration, a `with` body) sets the frame's line back to the
+        statement's: what runs next (the generator's next item, __exit__) is in a traceback at it."""
+        if line:
+            self.line(f"SD_LINE_ON_EXIT({line});")
+
     def block(self, stmts: list[A.Stmt]) -> None:
         for s in stmts:
-            if self.traced and not (isinstance(s, A.ExprStmt) and isinstance(s.value, A.StrLit)):
+            if not (isinstance(s, A.ExprStmt) and isinstance(s.value, A.StrLit)):
                 self.line(f"SD_LINE({s.loc.line});")  # (for a traceback: nothing unless SD_TRACEBACK)
             self.stmt(s)
 
@@ -1101,13 +1105,14 @@ class CodeGen:
             case A.Try():
                 self.try_stmt(s)
             case A.With(items, body):
+                self.with_line = s.loc.line
                 self.with_stmt(items, body)
             case A.If():
                 self.if_stmt(s)
             case A.Match():
                 self.match_stmt(s)
             case A.While(test, body, orelse):
-                self.loop(f"while ({unwrapped(self.cond(test))})", body, orelse)
+                self.loop(f"while ({unwrapped(self.cond(test))})", body, orelse, line=s.loc.line)
             case A.For(target, it, body, orelse):
                 v = self.fresh("v")
                 elem = element_type(it.ty)
@@ -1116,7 +1121,8 @@ class CodeGen:
                     prologue = lambda: self.line(f"[[maybe_unused]] auto& {ident(target.sym.cpp_name)} = {v};")
                 else:
                     prologue = lambda: self.assign(target, v, elem)
-                self.loop(f"for (auto&& {v} : sd::iter({self.expr(it)}))", body, orelse, prologue=prologue)
+                self.loop(f"for (auto&& {v} : sd::iter({self.expr(it)}))", body, orelse, prologue=prologue,
+                          line=s.loc.line)
             case _:
                 raise NotImplementedError(f"codegen for {type(s).__name__}")
 
@@ -1179,14 +1185,11 @@ class CodeGen:
         if self_names:
             self.lambda_self += 1
         self.open(header)
-        saved_traced, self.traced = self.traced, not has_yield(s.body)
-        if self.traced:
-            self.line(f"SD_FRAME({cpp_string(info.name)[:-1]});")
+        self.line(f"SD_FRAME({cpp_string(info.name)[:-1]});")
         self.hoist(info.locals)
         self.hoist_makers(s.body)
         self.cell_params(info)
         self.block(s.body)
-        self.traced = saved_traced
         if isinstance(info.ret, OptionalType) and not ends_with_return(s.body):
             self.line("return std::nullopt;")
         self.close("; };" if snapshot is not None and not recursive else ";")
@@ -1203,19 +1206,20 @@ class CodeGen:
 
     def yield_stmt(self, value: A.Expr | None, from_: bool) -> None:
         elem = self.func.ret.elem
+        # (SD_SUSPEND/SD_RESUME: the generator's frame is off the stack while it's paused)
         if self.func.context_manager and elem == NONE:  # (a @contextmanager's bare `yield`)
             if value is not None:
                 self.line(f"{self.expr(value)};")
-            self.line("co_yield std::monostate{};")
+            self.line("SD_SUSPEND; co_yield std::monostate{}; SD_RESUME;")
             return
         if from_:
             v = self.fresh("y")
             source = element_type(value.ty) if not hasattr(value, "tuple_elem") else value.tuple_elem
-            self.line(f"for (auto&& {v} : sd::iter({self.expr(value)})) co_yield {self.coerce(v, source, elem)};")
+            self.line(f"for (auto&& {v} : sd::iter({self.expr(value)})) {{ SD_SUSPEND; co_yield {self.coerce(v, source, elem)}; SD_RESUME; }}")
         elif value is None:
-            self.line(f"co_yield {self.cpp_type(elem)}{{}};")
+            self.line(f"SD_SUSPEND; co_yield {self.cpp_type(elem)}{{}}; SD_RESUME;")
         else:
-            self.line(f"co_yield {self.expr_as(value, elem)};")
+            self.line(f"{{ auto sd_y = {self.expr_as(value, elem)}; SD_SUSPEND; co_yield std::move(sd_y); SD_RESUME; }}")
 
     def return_stmt(self, value: A.Expr | None) -> None:
         if self.func is not None and self.func.generator:
@@ -1323,6 +1327,7 @@ class CodeGen:
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
         self.open("try")
+        self.line_on_exit(self.with_line)
         self.with_stmt(items[1:], body)
         self.depth -= 1
         if exit_param is not None:
@@ -1361,6 +1366,7 @@ class CodeGen:
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {ctx}.sd_exit(nullptr); }});")
         self.open("try")
+        self.line_on_exit(self.with_line)
         self.with_stmt(rest, body)
         self.depth -= 1
         self.line("} catch (...) {")
@@ -1667,12 +1673,13 @@ class CodeGen:
             binds += sub_binds
         return tests, binds
 
-    def loop(self, header: str, body: list[A.Stmt], orelse: list[A.Stmt], prologue=None) -> None:
+    def loop(self, header: str, body: list[A.Stmt], orelse: list[A.Stmt], prologue=None, line: int = 0) -> None:
         """Python's loop `else:` runs unless the loop was left by `break`, so
         in loops with an else, `break` jumps past the else block."""
         label = [self.fresh("break") if orelse else None, False]
         self.loop_labels.append(label)
         self.open(header)
+        self.line_on_exit(line)  # (the next item or test is the loop's line, in a traceback)
         if prologue:
             prologue()
         self.block(body)
@@ -2082,10 +2089,11 @@ class CodeGen:
         finally:
             if uses_self:
                 self.lambda_self -= 1
+        frame = f'SD_FRAME("<lambda>"); SD_LINE({e.loc.line});'  # (its own frame in a traceback, debug builds)
         if t.ret == NONE:  # `lambda: print(x)` or `lambda s: None`: evaluate for effect only
             statement = "" if isinstance(e.body, A.NoneLit) else f" {body};"
-            return f"{capture}({params}) mutable -> void {{{statement} }}"
-        return f"{capture}({params}) mutable -> {self.cpp_type(t.ret)} {{ return {body}; }}"
+            return f"{capture}({params}) mutable -> void {{ {frame}{statement} }}"
+        return f"{capture}({params}) mutable -> {self.cpp_type(t.ret)} {{ {frame} return {body}; }}"
 
     def member(self, obj: A.Expr, m: FuncInfo) -> str:
         """`obj.m` / `this->m`, ready to be called."""

@@ -11,7 +11,9 @@ ls tests/programs/*.sd | xargs -P"$(nproc)" -I{} sh -c '
     n=$(basename {} .sd)
     /venv/bin/sd emit {} > /tmp/w/$n.cpp 2>/dev/null || exit 0
     g++-14 -std=c++23 -fwrapv -ffp-contract=off -Wall -Wextra -fsyntax-only -Iseadash/runtime /tmp/w/$n.cpp 2> /tmp/w/$n.err ||
-        echo "does not compile: $n"'
+        echo "does not compile: $n"
+    g++-14 -std=c++23 -fwrapv -ffp-contract=off -DSD_TRACEBACK -Wall -Wextra -fsyntax-only -Iseadash/runtime /tmp/w/$n.cpp \
+        2>> /tmp/w/$n.err || echo "does not compile with tracebacks: $n"'
 warned=$(grep -l "warning:" /tmp/w/*.err 2>/dev/null | wc -l)
 echo "$(ls /tmp/w/*.cpp | wc -l) programs, $warned with warnings"
 grep -h "warning:" /tmp/w/*.err 2>/dev/null | sed -E 's/^[^ ]*: warning: //' | sort | uniq -c | sort -rn | head -20
@@ -23,7 +25,8 @@ run() {  # run SANITIZER PROGRAM: build it with the sanitizer, run it, compare w
     libs=$(/venv/bin/python -c "from pathlib import Path; from seadash.driver import translate
 print(' '.join('-l' + l for l in translate(Path('$f').read_text(), Path('$f')).libs))")
     /venv/bin/sd emit "$f" > /tmp/$n.cpp
-    if ! g++-14 -std=c++23 -fwrapv -ffp-contract=off -g -O1 -fsanitize=$san -Iseadash/runtime /tmp/$n.cpp \
+    # (with the debug build's tracebacks, which keep frames on the stack: more to check)
+    if ! g++-14 -std=c++23 -fwrapv -ffp-contract=off -DSD_TRACEBACK -g -O1 -fsanitize=$san -Iseadash/runtime /tmp/$n.cpp \
             -o /tmp/$n.$san $libs 2> /tmp/$n.build; then
         echo "$san $n: does not build"; return
     fi

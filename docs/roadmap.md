@@ -60,7 +60,7 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
   context managers. Generators can't `yield` in an `except`/`finally` block (C++ can't suspend there).
 - Functions: default values in nested functions and lambdas, and keywords or defaults when
   calling a function held in a parameter, field or container (its signature isn't known there).
-- Tracebacks (debug builds): frames for generators and lambdas, and Python's `~~~^^^` markers.
+- Tracebacks (debug builds): Python's `~~~^^^` markers.
 - `signal`: `KeyboardInterrupt` and other exceptions raised in the main thread by a handler (handlers run
   on their own thread); `setitimer`, `siginterrupt`, `set_wakeup_fd`, `sigwait`, `pthread_sigmask`,
   `pthread_kill`, `Handlers`; signal names only one platform has (`SIGINFO`, `SIGRTMIN`...).

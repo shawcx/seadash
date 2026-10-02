@@ -80,6 +80,40 @@ struct Scope {
     Scope(const Scope&) = delete;
     Scope& operator=(const Scope&) = delete;
 };
+// A generator's frame: on the stack while its body runs, off it at each yield (SD_SUSPEND) until
+// it's resumed (SD_RESUME), and never touched if the generator is dropped while it's paused.
+struct GenScope {
+    Frame frame;
+    bool linked = true;
+    GenScope(const char* func, const char* file, const char* const* lines, std::size_t nlines)
+        : frame{func, file, lines, nlines, 0, top} {
+        top = &frame;
+    }
+    void suspend() {
+        if (linked) top = frame.prev;
+        linked = false;
+    }
+    void resume() {
+        if (!linked) {
+            frame.prev = top;
+            top = &frame;
+        }
+        linked = true;
+    }
+    ~GenScope() {
+        if (linked) top = frame.prev;
+    }
+    GenScope(const GenScope&) = delete;
+    GenScope& operator=(const GenScope&) = delete;
+};
+// Sets the frame's line when a block is left (SD_LINE_ON_EXIT): what runs next belongs to the
+// statement that owns the block (a loop fetching its next item, a `with` calling __exit__).
+struct LineOnExit {
+    std::int64_t line;
+    ~LineOnExit() {
+        if (top) top->line = line;
+    }
+};
 struct Record {
     std::string func, file, text;
     std::int64_t line;
@@ -103,10 +137,18 @@ inline std::vector<Record> capture() {
 
 #ifdef SD_TRACEBACK
 #define SD_FRAME(func) ::sd::trace::Scope sd_frame(func, sd_source_file, sd_source_lines, std::size(sd_source_lines))
+#define SD_GEN_FRAME(func) ::sd::trace::GenScope sd_frame(func, sd_source_file, sd_source_lines, std::size(sd_source_lines))
+#define SD_SUSPEND sd_frame.suspend()
+#define SD_RESUME sd_frame.resume()
 #define SD_LINE(n) (::sd::trace::top ? (void)(::sd::trace::top->line = (n)) : (void)0)
+#define SD_LINE_ON_EXIT(n) ::sd::trace::LineOnExit sd_line_on_exit{n}
 #else
 #define SD_FRAME(func) ((void)0)
+#define SD_GEN_FRAME(func) ((void)0)
+#define SD_SUSPEND ((void)0)
+#define SD_RESUME ((void)0)
 #define SD_LINE(n) ((void)0)
+#define SD_LINE_ON_EXIT(n) ((void)0)
 #endif
 
 struct BaseException : std::enable_shared_from_this<BaseException> {
@@ -197,14 +239,24 @@ struct Thrown {
 };
 
 // "Traceback (most recent call last):" and its frames, if it has them (debug builds).
-inline std::string format_traceback(const BaseException& e) {
-    if (e.traceback.empty()) return "";
+// `skip`: leave out the outermost records (a caught exception's traceback starts at the frame
+// that caught it: see caught_traceback).
+inline std::string format_traceback(const BaseException& e, std::size_t skip = 0) {
+    if (e.traceback.size() <= skip) return "";
     std::string out = "Traceback (most recent call last):\n";
-    for (const auto& r : e.traceback) {
+    for (std::size_t i = skip; i < e.traceback.size(); i++) {
+        const auto& r = e.traceback[i];
         out += "  File \"" + r.file + "\", line " + std::to_string(r.line) + ", in " + r.func + "\n";
         if (!r.text.empty()) out += "    " + r.text + "\n";
     }
     return out;
+}
+// The traceback of an exception being handled, as Python has it: from the handling frame (the
+// current one) down, without that frame's callers.
+inline std::string caught_traceback(const BaseException& e) {
+    std::size_t callers = 0;
+    for (auto* f = trace::top; f && f->prev; f = f->prev) callers++;
+    return format_traceback(e, callers < e.traceback.size() ? callers : 0);
 }
 
 template <class E>
