@@ -2994,3 +2994,11 @@ def test_calendar_types_and_errors():
         "calendar.timegm() takes a (year, month, day, hour, minute, second) tuple of ints, not tuple[str, int]")
     assert err("import calendar\nc = calendar.TextCalendar()\nc.formatmonth(2024)\n").message == (
         "calendar.TextCalendar.formatmonth() is missing argument 'themonth'")
+
+
+def test_pprint_takes_any_value():
+    assert variables(ok("import pprint\ns = pprint.pformat({'a': [1, 2]}, width=20)\n"
+                        "p = pprint.PrettyPrinter(indent=2)\nt = p.pformat((1, 'x'))\n")) == [
+        "s: str", "p: pprint.PrettyPrinter", "t: str"]
+    assert err("import pprint\npprint.pprint([1], stream='out')\n").message == (
+        "pprint.pprint() argument 'stream' must be TextIO?, not str")

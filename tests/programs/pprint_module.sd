@@ -1,0 +1,45 @@
+# pprint: values on one line if they fit, else containers one item per line, long strings in pieces.
+import io
+import pprint
+from dataclasses import dataclass
+
+data = {"tags": ["compiler", "python", "c++"], "names": ["seadash", "sd"],
+        "description": ["A language with Python's syntax that compiles to C++23, so programs run fast."],
+        "empty": [], "matrix": [str([i * j for j in range(8)]) for i in range(5)]}
+matrix = [[i * j for j in range(8)] for i in range(5)]
+pprint.pprint(matrix, width=30)
+pprint.pprint(matrix, width=20, compact=True)
+pprint.pprint(data)
+pprint.pprint(data, width=40)
+pprint.pprint(data, width=60, compact=True)
+pprint.pprint(data, depth=1)
+pprint.pprint(data, indent=4, width=50)
+pprint.pp(data, width=50)
+no_items: dict[str, int] = {}
+print(pprint.pformat([1, 2, 3]), pprint.pformat((1,)), pprint.pformat(no_items), pprint.pformat({3, 1, 2}))
+print(pprint.pformat(list(range(40))))
+print(pprint.pformat(list(range(40)), compact=True))
+print(pprint.pformat(1234567890, underscore_numbers=True), pprint.saferepr({"b": 1, "a": 2}))
+print(pprint.pformat("word " * 30))
+print(pprint.pformat(("a long tuple item", "another long one", 1234567890123456789, 3.14159), width=30))
+print(pprint.pformat({i: str(i) * i for i in range(12)}))
+print(pprint.isreadable([(1, "a"), (2, "b")]), pprint.isrecursive([1]))
+pr = pprint.PrettyPrinter(width=30, sort_dicts=False)
+print(pr.pformat({"z": [1], "a": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}))
+out = io.StringIO()
+pprint.pprint({"x": list(range(30))}, stream=out)
+print(repr(out.getvalue()))
+
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+
+points = [Point(i, i * i) for i in range(12)]
+pprint.pprint(points, width=40)
+try:
+    pprint.pformat([1], width=0)
+except ValueError as e:
+    print("ValueError:", e)
