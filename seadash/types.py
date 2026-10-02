@@ -60,6 +60,8 @@ LOCKED = "locked"  # locks itself: every thread uses the same one
 
 SOCKET = BuiltinClass("socket", "sd::socket::Socket", LOCKED)
 TYPE_OBJECT = BuiltinClass("type", "sd::type_object", IMMUTABLE)  # type(x): its __name__, compared with classes
+TARFILE = BuiltinClass("tarfile.TarFile", "sd::tarfile::TarFile")  # a handle on the archive; iterating gives TarInfos
+TARINFO = BuiltinClass("tarfile.TarInfo", "sd::tarfile::TarInfo")  # a handle, with settable fields
 PATH = BuiltinClass("Path", "sd::pathlib::Path", IMMUTABLE)
 TEXT_WRAPPER = BuiltinClass("TextWrapper", "sd::textwrap::TextWrapper")
 STR_TEMPLATE = BuiltinClass("Template", "sd::stringmod::Template")
@@ -896,6 +898,8 @@ def element_type(t: Type) -> Type | None:
             return STR
         case Prim("bytes") | Prim("bytearray"):
             return INT
+        case _ if t == TARFILE:
+            return TARINFO
         case Prim("json.Value"):
             return JSON_VALUE  # iterating a JSON array
         case FileType(binary):

@@ -1,0 +1,177 @@
+# tarfile: writing USTAR, GNU and PAX archives (byte for byte Python's), reading them back,
+# compression and streams, adding a directory tree, extracting with the filters, and errors.
+import hashlib
+import io
+import os
+import shutil
+import tarfile
+import tempfile
+from pathlib import Path
+
+
+def build(fmt: int) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=fmt) as tf:
+        for name, data in (("hello.txt", b"Hello, tar!\n"), ("dir/" + "long" * 30 + ".txt", b"x" * 1000),
+                           ("café.txt", b"unicode")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mtime = 1700000000
+            info.mode = 0o640
+            info.uname = "matt"
+            info.gname = "staff"
+            tf.addfile(info, io.BytesIO(data))
+        d = tarfile.TarInfo("dir")
+        d.type = tarfile.DIRTYPE
+        d.mode = 0o755
+        d.mtime = 1700000000
+        tf.addfile(d)
+        link = tarfile.TarInfo("link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "hello.txt"
+        link.mtime = 1700000000
+        tf.addfile(link)
+    return buf.getvalue()
+
+
+def tree(root: str) -> list[str]:
+    out: list[str] = []
+    for p in Path(root).rglob("*"):
+        kind = "L" if p.is_symlink() else "D" if p.is_dir() else "F"
+        out.append(kind + " " + str(p.relative_to(root)))
+    return sorted(out)
+
+
+def skip_logs(t: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    if t.name.endswith(".log"):
+        return None
+    t.uname = "nobody"
+    return t
+
+
+def formats() -> None:
+    for fmt in (tarfile.USTAR_FORMAT, tarfile.GNU_FORMAT, tarfile.PAX_FORMAT):
+        try:
+            data = build(fmt)
+        except ValueError as e:
+            print(fmt, "ValueError:", e)
+            continue
+        print(fmt, len(data), hashlib.sha256(data).hexdigest()[:16])
+        with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+            print(tf.getnames())
+            for m in tf:
+                print(" ", m.name[:20], m.size, m.mode, m.isfile(), m.isdir(), m.issym(), m.type, m.uname, m.linkname, int(m.mtime))
+            f = tf.extractfile("hello.txt")
+            assert f is not None
+            lf = tf.extractfile("link")
+            assert lf is not None
+            print(f.read(), tf.extractfile("dir"), lf.read())
+            print(sorted(tf.getmember("café.txt").pax_headers.items()))
+
+    data = build(tarfile.PAX_FORMAT)
+    for mode in ("w:gz", "w:bz2", "w:xz"):
+        out = io.BytesIO()
+        with tarfile.open(fileobj=out, mode=mode) as tf:
+            for m in tarfile.open(fileobj=io.BytesIO(data)):
+                src = tarfile.open(fileobj=io.BytesIO(data)).extractfile(m) if m.isfile() else None
+                tf.addfile(m, src)
+        with tarfile.open(fileobj=io.BytesIO(out.getvalue())) as tf:
+            print(mode, tf.getnames() == ["hello.txt", "dir/" + "long" * 30 + ".txt", "café.txt", "dir", "link"])
+        print(tarfile.is_tarfile(io.BytesIO(out.getvalue())), tarfile.is_tarfile(io.BytesIO(b"nope" * 200)))
+
+
+def on_disk() -> None:
+    tmp = tempfile.mkdtemp()
+    src = os.path.join(tmp, "src")
+    os.makedirs(os.path.join(src, "sub", "deeper"))
+    with open(os.path.join(src, "a.txt"), "w") as f:
+        f.write("alpha\n")
+    with open(os.path.join(src, "sub", "b.txt"), "w") as f:
+        f.write("beta\n" * 300)
+    with open(os.path.join(src, "sub", "noise.log"), "w") as f:
+        f.write("log\n")
+    os.symlink("a.txt", os.path.join(src, "link"))
+    os.chmod(os.path.join(src, "a.txt"), 0o640)
+
+    archive = os.path.join(tmp, "out.tar.gz")
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(src, arcname="proj", filter=skip_logs)
+        print(tf.name == archive, tf.mode)
+    with tarfile.open(archive) as tf:
+        names = tf.getnames()
+        print(names)
+        print([(m.name, m.uname, oct(m.mode), m.issym(), m.linkname) for m in tf.getmembers() if m.name.endswith("a.txt") or m.name.endswith("link")])
+        tf.list(verbose=False)
+        dest = os.path.join(tmp, "dest")
+        tf.extractall(dest)
+        print(tree(dest))
+        print(oct(Path(dest, "proj", "a.txt").stat().st_mode & 0o777), Path(dest, "proj", "link").resolve().name)
+        tf.extract("proj/sub/b.txt", os.path.join(tmp, "one"))
+        print(tree(os.path.join(tmp, "one")))
+        try:
+            tf.getmember("missing")
+        except KeyError as e:
+            print("KeyError", e)
+
+    # append, then streams
+    plain = os.path.join(tmp, "plain.tar")
+    with tarfile.open(plain, "w") as tf:
+        tf.add(os.path.join(src, "a.txt"), arcname="a.txt")
+    with tarfile.open(plain, "a") as tf:
+        tf.add(os.path.join(src, "sub", "b.txt"), arcname="b.txt")
+    with tarfile.open(plain) as tf:
+        print(tf.getnames())
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w|gz") as tf:
+        tf.add(os.path.join(src, "a.txt"), arcname="streamed.txt")
+    for mode in ("r|gz", "r|*", "r:gz", "r"):
+        with tarfile.open(fileobj=io.BytesIO(stream.getvalue()), mode=mode) as tf:
+            for m in tf:
+                f = tf.extractfile(m)
+                assert f is not None
+                print(mode, m.name, f.read())
+
+    # hostile archives, and the filters
+    evil = io.BytesIO()
+    with tarfile.open(fileobj=evil, mode="w") as tf:
+        for name, kind, link in (("../escape.txt", tarfile.REGTYPE, ""), ("/abs.txt", tarfile.REGTYPE, ""),
+                                 ("out", tarfile.SYMTYPE, "../../etc"), ("fifo", tarfile.FIFOTYPE, "")):
+            t = tarfile.TarInfo(name)
+            t.type = kind
+            t.linkname = link
+            tf.addfile(t)
+    with tarfile.open(fileobj=io.BytesIO(evil.getvalue())) as tf:
+        target = os.path.join(tmp, "evil")
+        for m in tf.getmembers():
+            try:
+                tf.extract(m, target)
+                print("extracted", m.name)
+            except tarfile.FilterError as e:
+                real = str(Path(tmp).resolve())
+                print(type(e).__name__, str(e).replace(real, "TMP").replace(os.path.dirname(real), "PARENT"))
+        tf.extract("/abs.txt", target, filter="tar")
+        print(tree(target))
+        try:
+            tf.extract("fifo", target, filter="nope")
+        except ValueError as e:
+            print("ValueError", e)
+        tf.extractall(os.path.join(tmp, "custom"), filter=lambda m, p: m if m.name == "fifo" else None)
+        print(tree(os.path.join(tmp, "custom")))
+
+    for bad in (b"", b"x" * 100, b"\0" * 1024, b"garbage" * 200):
+        try:
+            tarfile.open(fileobj=io.BytesIO(bad))
+        except tarfile.ReadError as e:
+            print("ReadError", str(e).splitlines()[0])
+    try:
+        tarfile.open(fileobj=io.BytesIO(), mode="q")
+    except ValueError as e:
+        print("ValueError", e)
+    t = tarfile.TarInfo("x")
+    r = t.replace(name="y", mode=0o600)
+    print(t.name, r.name, oct(r.mode), len(t.tobuf()), t.isreg(), r.isdir())
+    shutil.rmtree(tmp)
+
+
+formats()
+on_disk()

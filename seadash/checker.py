@@ -2066,6 +2066,8 @@ class Checker:
             return WithInfo("tempdir", STR, None, False)
         if t == builtins.ZIPFILE:  # `with ZipFile(path, "w") as zf:` closes it (writing its directory) at the end
             return WithInfo("zipfile", t, None, False)
+        if t == builtins.TARFILE:  # `with tarfile.open(...) as tf:` closes it (without the end blocks after an error)
+            return WithInfo("tarfile", t, None, False)
         if t == SQLITE_CONNECTION:  # `with conn:` commits, or rolls back if the block raised
             return WithInfo("connection", t, None, False)
         if isinstance(t, HTTPServerType):  # `with HTTPServer(...) as server:` closes it at the end

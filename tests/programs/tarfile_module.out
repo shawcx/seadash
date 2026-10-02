@@ -1,0 +1,55 @@
+0 ValueError: name is too long
+1 10240 68340ec169e276d6
+['hello.txt', 'dir/longlonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglong.txt', 'café.txt', 'dir', 'link']
+  hello.txt 12 416 True False False b'0' matt  1700000000
+  dir/longlonglonglong 1000 416 True False False b'0' matt  1700000000
+  café.txt 7 416 True False False b'0' matt  1700000000
+  dir 0 493 False True False b'5'   1700000000
+  link 0 420 False False True b'2'  hello.txt 1700000000
+b'Hello, tar!\n' None b'Hello, tar!\n'
+[]
+2 10240 ad56cb9fedc78197
+['hello.txt', 'dir/longlonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglong.txt', 'café.txt', 'dir', 'link']
+  hello.txt 12 416 True False False b'0' matt  1700000000
+  dir/longlonglonglong 1000 416 True False False b'0' matt  1700000000
+  café.txt 7 416 True False False b'0' matt  1700000000
+  dir 0 493 False True False b'5'   1700000000
+  link 0 420 False False True b'2'  hello.txt 1700000000
+b'Hello, tar!\n' None b'Hello, tar!\n'
+[('path', 'café.txt')]
+w:gz True
+True False
+w:bz2 True
+True False
+w:xz True
+True False
+True w
+['proj', 'proj/a.txt', 'proj/link', 'proj/sub', 'proj/sub/b.txt', 'proj/sub/deeper']
+[('proj/a.txt', 'nobody', '0o640', False, ''), ('proj/link', 'nobody', '0o755', True, 'a.txt')]
+proj/ 
+proj/a.txt 
+proj/link 
+proj/sub/ 
+proj/sub/b.txt 
+proj/sub/deeper/ 
+['D proj', 'D proj/sub', 'D proj/sub/deeper', 'F proj/a.txt', 'F proj/sub/b.txt', 'L proj/link']
+0o640 a.txt
+['D proj', 'D proj/sub', 'F proj/sub/b.txt']
+KeyError "filename 'missing' not found"
+['a.txt', 'b.txt']
+r|gz streamed.txt b'alpha\n'
+r|* streamed.txt b'alpha\n'
+r:gz streamed.txt b'alpha\n'
+r streamed.txt b'alpha\n'
+OutsideDestinationError '../escape.txt' would be extracted to 'TMP/escape.txt', which is outside the destination
+extracted /abs.txt
+LinkOutsideDestinationError 'out' would link to 'PARENT/etc', which is outside the destination
+SpecialFileError 'fifo' is a special file
+['F abs.txt']
+ValueError filter 'nope' not found
+['F fifo']
+ReadError file could not be opened successfully:
+ReadError file could not be opened successfully:
+ReadError file could not be opened successfully:
+ValueError undiscernible mode
+x y 0o600 512 True False

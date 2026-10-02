@@ -3050,6 +3050,27 @@ def test_bytearray_types_and_errors():
         assert err(source + "\n").message == message, source
 
 
+def test_tarfile_types_and_errors():
+    assert variables(ok("import tarfile\ntf = tarfile.open('a.tar')\nnames = tf.getnames()\nm = tf.getmember('x')\n"
+                        "f = tf.extractfile(m)\nt = m.type\nfor x in tf:\n    print(x.name)\n")) == [
+        "tf: tarfile.TarFile", "names: list[str]", "m: tarfile.TarInfo", "f: BinaryIO?", "t: bytes", "x: tarfile.TarInfo"]
+    cases = [
+        ("tf = tarfile.open(3)", "tarfile.open() argument 'name' must be a str, a Path or None, not int"),
+        ("tf = tarfile.open('a.tar')\ntf.extract(5)",
+         "tarfile.TarFile.extract() argument 'member' must be a member's name (str) or a TarInfo, not int"),
+        ("tf = tarfile.open('a.tar')\ntf.extractall(filter=7)",
+         'tarfile.TarFile.extractall() argument \'filter\' must be "data", "tar", "fully_trusted" or a function '
+         "(member, path) -> TarInfo | None, not int"),
+        ("t = tarfile.TarInfo('a')\nt.size = 'big'", "tarfile.TarInfo.size is int, can't assign str"),
+        ("tf = tarfile.open('a.tar')\ntf.mode = 'w'", "tarfile.TarFile.mode can't be changed (it's read-only)"),
+        ("tf = tarfile.open('a.tar')\ntf.add('x', filter=lambda t: 3)",
+         "tarfile.TarFile.add() argument 'filter' must be a function (tarinfo) -> TarInfo | None, not "
+         "(tarfile.TarInfo) -> int"),
+    ]
+    for source, message in cases:
+        assert err("import tarfile\n" + source + "\n").message == message, source
+
+
 def test_zipfile_types_and_errors():
     assert variables(ok("import io, zipfile\nzf = zipfile.ZipFile(io.BytesIO(), 'w')\ni = zipfile.ZipInfo('a')\n"
                         "i.external_attr |= 0x10\nn = zf.namelist()\nf = zf.open(i, 'w')\nd = i.date_time\n")) == [

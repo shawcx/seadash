@@ -1360,8 +1360,8 @@ class CodeGen:
             enter, exit_call = ctx, f"{ctx}.shutdown(true, false)"
         elif info.kind == "response":
             enter, exit_call = ctx, f"{ctx}.close()"
-        elif info.kind == "connection":
-            enter, exit_call = ctx, f"{ctx}.sd_exit(false)"  # commit; the catch below rolls back
+        elif info.kind in ("connection", "tarfile"):
+            enter, exit_call = ctx, f"{ctx}.sd_exit(false)"  # commit (or close); the catch below rolls back (or just lets go)
         elif info.kind == "server":
             enter, exit_call = ctx, f"{ctx}.server_close()"
         elif info.kind == "zipfile":
@@ -1378,7 +1378,7 @@ class CodeGen:
                 exit_call = f"{exit_fn}()"
         if item.target is not None:
             self.assign(item.target, enter, info.enter_type)
-        elif info.kind not in ("file", "socket", "selector", "process", "tempdir", "executor", "response", "connection", "server", "zipfile"):  # still call __enter__ for its effects
+        elif info.kind not in ("file", "socket", "selector", "process", "tempdir", "executor", "response", "connection", "server", "zipfile", "tarfile"):  # still call __enter__ for its effects
             self.line(f"{enter};")
         guard = self.fresh("with")
         self.line(f"sd::Finally {guard}([&] {{ {exit_call}; }});")
@@ -1401,7 +1401,7 @@ class CodeGen:
             self.depth -= 1
         self.line("} catch (...) {")
         self.depth += 1
-        if info.kind == "connection":
+        if info.kind in ("connection", "tarfile"):
             self.line(f"{guard}.disarm();")
             self.line(f"{ctx}.sd_exit(true);")
         else:
