@@ -73,9 +73,15 @@ def test_a_closed_pipe_is_a_broken_pipe_error(tmp_path):
     assert p.stdout.readline() == b"0\n"
     p.stdout.close()
     err = p.stderr.read().decode()
-    assert p.wait() == 120
-    assert err == ("BrokenPipeError: [Errno 32] Broken pipe\n"
-                   "Exception ignored while flushing sys.stdout:\nBrokenPipeError: [Errno 32] Broken pipe\n")
+    # Python's own ending differs by platform: on macOS what it couldn't write fails again at exit
+    # (reported, exit code 120); on Linux it's dropped (exit code 1). seadash's stdio does the same.
+    if sys.platform == "darwin":
+        assert p.wait() == 120
+        assert err == ("BrokenPipeError: [Errno 32] Broken pipe\n"
+                       "Exception ignored while flushing sys.stdout:\nBrokenPipeError: [Errno 32] Broken pipe\n")
+    else:
+        assert p.wait() == 1
+        assert err == "BrokenPipeError: [Errno 32] Broken pipe\n"
     (tmp_path / "child.sd").write_text(  # (`yes` ignoring SIGPIPE would say "yes: stdout: Broken pipe")
         "import subprocess\n"
         "r = subprocess.run(['sh', '-c', 'yes | head -1'], capture_output=True, text=True)\n"
