@@ -117,8 +117,8 @@ struct Redirect {
     Redirect() = default;
     explicit Redirect(std::int64_t k) : kind(k) {}
     template <class F>
-    Redirect(const std::shared_ptr<F>& f) : kind(1), fd(::fileno(f->handle())), file(f) {
-        std::fflush(f->handle());  // what we wrote so far comes before the child's output
+    Redirect(const std::shared_ptr<F>& f) : kind(1), fd(static_cast<int>(f->fileno_())), file(f) {
+        f->flush();  // what we wrote so far comes before the child's output
     }
 };
 

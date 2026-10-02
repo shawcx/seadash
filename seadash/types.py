@@ -422,16 +422,23 @@ class IterType(Type):
 
 @dataclass(frozen=True)
 class FileType(Type):
-    """What open() returns: TextIO (reads/writes str) or BinaryIO (bytes)."""
+    """What open() returns: TextIO (reads/writes str) or BinaryIO (bytes). io.StringIO and
+    io.BytesIO are the same file objects over memory (`memory`), with getvalue() as well;
+    they fit wherever a TextIO / BinaryIO is expected."""
 
     binary: bool
+    memory: bool = False
 
     def __str__(self) -> str:
+        if self.memory:
+            return "BytesIO" if self.binary else "StringIO"
         return "BinaryIO" if self.binary else "TextIO"
 
 
 TEXT_FILE = FileType(False)
 BINARY_FILE = FileType(True)
+STRING_IO = FileType(False, memory=True)
+BYTES_IO = FileType(True, memory=True)
 
 
 @dataclass(frozen=True)
@@ -713,6 +720,8 @@ def assignable(src: Type, dst: Type) -> bool:
         return assignable(src.enum.mixin, dst)  # an IntEnum member is an int, a StrEnum member a str
     if isinstance(src, StructType) and isinstance(dst, StructType):
         return src.is_subclass_of(dst)
+    if isinstance(src, FileType) and isinstance(dst, FileType):  # a StringIO is a TextIO
+        return src.binary == dst.binary and not dst.memory
     if isinstance(src, HTTPServerType) and isinstance(dst, HTTPServerType):  # `server: HTTPServer`
         return dst.handler is None and (src.threading or not dst.threading)
     if isinstance(src, ProcessType) and isinstance(dst, ProcessType):  # an annotation: subprocess.Popen
@@ -761,6 +770,8 @@ def join(a: Type, b: Type) -> Type | None:
         return FLOAT
     if isinstance(a, StructType) and isinstance(b, StructType):
         return common_base(a, b)
+    if isinstance(a, FileType) and isinstance(b, FileType) and a.binary == b.binary:
+        return FileType(a.binary)  # a StringIO and an open() file: a TextIO
     if a == NONE:
         return b if isinstance(b, OptionalType) else OptionalType(b)
     if b == NONE:

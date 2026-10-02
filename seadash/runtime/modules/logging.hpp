@@ -310,11 +310,11 @@ public:
     void emit(const Record& r) const {
         if (!s_->stream || r.levelno < s_->level) return;
         std::string text = (s_->formatter ? *s_->formatter : Formatter()).format(r) + "\n";
-        std::fwrite(text.data(), 1, text.size(), s_->stream->handle());
-        std::fflush(s_->stream->handle());
+        s_->stream->write_raw(text);  // (the stream may be an io.StringIO)
+        s_->stream->flush();
     }
     void flush() const {
-        if (s_->stream) std::fflush(s_->stream->handle());
+        if (s_->stream) s_->stream->flush();
     }
     void close() {
         if (s_->stream && s_->kind == "FileHandler") s_->stream->close();

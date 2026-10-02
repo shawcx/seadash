@@ -1,0 +1,70 @@
+'first\n' 6
+'sec' 9
+['ond\n', 'third']
+'' ''
+['a', 'b', '', 'c']
+['x\n', 'y'] 
+'' 'kw'
+2 'HEllo world' 2
+1 12
+15 1 'HEllo world!\x00\x00\x00?'
+5 5 'HEllo'
+2 5 'HE'
+10 'HE'
+'HE\x00\x00\x00end'
+'HE\x00\x00\x00endxyz' 0 'HE' 2
+True True True False False
+5 0 '' 0
+'a, 1, 2.5, [True];\nitems: 3\n'
+filled False
+True
+to stdout: 1
+chosen: 2
+'name,note\r\nAnn,"says ""hi"", twice"\r\nBob,"multi\nline"\r\nCy,\r\n'
+['name', 'note']
+['Ann', 'says "hi", twice']
+['Bob', 'multi\nline']
+['Cy', '']
+[{'id': '1', 'name': 'Ann'}]
+{"a": null, "b": [1, 2]}
+{'a': None, 'b': [1, 2]}
+'INFO:io-test:started\nWARNING:io-test:careful: 3\n'
+None 'a\nb\nc\n' ['a\n', 'b\n', 'c\n']
+'' 'a\r\nb\rc\n' ['a\r\n', 'b\r', 'c\n']
+'\n' 'a\r\nb\rc\n' ['a\r\n', 'b\rc\n']
+'\r' 'a\r\rb\rc\r' ['a\r', '\r', 'b\r', 'c\r']
+'\r\n' 'a\r\r\nb\rc\r\n' ['a\r\r\n', 'b\rc\r\n']
+'x\n\ny\n'
+8 'one\r\ntwo\r\n'
+b'line one\n' 9
+[b'line two\r\n', b'end']
+b'x\n'
+b'y\n'
+3 2 1 b'abZ'
+0 2 b'Z' 6 1 b'abZ\x00\x00\x00!'
+4 b'abZ\x00' 7
+b'abZ\x00\x00\x00\x0012' b'' b'k'
+2cf24dba5fb0a30e
+b'da' False
+True
+seek cur OSError: Can't do nonzero cur-relative seeks
+seek end OSError: Can't do nonzero cur-relative seeks
+seek negative ValueError: Negative seek position -1
+seek whence ValueError: Invalid whence (3, should be 0, 1 or 2)
+truncate ValueError: Negative size value -1
+fileno OSError: fileno
+newline ValueError: illegal newline value: 'x'
+read closed ValueError: I/O operation on closed file
+write closed ValueError: I/O operation on closed file
+getvalue closed ValueError: I/O operation on closed file
+tell closed ValueError: I/O operation on closed file
+readable closed ValueError: I/O operation on closed file
+iterate closed ValueError: I/O operation on closed file.
+print closed ValueError: I/O operation on closed file
+bytes seek negative ValueError: negative seek value -1
+bytes seek whence ValueError: invalid whence (3, should be 0, 1 or 2)
+bytes truncate ValueError: negative size value -1
+bytes read closed ValueError: I/O operation on closed file.
+bytes getvalue closed ValueError: I/O operation on closed file.
+bytes flush closed ValueError: I/O operation on closed file.
+bytes iterate closed ValueError: I/O operation on closed file.

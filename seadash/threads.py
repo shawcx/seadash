@@ -209,6 +209,8 @@ def not_a_value(t: Type) -> str | None:
             return "a function (it could share the variables it captured)"
         case GeneratorType():
             return "an iterator (it's shared, and runs code when read; store list(it))"
+        case FileType(memory=True):
+            return f"a {t}, a file in memory (a @value class may keep its contents, getvalue())"
         case FileType():
             return "an open file (a @value class may keep its descriptor, f.fileno(), as an int)"
         case _ if t == SOCKET:

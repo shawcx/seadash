@@ -968,6 +968,73 @@ def test_file_and_with_errors(src, msg):
     assert err(src).message == msg
 
 
+@pytest.mark.parametrize("src,ty", [
+    ("io.StringIO()", "StringIO"),
+    ('io.BytesIO(b"x")', "BytesIO"),
+    ('io.StringIO("a\\nb", newline=None).readlines()', "list[str]"),
+    ("io.StringIO().getvalue()", "str"),
+    ("io.BytesIO().getvalue()", "bytes"),
+    ("[io.StringIO(), open('f')]", "list[TextIO]"),  # an open() file and a StringIO: both are TextIO
+    ("io.BytesIO() if len('') else open('f', 'rb')", "BinaryIO"),
+])
+def test_io_types(src, ty):
+    [v] = ok(f"import io\nx = {src}\n").globals
+    assert str(v.type) == ty
+
+
+def test_io_files_are_files():
+    ok("""
+    import csv, io, json, logging
+    from typing import TextIO
+    def report(f: TextIO) -> None:
+        print("x", file=f)
+    def text_of(f: io.StringIO) -> str:
+        return f.getvalue()
+    def base(f: io.TextIOBase, b: io.BufferedIOBase) -> None:
+        f.write("x")
+        b.write(b"x")
+    s = io.StringIO()
+    report(s)
+    print(text_of(s))
+    base(s, io.BytesIO())
+    csv.writer(s).writerow(["a"])
+    json.dump([1], s)
+    logging.StreamHandler(s)
+    with io.StringIO("a\\nb") as f:
+        for line in f:
+            print(line)
+    """)
+
+
+@pytest.mark.parametrize("src,msg", [
+    ("s = io.StringIO(5)", "io.StringIO() argument 'initial_value' must be str?, not int"),
+    ('b = io.BytesIO("x")', "io.BytesIO() argument 'initial_bytes' must be bytes, not str"),
+    ('io.StringIO().write(b"x")', "StringIO.write() argument must be str, not bytes"),
+    ('io.BytesIO().writelines(["a"])', "BytesIO.writelines() needs bytes items, not str"),
+    ('s = io.StringIO("", newline="x")', "illegal newline value: 'x' (it can be None, '', '\\n', '\\r' or '\\r\\n')"),
+    ('s = io.StringIO(initial="x")', "io.StringIO() got an unexpected keyword argument 'initial'"),
+    ("print(io.StringIO().name)", "StringIO has no attribute 'name'"),
+    ("print(io.BytesIO().mode)", "BytesIO has no attribute 'mode'"),
+    ('print(open("x").getvalue())', "TextIO has no method 'getvalue'"),
+    ("from typing import TextIO\ndef f(out: TextIO) -> str:\n    return out.getvalue()", "TextIO has no method 'getvalue'"),
+    ('def f(out: io.StringIO) -> None:\n    pass\nf(open("x"))', "argument 'out' of f() must be StringIO, not TextIO"),
+    ("def f(out: io.StringIO) -> None:\n    pass\nf(io.BytesIO())", "argument 'out' of f() must be StringIO, not BytesIO"),
+    ("import csv\nw = csv.writer(io.BytesIO())", "csv.writer() argument must be TextIO, not BytesIO"),
+    ("import json\njson.dump([1], io.BytesIO())", "json.dump() argument 'fp' must be TextIO, not BytesIO"),
+    ('import subprocess\nsubprocess.run(["ls"], stdout=io.StringIO())',
+     "stdout= can't be a StringIO: the child process needs a real file (one with a descriptor); "
+     "use stdout=subprocess.PIPE and write the result's stdout to it"),
+    ("import copy\ns = copy.copy(io.StringIO())",
+     "copy.copy() can't copy a StringIO (not supported yet); make a new one from its getvalue(), or share this one"),
+    ("from seadash import value\n@value\nclass Log:\n    out: io.StringIO",
+     "fields of a @value class must be values, but 'out' is a StringIO, a file in memory (a @value class may keep its "
+     "contents, getvalue()). Copying Log would share it: store something that can be copied instead (e.g. an int or a "
+     "str), or remove @value to make Log an ordinary class"),
+])
+def test_io_errors(src, msg):
+    assert err(f"import io\n{src}\n").message == msg
+
+
 def test_typing_names_are_accepted():
     info = ok("""
         from typing import Callable, Optional, List, Dict, TextIO

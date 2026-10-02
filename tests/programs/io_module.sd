@@ -1,0 +1,179 @@
+# io.StringIO and io.BytesIO: file objects in memory, accepted wherever a file is.
+import csv
+import hashlib
+import io
+import json
+import logging
+import sys
+from typing import BinaryIO, Callable, TextIO
+
+
+def report(f: TextIO, name: str, n: int) -> None:
+    print(f"{name}: {n}", file=f)
+
+
+def fill(buf: io.StringIO) -> str:
+    buf.write("filled")
+    return buf.getvalue()
+
+
+def checksum(f: BinaryIO) -> str:
+    return hashlib.file_digest(f, "sha256").hexdigest()[:16]
+
+
+def attempt[T](what: str, action: Callable[[], T]) -> None:
+    try:
+        print(what, repr(action()))
+    except OSError as e:  # (first: Python's io.UnsupportedOperation is also a ValueError)
+        print(what, "OSError:", e)
+    except ValueError as e:
+        print(what, "ValueError:", e)
+    except AttributeError as e:
+        print(what, "AttributeError:", e)
+
+
+# Reading
+s = io.StringIO("first\nsecond\nthird")
+print(repr(s.readline()), s.tell())
+print(repr(s.read(3)), s.tell())
+print(s.readlines())
+print(repr(s.read()), repr(s.readline()))
+print([line.rstrip() for line in io.StringIO("a\nb\n\nc\n")])
+print(io.StringIO("x\ny").readlines(), io.StringIO().read())
+print(repr(io.StringIO(None).getvalue()), repr(io.StringIO(initial_value="kw").read(-1)))
+
+# Writing over, past the end, and truncating
+s = io.StringIO("hello world")
+print(s.write("HE"), repr(s.getvalue()), s.tell())
+s.seek(0, 2)
+print(s.write("!"), s.tell())
+print(s.seek(15), s.write("?"), repr(s.getvalue()))
+s.seek(5)
+print(s.truncate(), s.tell(), repr(s.getvalue()))
+print(s.truncate(2), s.tell(), repr(s.getvalue()))
+print(s.truncate(10), repr(s.getvalue()))
+s.write("end")
+print(repr(s.getvalue()))
+s.writelines(["x", "y", "z"])
+print(repr(s.getvalue()), s.seek(0), repr(s.read(2)), s.seek(0, 1))
+print(s.readable(), s.writable(), s.seekable(), s.isatty(), s.closed)
+empty = io.StringIO()
+print(empty.seek(5), empty.write(""), repr(empty.getvalue()), empty.seek(0, 2))  # (no padding for nothing)
+
+# print(file=), with, functions that take a file
+out = io.StringIO()
+print("a", 1, 2.5, [True], sep=", ", end=";\n", file=out)
+report(out, "items", 3)
+print(repr(out.getvalue()))
+with io.StringIO() as buf:
+    print(fill(buf), buf.closed)
+print(buf.closed)
+streams = [io.StringIO(), sys.stdout]
+report(streams[1], "to stdout", 1)
+dest = io.StringIO() if len(streams) > 5 else sys.stdout
+report(dest, "chosen", 2)
+
+# csv and json
+table = io.StringIO(newline="")
+writer = csv.writer(table)
+writer.writerow(["name", "note"])
+writer.writerow(["Ann", "says \"hi\", twice"])
+writer.writerows([["Bob", "multi\nline"], ["Cy", ""]])
+print(repr(table.getvalue()))
+table.seek(0)
+for row in csv.reader(table):
+    print(row)
+people = io.StringIO()
+fields = ["id", "name"]
+dw = csv.DictWriter(people, fieldnames=fields)
+dw.writeheader()
+dw.writerow({"id": "1", "name": "Ann"})
+print(list(csv.DictReader(io.StringIO(people.getvalue()))))
+data = io.StringIO()
+json.dump({"b": [1, 2], "a": None}, data, sort_keys=True)
+print(data.getvalue())
+data.seek(0)
+loaded: dict[str, list[int] | None] = json.load(data)
+print(loaded)
+
+# logging to a StringIO
+log_buf = io.StringIO()
+handler = logging.StreamHandler(log_buf)
+handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+log = logging.getLogger("io-test")
+log.addHandler(handler)
+log.setLevel(logging.INFO)
+log.info("started")
+log.warning("careful: %d", 3)
+log.debug("hidden")
+print(repr(log_buf.getvalue()))
+
+# newline=
+text = "a\r\nb\rc\n"
+for nl in [None, "", "\n", "\r", "\r\n"]:
+    f = io.StringIO(text, newline=nl)
+    print(repr(nl), repr(f.getvalue()), f.readlines())
+f = io.StringIO(newline=None)
+f.write("x\r")
+f.write("\ny\r\n")
+print(repr(f.getvalue()))
+f = io.StringIO(newline="\r\n")
+print(f.write("one\ntwo\n"), repr(f.getvalue()))
+
+# BytesIO
+b = io.BytesIO(b"line one\nline two\r\nend")
+print(b.readline(), b.tell())
+print(b.readlines())
+for chunk in io.BytesIO(b"x\ny\n"):
+    print(chunk)
+b = io.BytesIO()
+print(b.write(b"abc"), b.seek(-1, 1), b.write(b"Z"), b.getvalue())
+print(b.seek(-10, 1), b.seek(-1, 2), b.read(), b.seek(6), b.write(b"!"), b.getvalue())
+print(b.truncate(4), b.getvalue(), b.tell())
+b.writelines([b"1", b"2"])
+print(b.getvalue(), b.read(), io.BytesIO(initial_bytes=b"kw").read(1))
+print(checksum(io.BytesIO(b"hello")))
+with io.BytesIO(b"data") as bf:
+    print(bf.read(2), bf.closed)
+print(bf.closed)
+
+# Errors, as in Python
+s = io.StringIO("abc")
+attempt("seek cur", lambda: s.seek(1, 1))
+attempt("seek end", lambda: s.seek(-1, 2))
+attempt("seek negative", lambda: s.seek(-1))
+attempt("seek whence", lambda: s.seek(0, 3))
+attempt("truncate", lambda: s.truncate(-1))
+attempt("fileno", lambda: s.fileno())
+attempt("newline", lambda: io.StringIO("", newline="x" + ""))
+s.close()
+s.close()
+s.flush()
+attempt("read closed", lambda: s.read())
+attempt("write closed", lambda: s.write("x"))
+attempt("getvalue closed", lambda: s.getvalue())
+attempt("tell closed", lambda: s.tell())
+attempt("readable closed", lambda: s.readable())
+attempt("iterate closed", lambda: list(s))
+
+
+def to_closed(f: TextIO) -> bool:
+    print("never", file=f)
+    return True
+
+
+def flushed(f: BinaryIO) -> bool:
+    f.flush()
+    return True
+
+
+attempt("print closed", lambda: to_closed(s))
+b = io.BytesIO(b"abc")
+attempt("bytes seek negative", lambda: b.seek(-1))
+attempt("bytes seek whence", lambda: b.seek(0, 3))
+attempt("bytes truncate", lambda: b.truncate(-1))
+b.close()
+attempt("bytes read closed", lambda: b.read())
+attempt("bytes getvalue closed", lambda: b.getvalue())
+attempt("bytes flush closed", lambda: flushed(b))
+attempt("bytes iterate closed", lambda: list(b))

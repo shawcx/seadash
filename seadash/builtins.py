@@ -16,7 +16,7 @@ from .errors import CheckError
 from .errors import Loc
 from .types import (
     BOOL, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR,
-    BINARY_FILE, TEXT_FILE,
+    BINARY_FILE, TEXT_FILE, STRING_IO, BYTES_IO,
     CounterType, DefaultDictType, DequeType, MatchType, PatternType, ProcessType, RegexInfo, PATH, TEMPDIR,
     DATE, DATETIME, TIME, TIMEDELTA, TIMEZONE, PARSER, NamespaceType, ParserType, SubParsersType, VarTupleType,
     GeneratorType, TEXT_WRAPPER, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, LOG_FORMATTER, UUID_T,
@@ -1245,6 +1245,9 @@ FILE_METHODS = {
     "truncate": returns(INT, 0, 1, (INT,)),
 }
 FILE_ATTRIBUTES = {"closed": lambda t: BOOL, "name": lambda t: STR, "mode": lambda t: STR}
+# io.StringIO / io.BytesIO: no name or mode (as in Python), and getvalue().
+MEMORY_FILE_METHODS = {**FILE_METHODS, "getvalue": returns(content)}
+MEMORY_FILE_ATTRIBUTES = {"closed": FILE_ATTRIBUTES["closed"]}
 
 
 def json_value_get(ctx: CallContext) -> Type:
@@ -1281,7 +1284,7 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
         case BuiltinClass():
             return t.methods.get(name)
         case FileType():
-            return FILE_METHODS.get(name)
+            return (MEMORY_FILE_METHODS if t.memory else FILE_METHODS).get(name)
         case ListType():
             table = LIST_METHODS
         case DequeType():
@@ -2368,7 +2371,7 @@ def type_attributes(t: Type) -> dict | None:
     if isinstance(t, HTTPServerType):
         return HTTP_SERVER_ATTRIBUTES
     if isinstance(t, FileType):
-        return FILE_ATTRIBUTES
+        return MEMORY_FILE_ATTRIBUTES if t.memory else FILE_ATTRIBUTES
     if isinstance(t, PatternType):
         return PATTERN_ATTRIBUTES
     if isinstance(t, MatchType):
@@ -3359,6 +3362,35 @@ MODULES["lzma"] = module_with_params(runtime_module(
         "FORMAT_AUTO", "FORMAT_XZ", "FORMAT_ALONE", "FORMAT_RAW", "CHECK_NONE", "CHECK_CRC32", "CHECK_CRC64", "CHECK_SHA256",
         "CHECK_UNKNOWN", "PRESET_DEFAULT", "PRESET_EXTREME")},
 ))
+
+
+# ---- io ------------------------------------------------------------------------------
+
+
+STRING_IO_SIGNATURE = signature(STRING_IO, ("initial_value", OptionalType(STR), "std::nullopt"),
+                                ("newline", OptionalType(STR), 'std::optional<std::string>("\\n"s)'))
+
+
+def string_io(ctx: CallContext) -> Type:
+    """io.StringIO(initial_value="", newline="\\n"), with a literal newline= checked here."""
+    t = STRING_IO_SIGNATURE(ctx)
+    node = ctx.args[1] if len(ctx.args) > 1 else ctx.keyword_arg("newline")
+    if isinstance(node, A.StrLit) and node.value not in ("", "\n", "\r", "\r\n"):
+        raise ctx.error(f"illegal newline value: {node.value!r} (it can be None, '', '\\n', '\\r' or '\\r\\n')", node)
+    return t
+
+
+string_io.params = STRING_IO_SIGNATURE.params
+
+MODULES["io"] = module_with_params(runtime_module(
+    "io", "modules/io.hpp",
+    StringIO=(string_io, "sd::io::string_io"),
+    BytesIO=(signature(BYTES_IO, ("initial_bytes", BYTES, "sd::bytes()")), "sd::io::bytes_io"),
+    TextIOBase=NamedType("TextIOBase", TEXT_FILE),
+    BufferedIOBase=NamedType("BufferedIOBase", BINARY_FILE),
+))
+MODULES["io"].members["StringIO"].as_type = STRING_IO
+MODULES["io"].members["BytesIO"].as_type = BYTES_IO
 
 
 # ---- uuid ----------------------------------------------------------------------------
@@ -4750,6 +4782,9 @@ def stream_kind(ctx: CallContext, node: A.Expr | None, name: str) -> str:
             raise ctx.error("only stderr can be subprocess.STDOUT", node)
         return const
     t = ctx.checker.check_expr(node)
+    if isinstance(t, FileType) and t.memory:
+        raise ctx.error(f"{name}= can't be a {t}: the child process needs a real file (one with a descriptor); "
+                        f"use {name}=subprocess.PIPE and write the result's {name} to it", node)
     if isinstance(t, FileType):
         return "file"
     raise ctx.error(
@@ -5030,6 +5065,8 @@ def copy_problem(t: Type, deep: bool, structs: list[StructType], seen: set | Non
             if kind in ("Lock", "RLock"):
                 return None, f"a {kind}", f"{unpicklable}; make a new one, or share this one"
             return None, f"{'an' if kind[0] in 'AEIOU' else 'a'} {kind}", ": share this one, or make a new one"
+        case FileType(memory=True):
+            return None, f"a {t}", "(not supported yet); make a new one from its getvalue(), or share this one"
         case FileType():
             return None, "a file", f"{unpicklable}; open it again, or share this one"
         case OptionalType(inner):

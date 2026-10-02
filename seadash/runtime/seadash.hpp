@@ -3867,6 +3867,8 @@ inline const std::string& raw(const std::string& s) { return s; }
 // the exception here and fails the read, and the file object rethrows it.
 inline thread_local std::exception_ptr pending_file_error;
 
+// The I/O primitives are virtual so that io.StringIO and io.BytesIO (modules/io.hpp) can be
+// these same file objects over memory, with no FILE*.
 struct FileBase {
     std::FILE* fp;
     std::string path, mode;
@@ -3881,7 +3883,8 @@ struct FileBase {
         if (!fp) raise("ValueError", "I/O operation on closed file.");
         return fp;
     }
-    std::string read_raw(std::int64_t n) {
+    virtual void check_open() const { handle(); }
+    virtual std::string read_raw(std::int64_t n) {
         std::FILE* f = handle();
         std::string out;
         if (n < 0) {
@@ -3895,7 +3898,7 @@ struct FileBase {
         check_error(f);
         return out;
     }
-    std::string readline_raw() {
+    virtual std::string readline_raw() {
         std::FILE* f = handle();
         char* line = nullptr;
         std::size_t capacity = 0;
@@ -3905,7 +3908,7 @@ struct FileBase {
         if (len < 0) check_error(f);
         return out;
     }
-    std::int64_t write_raw(const std::string& s) {
+    virtual std::int64_t write_raw(const std::string& s) {
         std::FILE* f = handle();
         if (std::fwrite(s.data(), 1, s.size(), f) != s.size()) check_error(f, true);
         return static_cast<std::int64_t>(s.size());
@@ -3914,25 +3917,25 @@ struct FileBase {
         if (auto e = std::exchange(pending_file_error, nullptr)) std::rethrow_exception(e);
         if (failed || std::ferror(f)) raise_os(errno, path);
     }
-    void close() {
+    virtual void close() {
         if (fp && owned) std::fclose(fp);
         fp = nullptr;
     }
-    void flush() { std::fflush(handle()); }
+    virtual void flush() { std::fflush(handle()); }
     // f.closed, f.name, f.mode
-    bool is_closed() const { return !fp; }
-    std::string get_name() const { return path; }
-    std::string get_mode() const { return mode; }
+    virtual bool is_closed() const { return !fp; }
+    virtual std::string get_name() const { return path; }
+    virtual std::string get_mode() const { return mode; }
     std::FILE* open_handle() const {
         if (!fp) raise("ValueError", "I/O operation on closed file");
         return fp;
     }
     bool can_write() const { return mode.find_first_of("wax+") != std::string::npos; }
-    bool readable() const { return open_handle() && mode.find_first_of("r+") != std::string::npos; }
-    bool writable() const { return open_handle() && can_write(); }
-    bool seekable() const { return ::lseek((fileno)(open_handle()), 0, SEEK_CUR) != -1; }
-    bool isatty() const { return ::isatty((fileno)(open_handle())) == 1; }
-    std::int64_t tell() {
+    virtual bool readable() const { return open_handle() && mode.find_first_of("r+") != std::string::npos; }
+    virtual bool writable() const { return open_handle() && can_write(); }
+    virtual bool seekable() const { return ::lseek((fileno)(open_handle()), 0, SEEK_CUR) != -1; }
+    virtual bool isatty() const { return ::isatty((fileno)(open_handle())) == 1; }
+    virtual std::int64_t tell() {
         off_t at = ::ftello(handle());
         if (at < 0) raise_os(errno, std::nullopt);
         return at;
@@ -3941,7 +3944,7 @@ struct FileBase {
         if (::fseeko(handle(), offset, static_cast<int>(whence)) != 0) raise_os(errno, std::nullopt);
         return tell();
     }
-    std::int64_t truncate(std::optional<std::int64_t> size = std::nullopt) {  // (the position stays where it was)
+    virtual std::int64_t truncate(std::optional<std::int64_t> size = std::nullopt) {  // (the position stays where it was)
         std::FILE* f = handle();
         if (!can_write()) raise("OSError", "truncate");  // (Python's io.UnsupportedOperation says just this)
         std::int64_t n = size ? *size : tell();
@@ -3950,7 +3953,7 @@ struct FileBase {
         return n;
     }
     // f.fileno(). ((fileno) calls the function: on macOS `fileno` is also a macro.)
-    std::int64_t fileno_() const { return (fileno)(handle()); }
+    virtual std::int64_t fileno_() const { return (fileno)(handle()); }
 };
 
 // `for line in f:` reads one line at a time, so big files don't need to fit in memory.
@@ -4032,7 +4035,7 @@ struct TextFile : FileBase {
         for (auto&& line : iter(std::forward<It>(lines))) write_raw(line);
     }
     // A text file only seeks to a position tell() gave, or to its start or end, like Python's.
-    std::int64_t seek(std::int64_t offset, std::int64_t whence = 0) {
+    virtual std::int64_t seek(std::int64_t offset, std::int64_t whence = 0) {
         handle();
         if (whence < 0 || whence > 2)
             raise("ValueError", "invalid whence (" + std::to_string(whence) + ", should be 0, 1 or 2)");
@@ -4041,7 +4044,7 @@ struct TextFile : FileBase {
         if (offset < 0) raise("ValueError", "negative seek position " + std::to_string(offset));
         return seek_raw(offset, whence);
     }
-    std::string sd_repr() const { return "<TextIO name=" + repr_str(path) + " mode=" + repr_str(mode) + ">"; }
+    virtual std::string sd_repr() const { return "<TextIO name=" + repr_str(path) + " mode=" + repr_str(mode) + ">"; }
 };
 
 struct BinaryFile : FileBase {
@@ -4054,7 +4057,7 @@ struct BinaryFile : FileBase {
         return out;
     }
     std::int64_t write(const bytes& b) { return write_raw(b.data); }
-    std::int64_t seek(std::int64_t offset, std::int64_t whence = 0) {
+    virtual std::int64_t seek(std::int64_t offset, std::int64_t whence = 0) {
         handle();
         if (whence < 0 || whence > 2) raise("ValueError", "whence value " + std::to_string(whence) + " unsupported");
         return seek_raw(offset, whence);
@@ -4063,15 +4066,15 @@ struct BinaryFile : FileBase {
     void writelines(It&& lines) {
         for (auto&& line : iter(std::forward<It>(lines))) write_raw(line.data);
     }
-    std::string sd_repr() const { return "<BinaryIO name=" + repr_str(path) + " mode=" + repr_str(mode) + ">"; }
+    virtual std::string sd_repr() const { return "<BinaryIO name=" + repr_str(path) + " mode=" + repr_str(mode) + ">"; }
 };
 
 inline LineRange<TextFile, std::string> file_lines(const std::shared_ptr<TextFile>& f) {
-    f->handle();
+    f->check_open();
     return {f};
 }
 inline LineRange<BinaryFile, bytes> file_lines(const std::shared_ptr<BinaryFile>& f) {
-    f->handle();
+    f->check_open();
     return {f};
 }
 

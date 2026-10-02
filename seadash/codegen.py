@@ -3214,6 +3214,8 @@ class CodeGen:
                     codes.append(default[0] if node is None else self.expr_as(node, handler.resolve(ptype, recv_type)))
                 rest = "".join(", " + c for c in codes)
             return f"sd::{prefix}_{name}({r}{rest})"
+        if isinstance(recv_type, FileType) and name == "getvalue":  # a StringIO / BytesIO
+            return f"sd::io::getvalue({r})"
         if isinstance(recv_type, FileType):
             return f"{r}->{'fileno_' if name == 'fileno' else name}({', '.join(args)})"  # (fileno: a macro on macOS)
         if recv_type == JSON_VALUE:
