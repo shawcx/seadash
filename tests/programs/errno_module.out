@@ -6,3 +6,6 @@ a directory: / True
 read here.txt
 True File exists /tmp
 None None None
+FileNotFoundError(2, 'No such file or directory')
+IsADirectoryError(21, 'Is a directory')
+OSError('plain')

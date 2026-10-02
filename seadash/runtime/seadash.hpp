@@ -80,6 +80,7 @@ struct OSError : Exception {
                      std::optional<std::string> path = std::nullopt)
         : Exception(std::move(msg)), errno_(err), strerror(std::move(what)), filename(std::move(path)) {}
     std::string sd_type() const override { return "OSError"; }
+    std::string sd_repr() const override;  // FileNotFoundError(2, 'No such file or directory'), as Python's
 };
 SD_EXCEPTION(ArithmeticError, Exception)
 SD_EXCEPTION(ZeroDivisionError, ArithmeticError)
@@ -1458,6 +1459,11 @@ std::string repr(const T& x) {
 inline std::string BaseException::sd_repr() const {
     std::string type = sd_type();  // a module's exception shows its bare name: error('...'), not zlib.error('...')
     return type.substr(type.rfind('.') + 1) + "(" + (message.empty() ? "" : repr_str(message)) + ")";
+}
+inline std::string OSError::sd_repr() const {
+    if (!errno_ || !strerror) return Exception::sd_repr();
+    std::string type = sd_type();
+    return type.substr(type.rfind('.') + 1) + "(" + std::to_string(*errno_) + ", " + repr_str(*strerror) + ")";
 }
 inline std::string KeyError::sd_str() const {
     return from_lookup || message.empty() ? message : repr_str(message);

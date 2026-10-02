@@ -25,3 +25,11 @@ except OSError as e:
     print(e.errno == errno.EEXIST, e.strerror, e.filename)
 plain = OSError("no details")
 print(plain.errno, plain.strerror, plain.filename)
+
+# An OSError from the system shows its errno and message in its repr, as Python's does
+for path in ["/nonexistent/x", "/"]:
+    try:
+        open(path)
+    except OSError as e:
+        print(repr(e))
+print(repr(OSError("plain")))
