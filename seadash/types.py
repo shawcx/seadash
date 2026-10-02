@@ -65,7 +65,7 @@ TARINFO = BuiltinClass("tarfile.TarInfo", "sd::tarfile::TarInfo")  # a handle, w
 PATH = BuiltinClass("Path", "sd::pathlib::Path", IMMUTABLE)
 TEXT_WRAPPER = BuiltinClass("TextWrapper", "sd::textwrap::TextWrapper")
 STR_TEMPLATE = BuiltinClass("Template", "sd::stringmod::Template")
-UUID_T = BuiltinClass("UUID", "sd::uuid::UUID")  # an immutable 16-byte value
+UUID_T = BuiltinClass("UUID", "sd::uuid::UUID", IMMUTABLE)  # an immutable 16-byte value: threads and @value classes may share it
 SQLITE_CONNECTION = BuiltinClass("sqlite3.Connection", "sd::sqlite3::Connection")  # handles: copies share the
 SQLITE_CURSOR = BuiltinClass("sqlite3.Cursor", "sd::sqlite3::Cursor")  # connection / cursor
 # Incremental (de)compressors: handles (copies share the state).

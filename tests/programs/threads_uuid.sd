@@ -1,0 +1,28 @@
+# A UUID is an immutable value: a thread can be given one, and a @value class can hold one.
+import queue
+import threading
+import uuid
+
+from seadash import value
+
+
+@value
+class Record:
+    id: uuid.UUID
+    name: str
+
+
+def worker(u: uuid.UUID, rec: Record, out: queue.Queue[str]) -> None:
+    out.put(f"{u} {rec.id == u} {rec.name}")
+
+
+u = uuid.UUID("12345678-1234-5678-1234-567812345678")
+r = Record(u, "first")
+copy = r
+copy.name = "second"
+print(r.name, copy.name, r.id == copy.id)
+out: queue.Queue[str] = queue.Queue()
+t = threading.Thread(target=worker, args=(u, r, out))
+t.start()
+t.join()
+print(out.get())

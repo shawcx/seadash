@@ -65,8 +65,6 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
   list it in the README's differences?
 - **Keywords on built-in methods.** Some accept keywords Python doesn't (`"x".center(width=5)`), others
   take none at all (`xs.pop(index=0)`): the built-ins declare their parameters in three different ways.
-- **`uuid.UUID` and threads.** A UUID can't be passed to a thread or kept in a `@value` class, though
-  it's an immutable value; marking it `IMMUTABLE` in `types.py` would allow both.
 
 ## Decided against
 
