@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from .. import ast as A
 from ..builtins import (
-    CallContext, EXCEPTIONS, MODULES, NamedType, PATH_LIKE, module_with_params, runtime_module, signature,
+    CallContext, exception_class, module_with_params, MODULES, NamedType, PATH_LIKE, runtime_module, signature,
     sync_method,
 )
 from ..types import (
@@ -116,7 +116,7 @@ SQLITE_ERRORS: dict[str, StructType] = {}
 
 
 def sqlite_exception(name: str, base: str) -> StructType:
-    st = StructType(name, "class", None, base=SQLITE_ERRORS.get(base) or EXCEPTIONS[base], builtin=True, cpp_name=f"sd::sqlite3::{name}")
+    st = exception_class(name, f"sd::sqlite3::{name}", SQLITE_ERRORS.get(base) or base)
     SQLITE_ERRORS[name] = st
     return st
 

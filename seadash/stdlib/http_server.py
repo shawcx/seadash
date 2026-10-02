@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from .. import ast as A
-from ..builtins import CallContext, Function, MODULES, Module, bind_args, record_spawn, sync_method
+from ..builtins import bind_args, CallContext, Function, Module, module_type, MODULES, record_spawn, sync_method
 from ..errors import Loc
 from ..types import (
-    BINARY_FILE, BOOL, BYTES, ClassAttr, ClassRefType, FLOAT, Field, FuncInfo, HTTPServerType, HTTP_HEADERS, INT,
-    NONE, OptionalType, Param, SOCKET, STR, StructType, TupleType, Type, Var, VarTupleType, assignable,
+    assignable, BINARY_FILE, BOOL, BYTES, ClassAttr, ClassRefType, Field, FLOAT, FuncInfo, HTTP_HEADERS,
+    HTTPServerType, INT, NONE, OptionalType, Param, SOCKET, STR, StructType, TupleType, Type, Var, VarTupleType,
 )
 
 
@@ -169,3 +169,4 @@ HTTP_SERVER_MOD = Module("http.server", {
     "SimpleHTTPRequestHandler": SIMPLE_HANDLER,
 }, "modules/httpserver.hpp", ("ssl", "crypto", "pthread"))
 MODULES["http"].members["server"] = HTTP_SERVER_MOD
+module_type(HTTPServerType, methods=HTTP_SERVER_METHODS, attributes=HTTP_SERVER_ATTRIBUTES)

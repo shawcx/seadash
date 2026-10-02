@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from .. import ast as A
-from ..builtins import CallContext, Function, MODULES, Module, NamedType, signature, strip_optional_type, sync_method
+from ..builtins import (
+    CallContext, Function, Module, module_type, MODULES, NamedType, signature, strip_optional_type, sync_method,
+)
 from ..types import (
-    BOOL, FLOAT, INT, ListType, NONE, NamespaceType, OptionalType, PARSER, PATH, ParserType, STR, SubParsersType,
-    Type, assignable,
+    assignable, BOOL, FLOAT, INT, ListType, NamespaceType, NONE, OptionalType, PARSER, ParserType, PATH, STR,
+    SubParsersType, Type,
 )
 
 
@@ -241,3 +243,6 @@ MODULES["argparse"] = Module("argparse", {
     "Namespace": NamedType("Namespace", NamespaceType()),
 }, "modules/argparse.hpp")
 MODULES["argparse"].members["ArgumentParser"].params = ARGUMENT_PARSER_SIGNATURE.params
+module_type(ParserType, methods=PARSER_METHODS)
+module_type(SubParsersType, methods={"add_parser": subparsers_add_parser})
+module_type(NamespaceType, attributes=lambda t: {name: (lambda _, ft=ft: ft) for name, ft in t.fields})

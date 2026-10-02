@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from .. import ast as A
 from ..builtins import (
-    CallContext, EXCEPTIONS, MANY, MODULES, Module, OneOf, TypeAlias, module_with_params, os_fdopen,
-    runtime_module, signature,
+    builtin_struct, CallContext, EXCEPTIONS, MANY, Module, module_with_params, MODULES, OneOf, os_fdopen,
+    runtime_module, signature, TypeAlias,
 )
-from ..errors import Loc
 from ..types import (
-    BOOL, BYTES, FLOAT, Field, FuncType, GeneratorType, INT, ListType, NONE, OptionalType, PATH, STR, StructType,
-    TupleType, Type, element_type,
+    BOOL, BYTES, element_type, FLOAT, FuncType, GeneratorType, INT, ListType, NONE, OptionalType, PATH, STR,
+    TupleType, Type,
 )
 
 
@@ -36,11 +35,10 @@ def path_join(ctx: CallContext) -> Type:
     return STR
 
 
-STAT_RESULT = StructType("stat_result", "struct", None, builtin=True, cpp_name="sd::pathlib::StatResult")  # os.stat, Path.stat
-for _field, _t in (("st_size", INT), ("st_mode", INT), ("st_uid", INT), ("st_gid", INT), ("st_nlink", INT),
-                   ("st_ino", INT), ("st_dev", INT), ("st_mtime", FLOAT), ("st_atime", FLOAT), ("st_ctime", FLOAT),
-                   ("st_mtime_ns", INT), ("st_atime_ns", INT), ("st_ctime_ns", INT)):
-    STAT_RESULT.fields[_field] = Field(_field, _t, None, Loc(0, 0))
+STAT_RESULT = builtin_struct("stat_result", "sd::pathlib::StatResult", {  # os.stat, Path.stat
+    "st_size": INT, "st_mode": INT, "st_uid": INT, "st_gid": INT, "st_nlink": INT, "st_ino": INT, "st_dev": INT,
+    "st_mtime": FLOAT, "st_atime": FLOAT, "st_ctime": FLOAT, "st_mtime_ns": INT, "st_atime_ns": INT, "st_ctime_ns": INT,
+})
 OS_PATH_ARG = OneOf(STR, PATH, what="a str or Path")
 OS_PATH = module_with_params(runtime_module(
     "os.path", "modules/os.hpp",

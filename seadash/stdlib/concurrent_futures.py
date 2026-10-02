@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from ..builtins import (
-    CallContext, EXCEPTIONS, MANY, MODULES, Module, NamedType, cpp_string_literal, exception_class, iterable_of,
-    module_with_params, record_spawn, runtime_module, signature, sync_method, work_function,
+    CallContext, cpp_string_literal, exception_class, EXCEPTIONS, iterable_of, MANY, Module, module_type,
+    module_with_params, MODULES, NamedType, record_spawn, runtime_module, signature, sync_method, work_function,
 )
 from ..types import (
-    BOOL, EXECUTOR, FLOAT, FuncType, FutureType, GeneratorType, INT, NONE, OptionalType, STR, SetType, TupleType,
+    BOOL, EXECUTOR, FLOAT, FuncType, FutureType, GeneratorType, INT, NONE, OptionalType, SetType, STR, TupleType,
     Type,
 )
 
@@ -101,3 +101,4 @@ FUTURES.members["ThreadPoolExecutor"].as_type = EXECUTOR
 FUTURE_MARKER = NamedType("Future", FutureType(NONE))  # Future[T] in annotations (see checker.resolve_type_name)
 FUTURES.members["Future"] = FUTURE_MARKER
 MODULES["concurrent"] = Module("concurrent", {"futures": FUTURES})
+module_type(FutureType, methods=FUTURE_METHODS)

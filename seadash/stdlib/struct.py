@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .. import ast as A
-from ..builtins import CallContext, MANY, MODULES, exception_class, module_with_params, runtime_module, signature
-from ..types import BOOL, BYTES, FLOAT, GeneratorType, INT, STR, StructFormatType, TupleType, Type, assignable
+from ..builtins import (
+    CallContext, exception_class, MANY, module_type, module_with_params, MODULES, runtime_module, signature,
+)
+from ..types import assignable, BOOL, BYTES, FLOAT, GeneratorType, INT, STR, StructFormatType, TupleType, Type
 
 
 STRUCT_CODES = {**{c: INT for c in "bBhHiIlLqQnNP"}, "?": BOOL, "e": FLOAT, "f": FLOAT, "d": FLOAT, "c": BYTES, "s": BYTES, "p": BYTES}
@@ -121,3 +123,4 @@ MODULES["struct"] = module_with_params(runtime_module(
     Struct=(struct_new, None),
     error=exception_class("error", "sd::structmod::error"),
 ))
+module_type(StructFormatType, methods=STRUCT_METHODS, attributes={"size": lambda t: INT, "format": lambda t: STR})

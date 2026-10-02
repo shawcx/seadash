@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from ..builtins import CallContext, Function, MANY, MODULES, Module, PATH_LIKE, needing, open_mode, sync_method
+from ..builtins import (
+    CallContext, class_function, CLASS_MEMBERS, Function, MANY, Module, MODULES, needing, open_mode, PATH_LIKE,
+    sync_method,
+)
 from ..types import BOOL, BYTES, INT, ListType, NONE, OptionalType, PATH, STR, Type, VarTupleType
 from .os import STAT_RESULT
 
@@ -59,3 +62,7 @@ MODULES["pathlib"] = Module("pathlib", {
     "Path": Function("Path", path_parts, "sd::pathlib::Path", as_type=PATH),
     "PosixPath": Function("PosixPath", path_parts, "sd::pathlib::Path", as_type=PATH),
 }, "modules/pathlib.hpp")
+CLASS_MEMBERS[PATH] = {
+    "cwd": class_function("Path.cwd", PATH, "sd::pathlib::Path::cwd"),
+    "home": class_function("Path.home", PATH, "sd::pathlib::Path::home"),
+}

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from .. import ast as A
 from ..builtins import (
-    CallContext, EXCEPTIONS, FILE_LIKE, Function, MODULES, Module, OPT_FLOAT, SELECTABLE, Value,
-    module_with_params, runtime_module, selectable, signature, strip_optional_type, sync_method,
+    CallContext, EXCEPTIONS, FILE_LIKE, Function, Module, module_type, module_with_params, MODULES, OPT_FLOAT,
+    runtime_module, SELECTABLE, selectable, signature, strip_optional_type, sync_method, Value,
 )
 from ..errors import CheckError
 from ..types import (
-    BINARY_FILE, DictType, INT, ListType, NONE, OptionalType, POLL, SOCKET, SelectorKeyType, SelectorSlot,
-    SelectorType, TEXT_FILE, TupleType, Type, assignable, join,
+    assignable, BINARY_FILE, DictType, INT, join, ListType, NONE, OptionalType, POLL, SelectorKeyType, SelectorSlot,
+    SelectorType, SOCKET, TEXT_FILE, TupleType, Type,
 )
 
 
@@ -197,3 +197,5 @@ MODULES["selectors"] = Module("selectors", {
     "BaseSelector": Function("BaseSelector", abstract_selector, generic_type=selector_type),
     "SelectorKey": Function("SelectorKey", no_key_constructor, generic_type=selector_key_type),
 }, "modules/selectors.hpp")
+module_type(SelectorType, methods=SELECTOR_METHODS)
+module_type(SelectorKeyType, attributes=SELECTOR_KEY_ATTRIBUTES)

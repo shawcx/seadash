@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from ..builtins import (
-    EXCEPTIONS, Function, MODULES, Module, NamedType, Value, module_with_params, runtime_module, signature,
-    sync_method,
+    class_function, CLASS_MEMBERS, exception_class, Function, Module, module_with_params, MODULES, NamedType,
+    runtime_module, signature, sync_method, Value,
 )
 from ..types import (
-    DATE, DATETIME, FLOAT, INT, ListType, NORMAL_DIST, OptionalType, PATH, STR, SetType, StructType, TIME,
-    TIMEDELTA, TIMEZONE, Type,
+    DATE, DATETIME, FLOAT, INT, ListType, NORMAL_DIST, OptionalType, SetType, STR, TIME, TIMEDELTA, TIMEZONE, Type,
 )
-from .statistics import NUMBERS, stats_fn
 
 
 def attrs(result: Type, *names: str) -> dict:
@@ -54,22 +52,22 @@ DATETIME.methods.update({
 })
 TIMEDELTA.methods.update({"total_seconds": sync_method(FLOAT)})
 TIMEZONE.methods.update({"tzname": sync_method(STR, ("dt", OptionalType(DATETIME), "std::nullopt"))})
-DT = "sd::datetime::"
+_DT = "sd::datetime::"
 TIME_PARAMS = (("hour", INT, "0"), ("minute", INT, "0"), ("second", INT, "0"), ("microsecond", INT, "0"),
                ("tzinfo", OPT_TZ, "std::nullopt"))
 DATETIME_MODULE = {
-    "date": Function("date", signature(DATE, ("year", INT), ("month", INT), ("day", INT)), DT + "date", as_type=DATE),
-    "time": Function("time", signature(TIME, *TIME_PARAMS), DT + "time", as_type=TIME),
+    "date": Function("date", signature(DATE, ("year", INT), ("month", INT), ("day", INT)), _DT + "date", as_type=DATE),
+    "time": Function("time", signature(TIME, *TIME_PARAMS), _DT + "time", as_type=TIME),
     "datetime": Function("datetime", signature(DATETIME, ("year", INT), ("month", INT), ("day", INT), *TIME_PARAMS),
-                         DT + "datetime", as_type=DATETIME),
+                         _DT + "datetime", as_type=DATETIME),
     "timedelta": Function("timedelta", signature(TIMEDELTA, *((name, FLOAT, "0.0") for name in (
-        "days", "seconds", "microseconds", "milliseconds", "minutes", "hours", "weeks"))), DT + "timedelta",
+        "days", "seconds", "microseconds", "milliseconds", "minutes", "hours", "weeks"))), _DT + "timedelta",
         as_type=TIMEDELTA),
     "timezone": Function("timezone", signature(TIMEZONE, ("offset", TIMEDELTA), ("name", OptionalType(STR), "std::nullopt")),
-                         DT + "timezone", as_type=TIMEZONE),
-    "MINYEAR": Value("MINYEAR", INT, DT + "MINYEAR"),
-    "MAXYEAR": Value("MAXYEAR", INT, DT + "MAXYEAR"),
-    "UTC": Value("UTC", TIMEZONE, DT + "timezone::utc()"),
+                         _DT + "timezone", as_type=TIMEZONE),
+    "MINYEAR": Value("MINYEAR", INT, _DT + "MINYEAR"),
+    "MAXYEAR": Value("MAXYEAR", INT, _DT + "MAXYEAR"),
+    "UTC": Value("UTC", TIMEZONE, _DT + "timezone::utc()"),
 }
 for _f in DATETIME_MODULE.values():
     if isinstance(_f, Function):
@@ -80,50 +78,38 @@ MODULES["zoneinfo"] = module_with_params(runtime_module(
     "zoneinfo", "modules/zoneinfo.hpp",
     ZoneInfo=(signature(TIMEZONE, ("key", STR)), "sd::zoneinfo::ZoneInfo"),
     available_timezones=(signature(SetType(STR)), "sd::zoneinfo::available_timezones"),
-    ZoneInfoNotFoundError=StructType("ZoneInfoNotFoundError", "class", None, base=EXCEPTIONS["KeyError"], builtin=True,
-                                     cpp_name="sd::zoneinfo::ZoneInfoNotFoundError"),
+    ZoneInfoNotFoundError=exception_class("ZoneInfoNotFoundError", "sd::zoneinfo::ZoneInfoNotFoundError", "KeyError"),
 ))
 MODULES["zoneinfo"].members["ZoneInfo"].as_type = TIMEZONE
 
 
-def class_function(name: str, result: Type, cpp: str, *params) -> Function:
-    return Function(name, signature(result, *params), cpp, params)
-
-
-# Members of a built-in class itself: Path.cwd(), datetime.now(), timezone.utc.
-CLASS_MEMBERS: dict[Type, dict[str, Function | Value]] = {
-    PATH: {
-        "cwd": class_function("Path.cwd", PATH, "sd::pathlib::Path::cwd"),
-        "home": class_function("Path.home", PATH, "sd::pathlib::Path::home"),
-    },
+CLASS_MEMBERS.update({
     DATE: {
-        "today": class_function("date.today", DATE, DT + "date::today"),
-        "fromisoformat": class_function("date.fromisoformat", DATE, DT + "date::fromisoformat", ("date_string", STR)),
-        "fromordinal": class_function("date.fromordinal", DATE, DT + "date::fromordinal", ("ordinal", INT)),
-        "fromtimestamp": class_function("date.fromtimestamp", DATE, DT + "date::fromtimestamp", ("timestamp", FLOAT)),
+        "today": class_function("date.today", DATE, _DT + "date::today"),
+        "fromisoformat": class_function("date.fromisoformat", DATE, _DT + "date::fromisoformat", ("date_string", STR)),
+        "fromordinal": class_function("date.fromordinal", DATE, _DT + "date::fromordinal", ("ordinal", INT)),
+        "fromtimestamp": class_function("date.fromtimestamp", DATE, _DT + "date::fromtimestamp", ("timestamp", FLOAT)),
     },
     TIME: {
-        "fromisoformat": class_function("time.fromisoformat", TIME, DT + "time::fromisoformat", ("time_string", STR)),
+        "fromisoformat": class_function("time.fromisoformat", TIME, _DT + "time::fromisoformat", ("time_string", STR)),
     },
     DATETIME: {
-        "now": class_function("datetime.now", DATETIME, DT + "datetime::now", ("tz", OPT_TZ, "std::nullopt")),
-        "today": class_function("datetime.today", DATETIME, DT + "datetime::today"),
-        "utcnow": class_function("datetime.utcnow", DATETIME, DT + "datetime::utcnow"),
-        "fromtimestamp": class_function("datetime.fromtimestamp", DATETIME, DT + "datetime::fromtimestamp",
+        "now": class_function("datetime.now", DATETIME, _DT + "datetime::now", ("tz", OPT_TZ, "std::nullopt")),
+        "today": class_function("datetime.today", DATETIME, _DT + "datetime::today"),
+        "utcnow": class_function("datetime.utcnow", DATETIME, _DT + "datetime::utcnow"),
+        "fromtimestamp": class_function("datetime.fromtimestamp", DATETIME, _DT + "datetime::fromtimestamp",
                                         ("timestamp", FLOAT), ("tz", OPT_TZ, "std::nullopt")),
-        "utcfromtimestamp": class_function("datetime.utcfromtimestamp", DATETIME, DT + "datetime::utcfromtimestamp",
+        "utcfromtimestamp": class_function("datetime.utcfromtimestamp", DATETIME, _DT + "datetime::utcfromtimestamp",
                                            ("timestamp", FLOAT)),
-        "fromisoformat": class_function("datetime.fromisoformat", DATETIME, DT + "datetime::fromisoformat",
+        "fromisoformat": class_function("datetime.fromisoformat", DATETIME, _DT + "datetime::fromisoformat",
                                         ("date_string", STR)),
-        "strptime": class_function("datetime.strptime", DATETIME, DT + "datetime::strptime",
+        "strptime": class_function("datetime.strptime", DATETIME, _DT + "datetime::strptime",
                                    ("date_string", STR), ("format", STR)),
-        "combine": class_function("datetime.combine", DATETIME, DT + "datetime::combine",
+        "combine": class_function("datetime.combine", DATETIME, _DT + "datetime::combine",
                                   ("date", DATE), ("time", TIME), ("tzinfo", OPT_TZ, "std::nullopt")),
     },
-    TIMEZONE: {"utc": Value("utc", TIMEZONE, DT + "timezone::utc()")},
-    NORMAL_DIST: {"from_samples": Function("NormalDist.from_samples", stats_fn(NORMAL_DIST, ("data", NUMBERS)),
-                                           "sd::statistics::NormalDist::from_samples", (("data", NUMBERS),))},
-}
+    TIMEZONE: {"utc": Value("utc", TIMEZONE, _DT + "timezone::utc()")},
+})
 NORMAL_DIST.methods.update({
     "pdf": sync_method(FLOAT, ("x", FLOAT)),
     "cdf": sync_method(FLOAT, ("x", FLOAT)),

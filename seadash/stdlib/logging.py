@@ -6,10 +6,10 @@ from collections.abc import Callable
 
 from .. import ast as A
 from ..builtins import (
-    CallContext, MODULES, NamedType, module_with_params, printable, runtime_module, signature, sync_method,
+    CallContext, module_with_params, MODULES, NamedType, printable, runtime_module, signature, sync_method,
 )
 from ..types import (
-    BOOL, INT, LOGGER, LOG_FORMATTER, LOG_HANDLER, ListType, NONE, OptionalType, PATH, STR, TEXT_FILE, Type,
+    BOOL, INT, ListType, LOG_FORMATTER, LOG_HANDLER, LOGGER, NONE, OptionalType, PATH, STR, TEXT_FILE, Type,
 )
 
 
@@ -93,24 +93,24 @@ LOG_HANDLER.methods.update({
     "flush": sync_method(NONE),
     "close": sync_method(NONE),
 })
-LOG = "sd::logging::"
+_LOG = "sd::logging::"
 MODULES["logging"] = module_with_params(runtime_module(
     "logging", "modules/logging.hpp",
     **{name: (log_call(name), None) for name in (*LOG_LEVELS, "log")},
     basicConfig=(log_basic_config, None),
-    getLogger=(signature(LOGGER, ("name", OptionalType(STR), "std::nullopt")), LOG + "getLogger"),
-    getLevelName=(signature(STR, ("level", INT)), LOG + "level_name"),
-    disable=(signature(NONE, ("level", INT, LOG + "CRITICAL")), LOG + "disable"),
-    StreamHandler=(signature(LOG_HANDLER, ("stream", OptionalType(TEXT_FILE), "std::nullopt")), LOG + "Handler::stream"),
+    getLogger=(signature(LOGGER, ("name", OptionalType(STR), "std::nullopt")), _LOG + "getLogger"),
+    getLevelName=(signature(STR, ("level", INT)), _LOG + "level_name"),
+    disable=(signature(NONE, ("level", INT, _LOG + "CRITICAL")), _LOG + "disable"),
+    StreamHandler=(signature(LOG_HANDLER, ("stream", OptionalType(TEXT_FILE), "std::nullopt")), _LOG + "Handler::stream"),
     FileHandler=(signature(LOG_HANDLER, ("filename", STR), ("mode", STR, '"a"s'),
-                           ("encoding", OptionalType(STR), "std::nullopt")), LOG + "Handler::file"),
-    NullHandler=(signature(LOG_HANDLER), LOG + "Handler"),
+                           ("encoding", OptionalType(STR), "std::nullopt")), _LOG + "Handler::file"),
+    NullHandler=(signature(LOG_HANDLER), _LOG + "Handler"),
     Formatter=(signature(LOG_FORMATTER, ("fmt", OptionalType(STR), "std::nullopt"),
-                         ("datefmt", OptionalType(STR), "std::nullopt"), ("style", STR, '"%"s')), LOG + "Formatter"),
-    **{name: (INT, LOG + name) for name in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "NOTSET")},
-    WARN=(INT, LOG + "WARNING"), FATAL=(INT, LOG + "CRITICAL"),
-    BASIC_FORMAT=(STR, LOG + "BASIC_FORMAT"),
-    root=(LOGGER, LOG + "Logger::root()"),
+                         ("datefmt", OptionalType(STR), "std::nullopt"), ("style", STR, '"%"s')), _LOG + "Formatter"),
+    **{name: (INT, _LOG + name) for name in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "NOTSET")},
+    WARN=(INT, _LOG + "WARNING"), FATAL=(INT, _LOG + "CRITICAL"),
+    BASIC_FORMAT=(STR, _LOG + "BASIC_FORMAT"),
+    root=(LOGGER, _LOG + "Logger::root()"),
 ))
 for _name, _t in (("StreamHandler", LOG_HANDLER), ("FileHandler", LOG_HANDLER),
                   ("NullHandler", LOG_HANDLER), ("Formatter", LOG_FORMATTER)):

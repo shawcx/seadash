@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from ..builtins import CollectionTypeDef, MODULES, Module, OPT_FLOAT, SyncTypeDef, elem0, exception_class, sync_method
+from ..builtins import (
+    CollectionTypeDef, elem0, exception_class, Module, module_type, MODULES, OPT_FLOAT, sync_method, SyncTypeDef,
+)
 from ..types import BOOL, FLOAT, INT, NONE, STR, StructType, SyncType
 
 
@@ -69,3 +71,4 @@ MODULES["queue"] = Module("queue", {
     "Empty": exception_class("Empty", "sd::queue::Empty"),
     "Full": exception_class("Full", "sd::queue::Full"),
 }, "modules/queue.hpp")
+module_type(SyncType, methods=lambda t: SYNC_METHODS[t.kind])

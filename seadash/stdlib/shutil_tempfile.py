@@ -3,23 +3,14 @@
 from __future__ import annotations
 
 from ..builtins import (
-    CallContext, EXCEPTIONS, MODULES, PATH_LIKE, module_with_params, runtime_module, signature, sync_method,
+    builtin_struct, CallContext, exception_class, module_with_params, MODULES, PATH_LIKE, runtime_module, signature,
+    sync_method,
 )
-from ..errors import Loc
-from ..types import (
-    BINARY_FILE, BOOL, Field, FileType, INT, NONE, OptionalType, STR, StructType, TEMPDIR, TEXT_FILE, Type,
-)
-
-
-def builtin_struct(name: str, cpp: str, fields: dict[str, Type]) -> StructType:
-    st = StructType(name, "struct", None, builtin=True, cpp_name=cpp)
-    for fname, ft in fields.items():
-        st.fields[fname] = Field(fname, ft, None, Loc(0, 0))
-    return st
+from ..types import BINARY_FILE, BOOL, FileType, INT, NONE, OptionalType, STR, TEMPDIR, TEXT_FILE, Type
 
 
 DISK_USAGE = builtin_struct("usage", "sd::shutil::DiskUsage", {"total": INT, "used": INT, "free": INT})
-SHUTIL_ERROR = StructType("Error", "class", None, base=EXCEPTIONS["OSError"], builtin=True, cpp_name="sd::shutil::Error")
+SHUTIL_ERROR = exception_class("Error", "sd::shutil::Error", "OSError")
 SRC_DST = (("src", PATH_LIKE), ("dst", PATH_LIKE))
 
 
@@ -50,8 +41,7 @@ MODULES["shutil"] = module_with_params(runtime_module(
     disk_usage=(signature(DISK_USAGE, ("path", PATH_LIKE)), "sd::shutil::disk_usage"),
     copyfileobj=(shutil_copyfileobj, "sd::shutil::copyfileobj"),
     Error=SHUTIL_ERROR,
-    SameFileError=StructType("SameFileError", "class", None, base=SHUTIL_ERROR, builtin=True,
-                             cpp_name="sd::shutil::SameFileError"),
+    SameFileError=exception_class("SameFileError", "sd::shutil::SameFileError", SHUTIL_ERROR),
 ))
 TEMP_PARAMS = (("suffix", STR, '""s'), ("prefix", OptionalType(STR), "std::nullopt"),
                ("dir", OptionalType(STR), "std::nullopt"))

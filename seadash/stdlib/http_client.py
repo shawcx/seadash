@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from .. import ast as A
 from ..builtins import (
-    CallContext, EXCEPTIONS, MODULES, Module, NamedType, OPT_FLOAT, bind_args, module_with_params, runtime_module,
-    signature, sync_method,
+    bind_args, CallContext, exception_class, EXCEPTIONS, Module, module_with_params, MODULES, NamedType, OPT_FLOAT,
+    runtime_module, signature, sync_method,
 )
 from ..errors import Loc
 from ..types import (
@@ -49,7 +49,7 @@ HTTP_CONNECTION.attributes.update({"host": lambda t: STR, "port": lambda t: INT,
 
 
 def http_exception(name: str, base: StructType) -> StructType:
-    return StructType(name, "class", None, base=base, builtin=True, cpp_name=f"sd::httpclient::{name}")
+    return exception_class(name, f"sd::httpclient::{name}", base)
 
 
 HTTP_EXCEPTION = http_exception("HTTPException", EXCEPTIONS["Exception"])

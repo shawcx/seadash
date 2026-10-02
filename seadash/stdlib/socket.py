@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from ..builtins import (
-    BYTES_OR_STR, EXCEPTIONS, MODULES, OPT_FLOAT, exception_class, module_with_params, runtime_module, signature,
-    sync_method,
+    ADDRESS, BYTES_OR_STR, exception_class, EXCEPTIONS, module_with_params, MODULES, OPT_FLOAT, runtime_module,
+    signature, sync_method,
 )
 from ..types import BOOL, BYTES, INT, NONE, OptionalType, SOCKET, STR, TupleType
 
 
-ADDRESS = TupleType((STR, INT))
 SOCKET.methods.update({
     "connect": sync_method(NONE, ("address", ADDRESS)),
     "bind": sync_method(NONE, ("address", ADDRESS)),

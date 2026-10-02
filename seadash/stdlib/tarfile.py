@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from ..builtins import EXCEPTIONS, MODULES, OneOf, PATH_LIKE, module_with_params, runtime_module, signature, sync_method
+from ..builtins import (
+    exception_class, module_with_params, MODULES, OneOf, PATH_LIKE, runtime_module, signature, sync_method,
+)
 from ..types import (
     BINARY_FILE, BOOL, BYTES, DictType, FLOAT, FuncType, INT, ListType, NONE, OptionalType, PATH, STR, StructType,
     TARFILE, TARINFO,
@@ -13,8 +15,7 @@ TAR_ERRORS: dict[str, StructType] = {}
 
 
 def tar_exception(name: str, base: str) -> StructType:
-    st = StructType(name, "class", None, base=TAR_ERRORS.get(base) or EXCEPTIONS[base], builtin=True,
-                    cpp_name=f"sd::tarfile::{name}")
+    st = exception_class(name, f"sd::tarfile::{name}", TAR_ERRORS.get(base) or base)
     TAR_ERRORS[name] = st
     return st
 

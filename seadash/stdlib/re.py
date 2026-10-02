@@ -6,11 +6,12 @@ from collections.abc import Callable
 
 from .. import ast as A
 from ..builtins import (
-    CallContext, Function, MANY, MODULES, Module, NamedType, Value, bind_args, exception_class, plural, returns,
+    bind_args, CallContext, exception_class, Function, MANY, Module, module_type, MODULES, NamedType, plural, returns,
+    Value,
 )
 from ..types import (
-    DictType, FuncType, INT, ListType, MatchType, NONE, OptionalType, PatternType, RegexInfo, STR, TupleType, Type,
-    assignable,
+    assignable, DictType, FuncType, INT, ListType, MatchType, NONE, OptionalType, PatternType, RegexInfo, STR,
+    TupleType, Type,
 )
 
 
@@ -216,3 +217,5 @@ MODULES["re"] = Module("re", {
     "Pattern": NamedType("Pattern", PatternType()),
     "Match": NamedType("Match", MatchType()),
 }, "modules/re.hpp", ("pcre2-8",))
+module_type(PatternType, methods=PATTERN_METHODS, attributes=PATTERN_ATTRIBUTES)
+module_type(MatchType, methods=MATCH_METHODS, attributes=MATCH_ATTRIBUTES)

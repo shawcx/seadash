@@ -4,18 +4,17 @@ from __future__ import annotations
 
 from .. import ast as A
 from ..builtins import (
-    CallContext, EXCEPTIONS, MODULES, Module, OneOf, bind_args, module_with_params, runtime_module, signature,
-    sync_method,
+    bind_args, BUILTIN_CLASS_METHODS, CallContext, exception_class, Module, module_with_params, MODULES, OneOf,
+    OPT_STR, runtime_module, signature, sync_method,
 )
 from ..errors import Loc
 from ..types import (
-    BOOL, BYTEARRAY, BYTES, DictType, FLOAT, Field, HTTP_HEADERS, HTTP_RESPONSE, INT, ListType, NONE, OptionalType,
-    PATH, SOCKET, SSL_SOCKET, STR, StructType, TupleType, Type, URL_PARTS, URL_REQUEST, element_type,
+    BOOL, BYTEARRAY, BYTES, DictType, element_type, Field, FLOAT, HTTP_HEADERS, HTTP_RESPONSE, INT, ListType, NONE,
+    OptionalType, STR, TupleType, Type, URL_PARTS, URL_REQUEST,
 )
 from .ssl import SSL_CONTEXT
 
 
-OPT_STR = OptionalType(STR)
 HTTP_RESPONSE.methods.update({
     "read": sync_method(BYTES, ("amt", OptionalType(INT), "std::nullopt")),
     "isclosed": sync_method(BOOL),
@@ -71,24 +70,11 @@ URL_PARTS.attributes.update({
     "hostname": lambda t: OptionalType(STR), "port": lambda t: OptionalType(INT),
     "username": lambda t: OptionalType(STR), "password": lambda t: OptionalType(STR),
 })
-EXCEPTION_METHODS = {  # methods of built-in classes (by C++ name): HTTPError is also a response
-    "sd::ssl::SSLContext": {
-        "load_default_certs": sync_method(NONE),
-        "load_cert_chain": sync_method(NONE, ("certfile", OneOf(STR, PATH, what="a str or Path")),
-                                       ("keyfile", OneOf(STR, PATH, NONE, what="a str, a Path or None"), "std::nullopt"),
-                                       ("password", OptionalType(STR), "std::nullopt")),
-        "wrap_socket": sync_method(SSL_SOCKET, ("sock", SOCKET), ("server_side", BOOL, "false"),
-                                   ("do_handshake_on_connect", BOOL, "true"), ("suppress_ragged_eofs", BOOL, "true"),
-                                   ("server_hostname", OPT_STR, "std::nullopt")),
-        "load_verify_locations": sync_method(NONE, ("cafile", OPT_STR, "std::nullopt"), ("capath", OPT_STR, "std::nullopt"),
-                                             ("cadata", OPT_STR, "std::nullopt")),
-    },
-    "sd::urlerror::HTTPError": {
-        "read": sync_method(BYTES, ("amt", OptionalType(INT), "std::nullopt")),
-        "getcode": sync_method(INT),
-        "geturl": sync_method(STR),
-        "info": sync_method(HTTP_HEADERS),
-    },
+BUILTIN_CLASS_METHODS["sd::urlerror::HTTPError"] = {  # (an HTTPError is also a response)
+    "read": sync_method(BYTES, ("amt", OptionalType(INT), "std::nullopt")),
+    "getcode": sync_method(INT),
+    "geturl": sync_method(STR),
+    "info": sync_method(HTTP_HEADERS),
 }
 
 
@@ -143,9 +129,9 @@ def url_encode(ctx: CallContext) -> Type:
     return STR
 
 
-URL_ERROR = StructType("URLError", "class", None, base=EXCEPTIONS["OSError"], builtin=True, cpp_name="sd::urlerror::URLError")
+URL_ERROR = exception_class("URLError", "sd::urlerror::URLError", "OSError")
 URL_ERROR.fields["reason"] = Field("reason", STR, None, Loc(0, 0))
-HTTP_ERROR = StructType("HTTPError", "class", None, base=URL_ERROR, builtin=True, cpp_name="sd::urlerror::HTTPError")
+HTTP_ERROR = exception_class("HTTPError", "sd::urlerror::HTTPError", URL_ERROR)
 for _field, _t in (("code", INT), ("msg", STR), ("headers", HTTP_HEADERS), ("url", STR)):
     HTTP_ERROR.fields[_field] = Field(_field, _t, None, Loc(0, 0))
 URL_PARSE = module_with_params(runtime_module(

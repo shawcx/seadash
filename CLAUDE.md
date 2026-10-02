@@ -58,6 +58,9 @@ The name is final (a nod to the author's two kids).
   `BuiltinClass` in `types.py`, with its C++ type and thread rule; its module's file adds its
   `methods` and `attributes` next to its module. The checker, `threads.py` and codegen look
   those up, so only a class that needs special code generation gets a case of its own.
+  A type with parameters (a `Type` subclass, like `PatternType`) registers its methods and
+  attributes with `module_type()`, and a class's own members (`datetime.now`) go in
+  `CLASS_MEMBERS`: the core (`builtins.py`) never names a module's tables.
 - `tests/programs/*.sd` are end-to-end tests: `.out` is the expected stdout (and optional
   `.err` / `.exit`). They're valid Python that python3 gives the same output for
   (`tests/test_python_parity.py` checks; `NEEDS_PYTHON` there lists the version-dependent ones).

@@ -6,12 +6,12 @@ from collections.abc import Callable
 
 from .. import ast as A
 from ..builtins import (
-    AttributeUnavailable, CallContext, EXCEPTIONS, Function, MODULES, Module, NamedType, Value, bind_args, content,
-    returns, signature,
+    AttributeUnavailable, bind_args, CallContext, content, EXCEPTIONS, Function, Module, module_type, MODULES,
+    NamedType, returns, signature, Value,
 )
 from ..errors import Loc
 from ..types import (
-    BOOL, BYTES, DictType, FLOAT, Field, FileType, INT, ListType, NONE, OptionalType, ProcessType, STR, StructType,
+    BOOL, BYTES, DictType, Field, FileType, FLOAT, INT, ListType, NONE, OptionalType, ProcessType, STR, StructType,
     TupleType, Type,
 )
 
@@ -199,3 +199,5 @@ MODULES["subprocess"] = Module("subprocess", {
 }, "modules/subprocess.hpp")
 for _name in ("getoutput", "getstatusoutput"):
     MODULES["subprocess"].members[_name].params = MODULES["subprocess"].members[_name].check.params
+module_type(ProcessType, methods=lambda t: PROCESS_METHODS[t.kind],
+            attributes=lambda t: COMPLETED_ATTRIBUTES if t.kind == "CompletedProcess" else POPEN_ATTRIBUTES)

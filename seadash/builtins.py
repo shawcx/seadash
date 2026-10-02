@@ -17,11 +17,10 @@ from .errors import CheckError
 from .errors import Loc
 from .types import (
     BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, SOCKET, STR, BINARY_FILE, TEXT_FILE, CounterType, DequeType,
-    MatchType, PatternType, ProcessType, PATH, DATE, DATETIME, TIME, TIMEDELTA, NamespaceType, ParserType,
-    SubParsersType, VarTupleType, GeneratorType, FutureType, UUID_T, BuiltinClass, StructFormatType, SelectorKeyType,
-    SelectorType, CSV_DICT_READER, HTTP_HEADERS, DictType, Field, FileType, SyncType, FuncType, user_dunder, IterType,
-    ListType, OptionalType, SetType, StructType, TupleType, Type, ClassRefType, CmpKeyType, HTTPServerType,
-    assignable, filled_for, fills_defaults, element_type, enum_mixin, is_hashable, is_numeric, join,
+    PATH, DATE, DATETIME, TIME, TIMEDELTA, VarTupleType, GeneratorType, UUID_T, BuiltinClass, CSV_DICT_READER,
+    HTTP_HEADERS, DictType, Field, FileType, FuncType, user_dunder, IterType, ListType, OptionalType, SetType,
+    StructType, TupleType, Type, ClassRefType, CmpKeyType, assignable, filled_for, fills_defaults, element_type,
+    enum_mixin, is_hashable, is_numeric, join,
 )
 
 # Generic built-in types and how many type arguments they take (None = any number).
@@ -1312,9 +1311,26 @@ JSON_VALUE_METHODS = {
 }
 
 
+# The methods and attributes of the types a standard-library module defines, by the type's class:
+# the module's file (seadash/stdlib/) registers them with module_type().
+MODULE_TYPE_METHODS: dict[type, Callable[[Type], dict]] = {}
+MODULE_TYPE_ATTRIBUTES: dict[type, Callable[[Type], dict]] = {}
+# The methods of built-in classes (a StructType with builtin=True), by C++ name: ssl.SSLContext's...
+BUILTIN_CLASS_METHODS: dict[str, dict] = {}
+
+
+def module_type(cls: type, methods: dict | Callable[[Type], dict] | None = None,
+                attributes: dict | Callable[[Type], dict] | None = None) -> None:
+    """Registers a module's type: its methods and attributes, each a table or a function from the
+    type to its table (ProcessType's depend on its kind)."""
+    as_lookup = lambda table: table if callable(table) else (lambda t: table)
+    if methods is not None:
+        MODULE_TYPE_METHODS[cls] = as_lookup(methods)
+    if attributes is not None:
+        MODULE_TYPE_ATTRIBUTES[cls] = as_lookup(attributes)
+
+
 def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
-    if isinstance(t, SyncType):
-        return SYNC_METHODS[t.kind].get(name)
     match t:
         case _ if t == JSON_VALUE:
             return JSON_VALUE_METHODS.get(name)
@@ -1330,26 +1346,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = {"count": returns(INT, args=(elem_of,)), "index": returns(INT, args=(elem_of,))}
         case TupleType():
             table = TUPLE_METHODS
-        case HTTPServerType():
-            return HTTP_SERVER_METHODS.get(name)
-        case ParserType():
-            return PARSER_METHODS.get(name)
-        case SubParsersType():
-            return {"add_parser": subparsers_add_parser}.get(name)
-        case StructType() if (methods := EXCEPTION_METHODS.get(t.cpp_name)) is not None:
+        case StructType() if (methods := BUILTIN_CLASS_METHODS.get(t.cpp_name)) is not None:
             return methods.get(name)
-        case FutureType():
-            return FUTURE_METHODS.get(name)
-        case SelectorType():
-            return SELECTOR_METHODS.get(name)
-        case StructFormatType():
-            return STRUCT_METHODS.get(name)
-        case ProcessType(kind):
-            table = PROCESS_METHODS[kind]
-        case PatternType():
-            table = PATTERN_METHODS
-        case MatchType():
-            table = MATCH_METHODS
         case CounterType():
             table = COUNTER_METHODS
         case DictType():
@@ -1366,6 +1364,8 @@ def method_for(t: Type, name: str) -> Callable[[CallContext], Type] | None:
             table = INT_METHODS
         case _ if t == FLOAT:
             table = FLOAT_METHODS
+        case _ if (lookup := MODULE_TYPE_METHODS.get(type(t))) is not None:
+            table = lookup(t)
         case _:
             return None
     return table.get(name)
@@ -1522,8 +1522,26 @@ def runtime_module(name: str, header: str, libs: tuple[str, ...] = (), **members
     return Module(name, table, header, libs)
 
 
-def exception_class(name: str, cpp: str, base: str = "Exception") -> StructType:
-    return StructType(name, "class", None, base=EXCEPTIONS[base], builtin=True, cpp_name=cpp)
+# Members of a built-in class itself (Path.cwd(), datetime.now(), timezone.utc), added by its module's file.
+CLASS_MEMBERS: dict[Type, dict[str, Function | Value]] = {}
+
+
+def class_function(name: str, result: Type, cpp: str, *params) -> Function:
+    return Function(name, signature(result, *params), cpp, params)
+
+
+def builtin_struct(name: str, cpp: str, fields: dict[str, Type]) -> StructType:
+    """A built-in class with plain fields (os.stat's stat_result, shutil.disk_usage's usage)."""
+    st = StructType(name, "struct", None, builtin=True, cpp_name=cpp)
+    for fname, ft in fields.items():
+        st.fields[fname] = Field(fname, ft, None, Loc(0, 0))
+    return st
+
+
+def exception_class(name: str, cpp: str, base: str | StructType = "Exception") -> StructType:
+    """A built-in exception class; its base is a built-in exception's name or another class."""
+    return StructType(name, "class", None, base=EXCEPTIONS[base] if isinstance(base, str) else base, builtin=True,
+                      cpp_name=cpp)
 
 
 class OneOf:
@@ -1742,6 +1760,8 @@ def elem0(t) -> Type:
 
 
 OPT_FLOAT = OptionalType(FLOAT)
+OPT_STR = OptionalType(STR)
+ADDRESS = TupleType((STR, INT))  # a socket address: (host, port)
 # seadash's own thread-safe types aren't in Python's threading module: they're imported from seadash.
 SEADASH_THREAD_TYPES = ("Mutex", "RWMutex", "Atomic", "Synchronized")
 
@@ -1781,24 +1801,12 @@ def bind_args(ctx: CallContext, params: tuple) -> dict[str, A.Expr]:
 def type_attributes(t: Type) -> dict | None:
     if isinstance(t, BuiltinClass):
         return t.attributes
-    if isinstance(t, StructFormatType):
-        return {"size": lambda t: INT, "format": lambda t: STR}
-    if isinstance(t, NamespaceType):
-        return {name: (lambda _, ft=ft: ft) for name, ft in t.fields}
     if isinstance(t, DequeType):
         return {"maxlen": lambda t: OptionalType(INT)}
-    if isinstance(t, HTTPServerType):
-        return HTTP_SERVER_ATTRIBUTES
     if isinstance(t, FileType):
         return MEMORY_FILE_ATTRIBUTES if t.memory else FILE_ATTRIBUTES
-    if isinstance(t, PatternType):
-        return PATTERN_ATTRIBUTES
-    if isinstance(t, MatchType):
-        return MATCH_ATTRIBUTES
-    if isinstance(t, ProcessType):
-        return COMPLETED_ATTRIBUTES if t.kind == "CompletedProcess" else POPEN_ATTRIBUTES
-    if isinstance(t, SelectorKeyType):
-        return SELECTOR_KEY_ATTRIBUTES
+    if (lookup := MODULE_TYPE_ATTRIBUTES.get(type(t))) is not None:
+        return lookup(t)
     return None
 
 

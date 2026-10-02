@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..builtins import CallContext, EXCEPTIONS, MODULES, module_with_params, runtime_module, signature, sync_method
+from ..builtins import CallContext, exception_class, module_with_params, MODULES, runtime_module, signature, sync_method
 from ..errors import Loc
 from ..types import (
     BOOL, BYTES, CALENDAR, DATE, EnumInfo, EnumMember, GeneratorType, HTML_CALENDAR, INT, ListType, NONE,
@@ -70,8 +70,7 @@ HTML_CALENDAR.methods.update({
 })
 for _cls in (CALENDAR, TEXT_CALENDAR, HTML_CALENDAR):
     _cls.attributes["firstweekday"] = lambda t: INT
-CALENDAR_ERRORS = {n: StructType(n, "class", None, base=EXCEPTIONS["ValueError"], builtin=True,
-                                 cpp_name=f"sd::calendar::{n}") for n in ("IllegalMonthError", "IllegalWeekdayError")}
+CALENDAR_ERRORS = {n: exception_class(n, f"sd::calendar::{n}", "ValueError") for n in ("IllegalMonthError", "IllegalWeekdayError")}
 FIRSTWEEKDAY = ("firstweekday", INT, "0")
 MODULES["calendar"] = module_with_params(runtime_module(
     "calendar", "modules/calendar.hpp",

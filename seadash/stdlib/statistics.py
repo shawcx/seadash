@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from .. import ast as A
 from ..builtins import (
-    CallContext, MODULES, NamedType, bind_args, exception_class, mark_tuple_iterable, mixed_tuple_hint,
-    module_with_params, ordered, runtime_module, signature,
+    bind_args, CallContext, CLASS_MEMBERS, exception_class, Function, mark_tuple_iterable, mixed_tuple_hint,
+    module_with_params, MODULES, NamedType, ordered, runtime_module, signature,
 )
 from ..types import (
-    BOOL, FLOAT, INT, LINEAR_REGRESSION, ListType, NORMAL_DIST, OptionalType, STR, Type, assignable, element_type,
-    is_hashable, is_numeric,
+    assignable, BOOL, element_type, FLOAT, INT, is_hashable, is_numeric, LINEAR_REGRESSION, ListType, NORMAL_DIST,
+    OptionalType, STR, Type,
 )
 
 
@@ -103,3 +103,5 @@ MODULES["statistics"].members["NormalDist"].as_type = NORMAL_DIST
 MODULES["statistics"].members["LinearRegression"] = NamedType("LinearRegression", LINEAR_REGRESSION)  # (annotations)
 LINEAR_REGRESSION.attributes.update({"slope": lambda t: FLOAT, "intercept": lambda t: FLOAT})
 NORMAL_DIST.attributes.update({name: (lambda t: FLOAT) for name in ("mean", "median", "mode", "stdev", "variance")})
+CLASS_MEMBERS[NORMAL_DIST] = {"from_samples": Function("NormalDist.from_samples", stats_fn(NORMAL_DIST, ("data", NUMBERS)),
+                                                       "sd::statistics::NormalDist::from_samples", (("data", NUMBERS),))}
