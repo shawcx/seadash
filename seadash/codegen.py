@@ -31,11 +31,12 @@ from __future__ import annotations
 
 import copy
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 
 from . import ast as A
 from . import builtins
-from .checker import CallTarget, Dunder, ModuleInfo
+from .checker import CallTarget, Dunder, ModuleInfo, has_yield
 from .flow import last_use, loop_by_reference, mark_copy_outs, sub_blocks
 from .flow import walk as walk_nodes
 from .threads import MUTATING_METHODS  # (a parameter changed by one of these is passed by value)
@@ -84,6 +85,7 @@ class ModuleUnit:
     name: str = "__main__"
     namespace: str = "prog"
     path: str = "<string>"  # the .sd file, for logging's %(pathname)s
+    source: str = ""  # its text, for the lines a traceback shows (debug builds)
 
 
 # Which module is being generated, and every module's namespace: references to
@@ -118,6 +120,7 @@ def generate_program(units: list[ModuleUnit]) -> str:
         _QUALIFY.current = u.name
         gen = CodeGen(u.module, u.info, u.name, u.namespace, uses_json, uses_copy)
         gen.source_path = u.path
+        gen.source = u.source
         out.append(gen.generate_namespace())
     inits = " ".join(f"{u.namespace}::module_main();" for u in units)
     out.append(f"int main(int argc, char** argv) {{ return sd::run_main(argc, argv, [] {{ {inits} }}); }}")
@@ -203,6 +206,8 @@ class CodeGen:
         # Inside a lambda that uses `self`, self is a captured copy named sd_self.
         self.lambda_self = 0
         self.source_path = "<string>"
+        self.source = ""
+        self.traced = True  # (not in a coroutine: a generator's frame would stay on the stack at each yield)
         # Structs/classes get JSON conversion hooks when the program imports json or tomllib (anywhere).
         self.uses_json = uses_json if uses_json is not None else any(m.name in ("json", "tomllib") for m in info.imports)
         # Classes get copy.copy / copy.deepcopy hooks when the program imports copy (anywhere).
@@ -352,9 +357,22 @@ class CodeGen:
     # Program structure
     # =========================================================================
 
+    def source_table(self) -> None:
+        """The module's file and lines, for what a traceback shows (debug builds only)."""
+        path = self.source_path
+        if not path.startswith("<"):
+            path = str(Path(path).resolve())  # (Python shows a script's full path)
+        lines = self.source.split("\n") if self.source else [""]
+        self.line("#ifdef SD_TRACEBACK")
+        self.line(f"inline const char* const sd_source_file = {cpp_string(path)[:-1]};")
+        self.line(f"inline const char* const sd_source_lines[] = {{{', '.join(cpp_string(l)[:-1] for l in lines)}}};")
+        self.line("#endif")
+        self.line()
+
     def generate_namespace(self) -> str:
         self.line(f"namespace {self.namespace} {{  // module {self.module_name}")
         self.line()
+        self.source_table()
 
         structs = self.ordered_structs()
         if structs:
@@ -400,6 +418,7 @@ class CodeGen:
         self.func = None
         mark_copy_outs(top_level)
         self.open("void module_main()")
+        self.line('SD_FRAME("<module>");')
         self.hoist(self.info.main_locals)
         self.block(top_level)
         self.close()
@@ -953,6 +972,9 @@ class CodeGen:
     def function_body(self, fn: FuncInfo, header: str, coroutine_self: bool = False) -> None:
         self.func = fn
         self.open(header)
+        saved_traced, self.traced = self.traced, not has_yield(fn.node.body)
+        if self.traced:
+            self.line(f"SD_FRAME({cpp_string(fn.name)[:-1]});")
         if fn.owner is not None and fn.name != "__init__" and not is_static(fn) and is_synchronized(fn.owner):
             self.line("std::lock_guard<std::recursive_mutex> sd_lock(this->sd_mutex);  // Synchronized")
         if coroutine_self:  # a generator method's body reaches its object through sd_self
@@ -966,6 +988,7 @@ class CodeGen:
             self.lambda_self -= 1
         if isinstance(fn.ret, OptionalType) and not ends_with_return(fn.node.body):
             self.line("return std::nullopt;")
+        self.traced = saved_traced
         self.close()
         self.line()
 
@@ -1014,6 +1037,8 @@ class CodeGen:
 
     def block(self, stmts: list[A.Stmt]) -> None:
         for s in stmts:
+            if self.traced and not (isinstance(s, A.ExprStmt) and isinstance(s.value, A.StrLit)):
+                self.line(f"SD_LINE({s.loc.line});")  # (for a traceback: nothing unless SD_TRACEBACK)
             self.stmt(s)
 
     def stmt(self, s: A.Stmt) -> None:
@@ -1154,10 +1179,14 @@ class CodeGen:
         if self_names:
             self.lambda_self += 1
         self.open(header)
+        saved_traced, self.traced = self.traced, not has_yield(s.body)
+        if self.traced:
+            self.line(f"SD_FRAME({cpp_string(info.name)[:-1]});")
         self.hoist(info.locals)
         self.hoist_makers(s.body)
         self.cell_params(info)
         self.block(s.body)
+        self.traced = saved_traced
         if isinstance(info.ret, OptionalType) and not ends_with_return(s.body):
             self.line("return std::nullopt;")
         self.close("; };" if snapshot is not None and not recursive else ";")

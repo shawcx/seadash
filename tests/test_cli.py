@@ -88,3 +88,89 @@ def test_a_closed_pipe_is_a_broken_pipe_error(tmp_path):
         "print(repr(r.stdout), repr(r.stderr))\n")
     r = sd(["run", "child.sd"], "", tmp_path)
     assert r.stdout == "'y\\n' ''\n"
+
+
+
+TRACEBACK_MAIN = """\
+import logging
+import threading
+
+import helpers
+
+
+class Store:
+    def get(self, key: str) -> int:
+        def find(k: str) -> int:
+            return helpers.lookup({"a": 1}, k)
+        return find(key)
+
+
+def worker() -> None:
+    Store().get("from thread")
+
+
+logging.basicConfig(format="%(levelname)s %(message)s")
+try:
+    Store().get("logged")
+except KeyError:
+    logging.exception("lookup failed")
+t = threading.Thread(target=worker)
+t.start()
+t.join()
+try:
+    Store().get("again")
+except KeyError as e:
+    raise e
+"""
+TRACEBACK_HELPERS = """\
+def lookup(table: dict[str, int], key: str) -> int:
+    return table[key]
+"""
+# What Python prints (but for the source markers like ~~~^^^ under a line, and the frames of
+# Python's own threading.py in a thread's traceback).
+TRACEBACK_EXPECTED = """\
+ERROR lookup failed
+Traceback (most recent call last):
+  File "DIR/main.sd", line 20, in <module>
+    Store().get("logged")
+  File "DIR/main.sd", line 11, in get
+    return find(key)
+  File "DIR/main.sd", line 10, in find
+    return helpers.lookup({"a": 1}, k)
+  File "DIR/helpers.sd", line 2, in lookup
+    return table[key]
+KeyError: 'logged'
+Exception in thread Thread-1 (worker):
+Traceback (most recent call last):
+  File "DIR/main.sd", line 15, in worker
+    Store().get("from thread")
+  File "DIR/main.sd", line 11, in get
+    return find(key)
+  File "DIR/main.sd", line 10, in find
+    return helpers.lookup({"a": 1}, k)
+  File "DIR/helpers.sd", line 2, in lookup
+    return table[key]
+KeyError: 'from thread'
+Traceback (most recent call last):
+  File "DIR/main.sd", line 29, in <module>
+    raise e
+  File "DIR/main.sd", line 27, in <module>
+    Store().get("again")
+  File "DIR/main.sd", line 11, in get
+    return find(key)
+  File "DIR/main.sd", line 10, in find
+    return helpers.lookup({"a": 1}, k)
+  File "DIR/helpers.sd", line 2, in lookup
+    return table[key]
+KeyError: 'again'
+"""
+
+
+def test_debug_builds_print_tracebacks(tmp_path):
+    (tmp_path / "main.sd").write_text(TRACEBACK_MAIN)
+    (tmp_path / "helpers.sd").write_text(TRACEBACK_HELPERS)
+    r = sd(["run", "--debug", "main.sd"], "", tmp_path)
+    assert r.returncode == 1
+    assert r.stderr.replace(str(tmp_path.resolve()) + "/", "DIR/") == TRACEBACK_EXPECTED
+    r = sd(["run", "main.sd"], "", tmp_path)  # optimized: no tracebacks
+    assert "Traceback" not in r.stderr and r.stderr.endswith("KeyError: 'again'\n")

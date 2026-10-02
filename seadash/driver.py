@@ -74,7 +74,7 @@ class Program:
                    **{v.name: v for v in info.globals}, **info.generics}
         user = builtins.UserModule(name, members, namespace=namespace, info=info, path=str(path.resolve()))
         self.loaded[name] = user
-        self.units.append(codegen.ModuleUnit(module, info, name, namespace, str(path)))
+        self.units.append(codegen.ModuleUnit(module, info, name, namespace, str(path), source))
         return user
 
 
@@ -84,7 +84,8 @@ def check_program(source: str, path: Path | None = None) -> list[codegen.ModuleU
     program = Program(path.parent if path is not None else Path.cwd())
     module = parse(source)
     info = check(module, "__main__", program.load)
-    units = [*program.units, codegen.ModuleUnit(module, info, path=str(path) if path is not None else "<stdin>")]
+    units = [*program.units, codegen.ModuleUnit(module, info, path=str(path) if path is not None else "<stdin>",
+                                                source=source)]
     try:
         threads.verify([(u.module, u.info, u.name) for u in units])
     except threads.ThreadSafetyError as e:
@@ -120,6 +121,7 @@ class BuildOptions:
     optimize: bool = True
     cxx: str | None = None
     cache: bool = True  # reuse binaries built from the same C++, and a precompiled runtime header
+    traceback: bool | None = None  # tracebacks for uncaught exceptions (default: in debug builds)
 
 
 # ---- build cache ---------------------------------------------------------------------
@@ -224,6 +226,7 @@ def compile_cpp(cpp_path: Path, output: Path, options: BuildOptions, libs: list[
         "-fwrapv",  # int overflow wraps instead of being undefined behaviour
         "-ffp-contract=off",  # a * b + c rounds twice, as in Python (arm64 would fuse it)
         "-O3" if options.optimize else "-O0",  # (-O3 measured faster than -O2 on the benchmarks; bench/)
+        *(["-DSD_TRACEBACK"] if (options.traceback if options.traceback is not None else not options.optimize) else []),
     ]
     link = [f"-l{lib}" for lib in libs]
     if libs:

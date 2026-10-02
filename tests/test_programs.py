@@ -36,7 +36,8 @@ def binaries(tmp_path_factory) -> dict[str, Path | str]:
         cpp_path.write_text(result.cpp)
         binary = out_dir / name
         try:
-            compile_cpp(cpp_path, binary, BuildOptions(optimize=False), result.libs)
+            # (debug builds, for speed, but no tracebacks: they'd show where the checkout is)
+            compile_cpp(cpp_path, binary, BuildOptions(optimize=False, traceback=False), result.libs)
         except BuildError as e:
             return str(e)
         return binary

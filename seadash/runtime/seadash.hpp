@@ -56,8 +56,62 @@ namespace sd {
 // wrapper holding a shared_ptr and match `except` clauses with dynamic_cast.
 // The class tree mirrors Python's; keep it in sync with builtins.EXCEPTION_TREE.
 
+// Tracebacks (debug builds, compiled with SD_TRACEBACK): each running function has a Frame on
+// its thread's stack (SD_FRAME), whose line each statement updates (SD_LINE); an exception
+// copies the stack when it's raised, and an uncaught one prints it as Python does. Without
+// SD_TRACEBACK the macros are nothing at all.
+namespace trace {
+struct Frame {
+    const char* func;
+    const char* file;
+    const char* const* lines;  // the module's source, for the line shown under each frame
+    std::size_t nlines;
+    std::int64_t line;
+    Frame* prev;
+};
+inline thread_local Frame* top = nullptr;
+struct Scope {
+    Frame frame;
+    Scope(const char* func, const char* file, const char* const* lines, std::size_t nlines)
+        : frame{func, file, lines, nlines, 0, top} {
+        top = &frame;
+    }
+    ~Scope() { top = frame.prev; }
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+};
+struct Record {
+    std::string func, file, text;
+    std::int64_t line;
+};
+inline std::vector<Record> capture() {
+    std::vector<Record> out;
+    for (Frame* f = top; f; f = f->prev) {
+        std::string text;
+        if (f->line >= 1 && static_cast<std::size_t>(f->line) <= f->nlines) {
+            text = f->lines[f->line - 1];
+            auto start = text.find_first_not_of(" \t");
+            auto end = text.find_last_not_of(" \t\r");
+            text = start == std::string::npos ? "" : text.substr(start, end - start + 1);
+        }
+        out.push_back({f->func, f->file, std::move(text), f->line});
+    }
+    std::reverse(out.begin(), out.end());  // (most recent call last)
+    return out;
+}
+}  // namespace trace
+
+#ifdef SD_TRACEBACK
+#define SD_FRAME(func) ::sd::trace::Scope sd_frame(func, sd_source_file, sd_source_lines, std::size(sd_source_lines))
+#define SD_LINE(n) (::sd::trace::top ? (void)(::sd::trace::top->line = (n)) : (void)0)
+#else
+#define SD_FRAME(func) ((void)0)
+#define SD_LINE(n) ((void)0)
+#endif
+
 struct BaseException : std::enable_shared_from_this<BaseException> {
     std::string message;
+    std::vector<trace::Record> traceback;  // where it was raised (debug builds)
     BaseException() = default;
     explicit BaseException(std::string msg) : message(std::move(msg)) {}
     virtual ~BaseException() = default;
@@ -127,7 +181,31 @@ SD_EXCEPTION(StopIteration, Exception)
 
 struct Thrown {
     std::shared_ptr<BaseException> exc;
+    Thrown(std::shared_ptr<BaseException> e) : exc(std::move(e)) {
+#ifdef SD_TRACEBACK
+        if (!exc) return;
+        auto here = trace::capture();
+        if (!exc->traceback.empty()) {
+            // `raise e` of one caught earlier: as Python shows it, where it's raised again, then where
+            // it came from, from the frame that caught it down (the callers above it are already here).
+            std::size_t shared = here.empty() ? 0 : std::min(here.size() - 1, exc->traceback.size());
+            here.insert(here.end(), exc->traceback.begin() + static_cast<std::ptrdiff_t>(shared), exc->traceback.end());
+        }
+        exc->traceback = std::move(here);
+#endif
+    }
 };
+
+// "Traceback (most recent call last):" and its frames, if it has them (debug builds).
+inline std::string format_traceback(const BaseException& e) {
+    if (e.traceback.empty()) return "";
+    std::string out = "Traceback (most recent call last):\n";
+    for (const auto& r : e.traceback) {
+        out += "  File \"" + r.file + "\", line " + std::to_string(r.line) + ", in " + r.func + "\n";
+        if (!r.text.empty()) out += "    " + r.text + "\n";
+    }
+    return out;
+}
 
 template <class E>
 bool isinstance(const Thrown& t) {
@@ -4504,6 +4582,7 @@ inline int run_main(int argc, char** argv_, void (*module_main)()) {
         std::fflush(stdout);
         std::string type = t.exc->sd_type();
         std::string msg = t.exc->sd_str();
+        std::fputs(format_traceback(*t.exc).c_str(), stderr);
         std::fprintf(stderr, "%s%s%s\n", type.c_str(), msg.empty() ? "" : ": ", msg.c_str());
         code = 1;
     }
