@@ -1,0 +1,7 @@
+# A default argument is made fresh on every call (Python shares one between calls, and
+# prints [1, 2] [1, 2]): seadash-only, checked by hand.
+def add(x: int, xs: list[int] = []) -> list[int]:
+    xs.append(x)
+    return xs
+
+print(add(1), add(2))

@@ -60,9 +60,6 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
 
 ## Open questions
 
-- **Mutable default arguments.** `def f(xs: list[int] = [])` makes a new list on every call; Python
-  makes one when the function is defined and shares it between calls. Match Python, or keep this and
-  list it in the README's differences?
 - **Keywords on built-in methods.** Some accept keywords Python doesn't (`"x".center(width=5)`), others
   take none at all (`xs.pop(index=0)`): the built-ins declare their parameters in three different ways.
 
