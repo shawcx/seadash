@@ -42,7 +42,7 @@ from .flow import walk as walk_nodes
 from .threads import MUTATING_METHODS  # (a parameter changed by one of these is passed by value)
 from .types import (
     SYNC_CPP, BOOL, BYTEARRAY, BYTES, FLOAT, INT, JSON_VALUE, NONE, PATH, SOCKET, STR, SyncType, DATETIME_TYPES, DATETIME,
-    BuiltinClass, SelectorKeyType, SelectorType, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
+    BuiltinClass, COPIED, SelectorKeyType, SelectorType, STR_TEMPLATE, HASH, HMAC_T, EXECUTOR, FutureType, LOGGER, LOG_HANDLER, UUID_T, SQLITE_CONNECTION, SQLITE_CURSOR, StructFormatType,
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION, SIGNAL_HANDLER,
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
@@ -3691,6 +3691,8 @@ def holds_references(t: Type) -> bool:
         case ListType() | SetType() | DictType() | DequeType() | CounterType() | DefaultDictType():
             return True
         case _ if t == BYTEARRAY:
+            return True
+        case BuiltinClass() if t.threads == COPIED:  # (an HTTP connection: moved to a thread at its last use)
             return True
         case OptionalType(inner) | VarTupleType(inner):
             return holds_references(inner)

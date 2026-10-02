@@ -56,6 +56,19 @@ struct SSLContext {
     }
     std::string sd_repr() const { return "<ssl.SSLContext object>"; }
 
+    // The same settings, sharing nothing: what a connection sent to another thread takes, so
+    // the sender changing its context can't race with the thread connecting.
+    std::shared_ptr<SSLContext> clone() const {
+        auto c = std::make_shared<SSLContext>();
+        c->check_hostname = check_hostname;
+        c->verify_mode = verify_mode;
+        c->default_paths_ = default_paths_;
+        c->cafiles_ = cafiles_;
+        c->capaths_ = capaths_;
+        c->cadata_ = cadata_;
+        return c;
+    }
+
     // The OpenSSL context for the current settings.
     SSL_CTX* native() {
         if (ctx_ && built_mode_ == verify_mode && built_version_ == version_) return ctx_;

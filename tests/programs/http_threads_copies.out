@@ -1,0 +1,6 @@
+conn 1 /main
+conn 2 /thread
+conn 1 /main-again
+conn 4 /thread
+conn 3 /pending
+example.com:443

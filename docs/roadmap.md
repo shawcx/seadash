@@ -23,15 +23,6 @@ make HTTPS testable locally; today HTTPS is only checked by hand against public 
    see `docs/values-and-references.md` ("Shared with pool tasks"). Next: `pool.map` (its
    items), lambdas and nested defs as tasks, and attributes or items as arguments.
 
-## Decided, not built
-
-- **Passing an `HTTPConnection` to a thread** (it's currently a compile error). Recommended:
-  a copy is a new connection to the same host/port/timeout/context that connects on first
-  use (a `sd::value_copy` overload; `threads.py` makes it sendable; `SSLContext::native()`
-  needs a mutex because the copies share the context). Later, for connection pools, moving
-  a connection through a `Queue` could keep its socket if its last response was fully read.
-  Responses stay unsendable. Waiting for the user's go-ahead.
-
 ## Not supported yet (known gaps)
 
 - `http.client`: file or iterable request bodies, `encode_chunked`.

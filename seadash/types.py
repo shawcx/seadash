@@ -84,9 +84,8 @@ CSV_DICT_WRITER = BuiltinClass("csv.DictWriter", "sd::csv::DictWriter")
 HTTP_RESPONSE = BuiltinClass(
     "http.client.HTTPResponse", "sd::httpclient::HTTPResponse",
     unsendable="a response (reading it from two threads would interleave; pass what you read from it)")
-HTTP_CONNECTION = BuiltinClass(  # (HTTPSConnection too)
-    "http.client.HTTPConnection", "sd::httpclient::HTTPConnection",
-    unsendable="an HTTP connection (give each thread its own)")
+HTTP_CONNECTION = BuiltinClass(  # (HTTPSConnection too; a thread gets the connection, or a new one to the same place)
+    "http.client.HTTPConnection", "sd::httpclient::HTTPConnection", COPIED)
 HTTP_HEADERS = BuiltinClass("http.client.HTTPMessage", "sd::httpclient::HTTPMessage", COPIED)
 URL_REQUEST = BuiltinClass("urllib.request.Request", "sd::urlrequest::Request", COPIED)
 URL_PARTS = BuiltinClass("urllib.parse.ParseResult", "sd::urlparse::Parts", VALUE)

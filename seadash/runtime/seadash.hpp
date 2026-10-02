@@ -1359,12 +1359,31 @@ bool exclusive(const T& x) {
 }
 
 // Crossing into another thread: the value itself when nothing else can reach it (the
-// sender's last use of a list it built), otherwise a copy.
+// sender's last use of a list it built), otherwise a copy. A thread's arguments (a tuple)
+// are decided one by one, so a list moves even when a Queue goes with it.
+template <class U>
+U send_moved(U&& x) {
+    U out(std::move(x));
+    if constexpr (requires { out.sd_detach(); }) out.sd_detach();  // (letting go of what it still shares)
+    return out;
+}
 template <class T>
 std::remove_cvref_t<T> send(T&& x) {
     using U = std::remove_cvref_t<T>;
     if constexpr (std::is_rvalue_reference_v<T&&> && !std::is_const_v<std::remove_reference_t<T>>) {
-        if (exclusive(x)) return U(std::move(x));
+        if (exclusive(x)) return send_moved(std::move(x));
+        if constexpr (is_tuple<U>::value) {
+            CopyMemo memo;  // (two references to one list arrive as two references to one copy)
+            return std::apply(
+                [&](auto&... e) {
+                    return U([&](auto& item) {
+                        using E = std::remove_cvref_t<decltype(item)>;
+                        if (exclusive(item)) return send_moved(std::move(item));
+                        return E(value_copy(static_cast<const E&>(item), memo));
+                    }(e)...);
+                },
+                x);
+        }
     }
     return value_copy(static_cast<const U&>(x));
 }

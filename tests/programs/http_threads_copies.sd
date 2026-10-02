@@ -1,0 +1,84 @@
+# HTTP connections in threads where seadash differs from Python: a thread gets a new connection
+# to the same place (the server sees a new TCP connection) when the sender still uses the
+# connection, or a response is still reading from it; an HTTPS connection's copy takes its own
+# copy of the SSL context. (Python shares the one connection.)
+import http.client
+import queue
+import socket
+import threading
+
+import ssl
+
+
+def handle(c: socket.socket, n: int) -> None:
+    buf = b""
+    while True:
+        while b"\r\n\r\n" not in buf:
+            d = c.recv(4096)
+            if not d:
+                c.close()
+                return
+            buf += d
+        end = buf.index(b"\r\n\r\n")
+        path = buf[:end].decode().split()[1]
+        buf = buf[end + 4:]
+        body = f"conn {n} {path}".encode()
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+
+
+def serve(srv: socket.socket) -> None:
+    n = 0
+    while True:
+        c, _ = srv.accept()
+        n += 1
+        threading.Thread(target=handle, args=(c, n), daemon=True).start()
+
+
+def get(conn: http.client.HTTPConnection, path: str) -> str:
+    conn.request("GET", path)
+    return conn.getresponse().read().decode()
+
+
+def in_thread(conn: http.client.HTTPConnection, out: queue.Queue[str]) -> None:
+    out.put(get(conn, "/thread"))
+
+
+def describe(conn: http.client.HTTPConnection, out: queue.Queue[str]) -> None:
+    out.put(f"{conn.host}:{conn.port}")
+
+
+def main() -> None:
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    port = srv.getsockname()[1]
+    threading.Thread(target=serve, args=(srv,), daemon=True).start()
+    out: queue.Queue[str] = queue.Queue()
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+    print(get(conn, "/main"))
+    t = threading.Thread(target=in_thread, args=(conn, out))  # still used below: a copy
+    t.start()
+    t.join()
+    print(out.get())
+    print(get(conn, "/main-again"))
+
+    busy = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+    busy.request("GET", "/pending")
+    r = busy.getresponse()
+    t = threading.Thread(target=in_thread, args=(busy, out))  # a response still reads from it: a copy
+    t.start()
+    t.join()
+    print(out.get())
+    print(r.read().decode())
+
+    ctx = ssl.create_default_context()
+    secure = http.client.HTTPSConnection("example.com", context=ctx)
+    t = threading.Thread(target=describe, args=(secure, out))
+    t.start()
+    t.join()
+    ctx.check_hostname = False
+    print(out.get())
+
+
+main()

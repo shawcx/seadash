@@ -251,12 +251,12 @@ struct ResponseState {
 class HTTPResponse {
     std::shared_ptr<ResponseState> s_;
 
-    void finish() {
+    void finish() const {
         s_->done = true;
         s_->stream.reset();  // (the connection keeps it for the next request, unless it's closing)
     }
     // Some of the body (up to n bytes; "" at its end), following its framing.
-    std::string body_some(std::size_t n) {
+    std::string body_some(std::size_t n) const {
         ResponseState& s = *s_;
         if (!s.pending.empty()) {
             std::string out = s.pending.substr(0, n);
@@ -325,7 +325,7 @@ public:
     const std::shared_ptr<ResponseState>& state() const { return s_; }
 
     // read() or read(amt): the rest of the body, or up to amt bytes of it.
-    bytes read(std::optional<std::int64_t> amt = std::nullopt) {
+    bytes read(std::optional<std::int64_t> amt = std::nullopt) const {
         std::string out;
         bool all = !amt || *amt < 0;
         std::size_t want = all ? SIZE_MAX : static_cast<std::size_t>(*amt);
@@ -344,7 +344,7 @@ public:
         }
         return bytes(std::move(out));
     }
-    bytes readline() {
+    bytes readline() const {
         std::string line;
         while (true) {
             std::string got = body_some(8192);
@@ -359,7 +359,7 @@ public:
         }
         return bytes(std::move(line));
     }
-    list<bytes> readlines() {
+    list<bytes> readlines() const {
         list<bytes> out;
         for (bytes line; !(line = readline()).data.empty();) out.push_back(line);
         return out;
@@ -383,7 +383,7 @@ public:
         return str_join(", "s, *all);
     }
     list<std::tuple<std::string, std::string>> getheaders() const { return s_->headers.items(); }
-    void close() {
+    void close() const {
         s_->closed = true;
         s_->pending.clear();
         s_->done = true;
@@ -424,7 +424,7 @@ class HTTPConnection {
     };
     std::shared_ptr<State> s_;
 
-    void forget_finished_response() {
+    void forget_finished_response() const {
         if (s_->response && (s_->response->done || !s_->response->stream)) s_->response.reset();
     }
 
@@ -454,15 +454,37 @@ public:
         s_->timeout = timeout;
     }
 
+    // Crossing into another thread (threads.py: COPIED). The connection itself goes, socket
+    // and all, when nothing else holds it and no response is still reading from it (sd::send
+    // moves it); otherwise the thread gets a new connection to the same place, which connects
+    // when it's first used. Either way it takes its own copy of the SSL context.
+    using sd_is_handle = void;
+    const void* identity() const { return s_.get(); }
+    bool sd_unique() const { return s_.use_count() == 1 && (!s_->stream || s_->stream.use_count() == 1); }
+    HTTPConnection sd_value_copy(CopyMemo& memo) const {
+        if (const HTTPConnection* seen = memo.find(*this)) return *seen;
+        HTTPConnection out;
+        out.s_ = std::make_shared<State>();
+        out.s_->host = s_->host;
+        out.s_->port = s_->port;
+        out.s_->timeout = s_->timeout;
+        if (s_->tls) out.s_->tls = s_->tls->clone();
+        memo.add(*this, out);
+        return out;
+    }
+    void sd_detach() {  // (moved to another thread: the sender may still have the context)
+        if (s_->tls && s_->tls.use_count() > 1) s_->tls = s_->tls->clone();
+    }
+
     std::string host() const { return s_->host; }
     std::int64_t port() const { return s_->port; }
     std::optional<double> timeout() const { return s_->timeout; }
     void set_debuglevel(std::int64_t) {}
 
-    void connect() {
+    void connect() const {
         if (!s_->stream) s_->stream = std::make_shared<Stream>(s_->host, s_->port, s_->timeout, s_->tls);
     }
-    void close() {
+    void close() const {
         s_->stream.reset();
         s_->response.reset();
         s_->state = 0;
@@ -470,7 +492,7 @@ public:
 
     // The low-level interface: putrequest, putheader..., endheaders(body).
     void putrequest(const std::string& method, const std::string& url, bool skip_host = false,
-                    bool skip_accept_encoding = false) {
+                    bool skip_accept_encoding = false) const {
         forget_finished_response();
         if (s_->state != 0) raise<CannotSendRequest>(state_name(s_->state));
         for (char c : method)
@@ -489,18 +511,18 @@ public:
         }
         if (!skip_accept_encoding) s_->buffer += "Accept-Encoding: identity\r\n";
     }
-    void putheader(const std::string& header, const std::string& value) {
+    void putheader(const std::string& header, const std::string& value) const {
         if (s_->state != 1) raise<CannotSendHeader>("");
         s_->buffer += header + ": " + value + "\r\n";
     }
-    void endheaders(std::optional<bytes> body = std::nullopt) {
+    void endheaders(std::optional<bytes> body = std::nullopt) const {
         if (s_->state != 1) raise<CannotSendHeader>("");
         s_->buffer += "\r\n";
         if (body) s_->buffer += body->data;
         send(bytes(std::exchange(s_->buffer, std::string())));
         s_->state = 2;
     }
-    void send(const bytes& data) {
+    void send(const bytes& data) const {
         connect();
         s_->stream->send_all(data.data);
     }
@@ -508,7 +530,7 @@ public:
     // request(method, url, body=None, headers={}): Content-Length is added (0 for a POST,
     // PUT or PATCH without a body), then the headers as given.
     void request(const std::string& method, const std::string& url, std::optional<bytes> body,
-                 const dict<std::string, std::string>& headers) {
+                 const dict<std::string, std::string>& headers) const {
         bool has_host = false, has_encoding = false, has_length = false;
         for (const auto& [k, v] : headers) {
             std::string l = ascii_lower(k);
@@ -529,7 +551,7 @@ public:
         endheaders(std::move(body));
     }
 
-    HTTPResponse getresponse() {
+    HTTPResponse getresponse() const {
         forget_finished_response();
         if (s_->state != 2 || s_->response) raise<ResponseNotReady>(state_name(s_->state));
         auto r = std::make_shared<ResponseState>();

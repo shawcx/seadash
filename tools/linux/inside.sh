@@ -46,7 +46,7 @@ print(' '.join('-l' + l for l in translate(Path('$f').read_text(), Path('$f')).l
 echo "== address,undefined"
 for f in tests/programs/*.sd; do run address,undefined "$(basename "$f" .sd)"; done
 echo "== thread"
-for f in tests/programs/threads*.sd tests/programs/http_server*.sd tests/programs/futures*.sd tests/programs/signal*.sd; do
+for f in tests/programs/threads*.sd tests/programs/http_server*.sd tests/programs/http_threads*.sd tests/programs/futures*.sd tests/programs/signal*.sd; do
     run thread "$(basename "$f" .sd)"
 done
 echo "(no news is good news)"

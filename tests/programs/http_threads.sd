@@ -1,0 +1,94 @@
+# HTTP connections in threads: a connection handed over at the sender's last use keeps its
+# socket (the server sees the same TCP connection), through Thread args, a Queue pool and a
+# Mutex. (valid Python: the same output, as Python shares the one object)
+import http.client
+import queue
+import socket
+import threading
+
+from seadash import Mutex
+
+
+def handle(c: socket.socket, n: int) -> None:
+    buf = b""
+    while True:
+        while b"\r\n\r\n" not in buf:
+            d = c.recv(4096)
+            if not d:
+                c.close()
+                return
+            buf += d
+        end = buf.index(b"\r\n\r\n")
+        path = buf[:end].decode().split()[1]
+        buf = buf[end + 4:]
+        body = f"conn {n} {path}".encode()
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+
+
+def serve(srv: socket.socket) -> None:
+    n = 0
+    while True:
+        c, _ = srv.accept()
+        n += 1
+        threading.Thread(target=handle, args=(c, n), daemon=True).start()
+
+
+def get(conn: http.client.HTTPConnection, path: str) -> str:
+    conn.request("GET", path)
+    return conn.getresponse().read().decode()
+
+
+def in_thread(conn: http.client.HTTPConnection, out: queue.Queue[str]) -> None:
+    out.put(get(conn, "/thread"))
+
+
+def pooled(pool: queue.Queue[http.client.HTTPConnection], out: queue.Queue[str], i: int) -> None:
+    conn = pool.get()
+    out.put(get(conn, f"/pool{i}").split()[1])
+    pool.put(conn)
+
+
+def turns(shared: Mutex[http.client.HTTPConnection], out: queue.Queue[str], i: int) -> None:
+    with shared as conn:
+        out.put(get(conn, f"/turn{i}").split()[1])
+
+
+def main() -> None:
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    port = srv.getsockname()[1]
+    threading.Thread(target=serve, args=(srv,), daemon=True).start()
+    out: queue.Queue[str] = queue.Queue()
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+    print(get(conn, "/main"))
+    t = threading.Thread(target=in_thread, args=(conn, out))  # its last use: the thread gets it
+    t.start()
+    t.join()
+    print(out.get())
+
+    pool: queue.Queue[http.client.HTTPConnection] = queue.Queue()
+    for _ in range(2):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        print(get(c, "/warm"))
+        pool.put(c)
+    workers = [threading.Thread(target=pooled, args=(pool, out, i)) for i in range(6)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    print(sorted(set(out.get() for _ in range(6))))
+
+    first = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+    print(get(first, "/before"))
+    shared = Mutex(first)
+    workers = [threading.Thread(target=turns, args=(shared, out, i)) for i in range(4)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    print(sorted(set(out.get() for _ in range(4))))
+
+
+main()
