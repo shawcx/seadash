@@ -1,0 +1,12 @@
+'plain' True
+'café ☃' True
+'\ufeffbom' False
+'a\xa0b' False
+'soft\xadhyphen' False
+'line\u2028sep' False
+'\ue000private' False
+'\U000e0001tag' False
+'\u0378unassigned' False
+"tab\tquote'" False
+'\x7f\x80\x9f' False
+'😀' True

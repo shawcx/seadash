@@ -41,6 +41,8 @@
 #include <utility>
 #include <vector>
 
+#include "unicode.hpp"
+
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 
@@ -1342,12 +1344,42 @@ inline std::string repr_bytes(const bytes& b) {
 // repr / str / print
 // ============================================================================
 
+// The code point UTF-8 encodes at s[i] and how many bytes it takes; 0 bytes if it's not valid
+// UTF-8 there (a stray byte).
+inline std::size_t utf8_at(const std::string& s, std::size_t i, char32_t& cp) {
+    unsigned char c = static_cast<unsigned char>(s[i]);
+    std::size_t width = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+    if (width == 0 || i + width > s.size()) return 0;
+    cp = width == 1 ? c : c & (0xFF >> (width + 1));
+    for (std::size_t k = 1; k < width; ++k) {
+        unsigned char next = static_cast<unsigned char>(s[i + k]);
+        if ((next & 0xC0) != 0x80) return 0;
+        cp = (cp << 6) | (next & 0x3F);
+    }
+    return width;
+}
+
 inline std::string repr_str(const std::string& s) {
     bool has_single = s.find('\'') != std::string::npos;
     bool has_double = s.find('"') != std::string::npos;
     char quote = (has_single && !has_double) ? '"' : '\'';
     std::string out(1, quote);
-    for (unsigned char c : s) {
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        char32_t cp;
+        std::size_t width = c >= 0x80 ? utf8_at(s, i, cp) : 0;
+        if (width > 0) {  // beyond ASCII: escaped if it's not printable (U+FEFF, private use...), as in Python
+            if (unicode::printable(cp)) {
+                out.append(s, i, width);
+            } else {
+                char buf[11];
+                std::snprintf(buf, sizeof buf, cp <= 0xFF ? "\\x%02x" : cp <= 0xFFFF ? "\\u%04x" : "\\U%08x",
+                              static_cast<unsigned>(cp));
+                out += buf;
+            }
+            i += width - 1;
+            continue;
+        }
         switch (c) {
             case '\\': out += "\\\\"; break;
             case '\n': out += "\\n"; break;
@@ -3641,10 +3673,14 @@ inline bool str_isidentifier(const std::string& s) {
     });
 }
 inline bool str_isprintable(const std::string& s) {
-    return std::all_of(s.begin(), s.end(), [](char c) {
-        unsigned char u = static_cast<unsigned char>(c);
-        return u >= 0x80 || (u >= 0x20 && u < 0x7F);
-    });
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        char32_t cp = static_cast<unsigned char>(s[i]);
+        std::size_t width = cp >= 0x80 ? utf8_at(s, i, cp) : 1;
+        if (width == 0) return false;  // (not text)
+        if (!unicode::printable(cp)) return false;
+        i += width - 1;
+    }
+    return true;
 }
 inline bool str_istitle(const std::string& s) {
     bool cased = false, previous_cased = false;

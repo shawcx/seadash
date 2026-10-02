@@ -1,0 +1,5 @@
+# repr() escapes the characters str.isprintable() rejects, as Python does: controls, format
+# characters like U+FEFF, separators other than the space, private use and unassigned code points.
+for s in ["plain", "café ☃", "﻿bom", "a b", "soft­hyphen", "line sep",
+          "private", "\U000e0001tag", "͸unassigned", "tab\tquote'", "\x7f\x80\x9f", "\U0001f600"]:
+    print(repr(s), s.isprintable())
