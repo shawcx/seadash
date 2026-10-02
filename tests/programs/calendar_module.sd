@@ -1,0 +1,36 @@
+# calendar: leap years, weekdays, month and year calendars as text and HTML, the iterators.
+import calendar
+
+print(calendar.isleap(2024), calendar.isleap(1900), calendar.leapdays(1900, 2025))
+print(calendar.weekday(2024, 7, 4), repr(calendar.weekday(2024, 7, 4)), calendar.monthrange(2024, 2))
+print(calendar.MONDAY, repr(calendar.SUNDAY), calendar.JANUARY + 1, calendar.Day(3), calendar.Month.MAY.name)
+print(calendar.monthcalendar(2025, 2))
+print(calendar.month(2024, 2), end="")
+print(calendar.month(2021, 12, w=3, l=2), end="")
+print(calendar.weekheader(2), "|", calendar.weekheader(9))
+print(calendar.day_name[0], calendar.day_abbr[6], calendar.month_name[12], repr(calendar.month_abbr[0]), len(calendar.month_name))
+print(calendar.timegm((2024, 1, 1, 12, 30, 15)))
+tc = calendar.TextCalendar(calendar.SUNDAY)
+print(tc.formatmonth(2025, 3), end="")
+print(tc.firstweekday, list(tc.iterweekdays()))
+print(calendar.calendar(2024), end="")
+c = calendar.Calendar(6)
+print(list(c.itermonthdays2(2024, 2))[:9])
+print(c.monthdatescalendar(2024, 2)[0])
+print(list(c.itermonthdays4(2023, 12))[-3:])
+print(len(c.yeardayscalendar(2024, 4)), len(c.yeardays2calendar(2024)[0]))
+hc = calendar.HTMLCalendar()
+print(hc.formatmonth(2024, 9), end="")
+print(hc.formatyear(2024)[:200])
+page = hc.formatyearpage(2024)
+print(page[:60], len(page))
+calendar.setfirstweekday(calendar.SUNDAY)
+print(calendar.firstweekday(), calendar.month(2024, 6), end="")
+try:
+    calendar.monthrange(2024, 13)
+except ValueError as e:
+    print("IllegalMonthError:", e)
+try:
+    calendar.setfirstweekday(9)
+except ValueError as e:
+    print("IllegalWeekdayError:", e)

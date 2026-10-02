@@ -2984,3 +2984,13 @@ def test_copyfileobj_needs_files_of_one_kind():
 def test_a_default_can_name_an_imported_value():
     assert variables(ok("import sys\ndef log(message: str, out=sys.stdout) -> None:\n    print(message, file=out)\n"
                         "log('x')\n")) == []
+
+
+def test_calendar_types_and_errors():
+    assert variables(ok("import calendar\nd = calendar.weekday(2024, 1, 1)\nr = calendar.monthrange(2024, 2)\n"
+                        "w = calendar.Calendar().monthdays2calendar(2024, 2)\n")) == [
+        "d: Day", "r: tuple[Day, int]", "w: list[list[tuple[int, int]]]"]
+    assert err("import calendar\nx = calendar.timegm(('a', 1))\n").message == (
+        "calendar.timegm() takes a (year, month, day, hour, minute, second) tuple of ints, not tuple[str, int]")
+    assert err("import calendar\nc = calendar.TextCalendar()\nc.formatmonth(2024)\n").message == (
+        "calendar.TextCalendar.formatmonth() is missing argument 'themonth'")

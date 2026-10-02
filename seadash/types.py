@@ -101,6 +101,10 @@ EXIT_STACK = BuiltinClass(  # contextlib.ExitStack: copies share the stack of ex
 SIGNAL_HANDLER = BuiltinClass("signal handler", "sd::signal::Handler", IMMUTABLE)
 FRAME = BuiltinClass("FrameType", "sd::signal::Frame", IMMUTABLE)
 
+# calendar.Calendar / TextCalendar / HTMLCalendar: handles whose one setting (firstweekday) is atomic
+CALENDAR = BuiltinClass("calendar.Calendar", "sd::calendar::Calendar", "locked")
+TEXT_CALENDAR = BuiltinClass("calendar.TextCalendar", "sd::calendar::TextCalendar", "locked")
+HTML_CALENDAR = BuiltinClass("calendar.HTMLCalendar", "sd::calendar::HTMLCalendar", "locked")
 DATE = BuiltinClass("date", "sd::datetime::date", IMMUTABLE)  # the datetime module's value types
 TIME = BuiltinClass("time", "sd::datetime::time", IMMUTABLE)
 DATETIME = BuiltinClass("datetime", "sd::datetime::datetime", IMMUTABLE)
