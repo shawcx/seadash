@@ -1,0 +1,14 @@
+# 'is' on files: the same file object, as in Python (out is sys.stdout).
+import io
+import sys
+
+
+def log(message: str, out=sys.stdout) -> None:
+    where = "stdout" if out is sys.stdout else "elsewhere"
+    print(f"[{where}] {message}", file=out)
+
+
+log("hello")
+buffer = io.StringIO()
+log("captured", out=buffer)
+print(repr(buffer.getvalue()), buffer is not sys.stdout, sys.stderr is sys.stdout)

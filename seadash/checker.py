@@ -3272,12 +3272,12 @@ class Checker:
                 (isinstance(lo, StructType) and lo.kind == "class")
                 or isinstance(lo, (ListType, DictType, SetType, DequeType, CounterType, DefaultDictType))
                 or lo == builtins.SIGNAL_HANDLER  # getsignal(s) is signal.SIG_DFL
-            )
+            ) or (isinstance(lo, FileType) and isinstance(ro, FileType) and lo.binary == ro.binary)  # f is sys.stdout
             if not (is_none_check or same_object):
                 if isinstance(right, A.NoneLit):
                     raise self.error(f"{lt} can never be None (only T? types can)", e)
                 raise self.error(
-                    f"'{op}' is for None checks, class instances, lists, dicts and sets; use '==' to compare values", e
+                    f"'{op}' is for None checks, class instances, files, lists, dicts and sets; use '==' to compare values", e
                 )
 
     def check_attribute(self, e: A.Attribute, value: A.Expr, attr: str, expected: Type | None = None) -> Type:

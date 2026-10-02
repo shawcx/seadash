@@ -324,7 +324,7 @@ def test_is_between_an_optional_and_an_object():
     print(xs is [1])
     """)
     assert err(fn("print(a is b)", params="a: int?, b: int")).message == (
-        "'is' is for None checks, class instances, lists, dicts and sets; use '==' to compare values")
+        "'is' is for None checks, class instances, files, lists, dicts and sets; use '==' to compare values")
 
 
 # ---- functions --------------------------------------------------------------
@@ -2928,7 +2928,7 @@ def test_signal_types():
     ("signal.signal('TERM', signal.SIG_IGN)\n", "signal.signal() argument must be int, not str"),
     ("signal.signal(signal.SIGEMT, signal.SIG_IGN)\n", "module 'signal' has no member 'SIGEMT'"),
     ("print(signal.SIG_DFL is 0)\n",
-     "'is' is for None checks, class instances, lists, dicts and sets; use '==' to compare values"),
+     "'is' is for None checks, class instances, files, lists, dicts and sets; use '==' to compare values"),
 ])
 def test_signal_errors(src, msg):
     assert err(SIGNAL + src).message == msg
