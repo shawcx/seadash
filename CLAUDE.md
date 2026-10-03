@@ -77,6 +77,8 @@ The name is final (a nod to the author's two kids).
 .venv/bin/sd run file.sd                      # also: build, check, emit (the C++), clean (the cache)
 .venv/bin/python bench/run.py [name]          # benchmarks vs python3, checks identical output
 tools/linux/check.sh [--sanitize]             # on macOS: the same checks on Linux/g++-14 (Docker)
+rm -rf dist && .venv/bin/python -m build && .venv/bin/twine check dist/*   # a release (bump version in pyproject.toml)
+.venv/bin/twine upload dist/*                 # publish to PyPI (token in ~/.pypirc); push the tag to github too
 ```
 
 Requires g++-14 on Linux or Apple clang on macOS, and the zlib, PCRE2 and OpenSSL dev

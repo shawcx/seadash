@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.svg" alt="seadash" width="640">
+  <img src="https://raw.githubusercontent.com/shawcx/seadash/main/docs/logo.svg" alt="seadash" width="640">
 </p>
 
 <p align="center"><b>C++ with the simplicity of Python.</b></p>

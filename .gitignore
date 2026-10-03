@@ -6,3 +6,4 @@ build/
 # Binaries built from examples/*.sd (sd build examples/serve.sd)
 examples/*
 !examples/*.sd
+dist/

@@ -51,7 +51,7 @@ runtime_method(HANDLER, "version_string", STR)
 runtime_method(HANDLER, "date_time_string", STR, ("timestamp", OptionalType(FLOAT), A.NoneLit()))
 runtime_method(HANDLER, "log_date_time_string", STR)
 runtime_method(HANDLER, "address_string", STR)
-for _name, _value in (("server_version", "BaseHTTP/0.6"), ("sys_version", "seadash/0.0.1"), ("protocol_version", "HTTP/1.0"),
+for _name, _value in (("server_version", "BaseHTTP/0.6"), ("sys_version", "seadash/0.1.0"), ("protocol_version", "HTTP/1.0"),
                       ("error_content_type", "text/html;charset=utf-8"), ("error_message_format", ""),
                       ("default_request_version", "HTTP/0.9")):
     HANDLER.class_attrs[_name] = ClassAttr(_name, STR, A.StrLit(_value), Loc(0, 0))

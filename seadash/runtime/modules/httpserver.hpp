@@ -239,7 +239,7 @@ struct BaseHTTPRequestHandler : std::enable_shared_from_this<BaseHTTPRequestHand
 
     // Class attributes (a subclass may set its own: protocol_version = "HTTP/1.1").
     static std::string sd_class_server_version() { return "BaseHTTP/0.6"; }
-    static std::string sd_class_sys_version() { return "seadash/0.0.1"; }
+    static std::string sd_class_sys_version() { return "seadash/0.1.0"; }
     static std::string sd_class_protocol_version() { return "HTTP/1.0"; }
     static std::string sd_class_error_content_type() { return "text/html;charset=utf-8"; }
     static std::string sd_class_error_message_format() { return default_error_message(); }
