@@ -26,6 +26,9 @@ ZIPINFO_FIELDS = {
 ZIPINFO.attributes.update({name: (lambda _, t=t: t) for name, t in ZIPINFO_FIELDS.items()})
 ZIPINFO.setters.update(ZIPINFO_FIELDS)
 ZIPINFO.methods.update({"is_dir": sync_method(BOOL)})
+# Python takes any value and raises TypeError at run time for a password that isn't bytes.
+ZIP_PWD = ("pwd", OneOf(OptionalType(BYTES), what='bytes or None (a password is bytes: b"secret", or s.encode())'),
+           "std::nullopt")
 ZIP_COMPRESSION = (("compress_type", OptionalType(INT), "std::nullopt"), ("compresslevel", OptionalType(INT), "std::nullopt"))
 ZIPFILE.methods.update({
     "close": sync_method(NONE),
@@ -34,22 +37,23 @@ ZIPFILE.methods.update({
     "getinfo": sync_method(ZIPINFO, ("name", STR)),
     "printdir": sync_method(NONE, ("file", OptionalType(TEXT_FILE), "std::nullopt")),
     "testzip": sync_method(OptionalType(STR)),
-    "read": sync_method(BYTES, ("name", ZIP_MEMBER)),
-    "open": sync_method(BINARY_FILE, ("name", ZIP_MEMBER), ("mode", STR, '"r"s'), ("force_zip64", BOOL, "false")),
+    "setpassword": sync_method(NONE, ZIP_PWD[:2]),
+    "read": sync_method(BYTES, ("name", ZIP_MEMBER), ZIP_PWD),
+    "open": sync_method(BINARY_FILE, ("name", ZIP_MEMBER), ("mode", STR, '"r"s'), ZIP_PWD, "*", ("force_zip64", BOOL, "false")),
     "write": sync_method(NONE, ("filename", PATH_LIKE), ("arcname", ZIP_PATH, "std::nullopt"), *ZIP_COMPRESSION),
     "writestr": sync_method(NONE, ("zinfo_or_arcname", ZIP_MEMBER), ("data", OneOf(BYTES, STR, what="bytes or a str")),
                           *ZIP_COMPRESSION),
     "mkdir": sync_method(NONE, ("zinfo_or_directory_name", ZIP_MEMBER), ("mode", INT, "511_i")),
-    "extract": sync_method(STR, ("member", ZIP_MEMBER), ("path", ZIP_PATH, "std::nullopt")),
+    "extract": sync_method(STR, ("member", ZIP_MEMBER), ("path", ZIP_PATH, "std::nullopt"), ZIP_PWD),
     "extractall": sync_method(NONE, ("path", ZIP_PATH, "std::nullopt"),
                               ("members", OneOf(ListType(STR), ListType(ZIPINFO), NONE, what="a list of names or of ZipInfos"),
-                               "std::nullopt")),
+                               "std::nullopt"), ZIP_PWD),
 })
 ZIPFILE.attributes.update({
     "comment": lambda t: BYTES, "filename": lambda t: OptionalType(STR), "mode": lambda t: STR,
-    "compression": lambda t: INT, "compresslevel": lambda t: OptionalType(INT),
+    "compression": lambda t: INT, "compresslevel": lambda t: OptionalType(INT), "pwd": lambda t: OptionalType(BYTES),
 })
-ZIPFILE.setters.update({"comment": BYTES})
+ZIPFILE.setters.update({"comment": BYTES, "pwd": OptionalType(BYTES)})
 ZIP_ARCHIVE = OneOf(STR, PATH, BINARY_FILE, what="a str, a Path or a binary file object")
 BAD_ZIP_FILE = exception_class("BadZipFile", "sd::zipfile::BadZipFile")
 MODULES["zipfile"] = module_with_params(runtime_module(

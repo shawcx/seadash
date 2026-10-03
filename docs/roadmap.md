@@ -26,7 +26,7 @@ in the README and in the design docs, not here.
 - `sqlite3`: `row_factory`/`sqlite3.Row`, `create_function`, iterating a cursor directly.
 - `uuid`: `u.int` (128 bits), `getnode()`.
 - `tarfile`: sparse files' contents, encodings other than UTF-8, `errorlevel=0`, Zstandard.
-- `zipfile`: encrypted members (`pwd=`, `setpassword`), Zstandard members, `zipfile.Path`, `ZipInfo.from_file`, `PyZipFile`.
+- `zipfile`: Zstandard members, `zipfile.Path`, `ZipInfo.from_file`, `PyZipFile`.
 - `fnmatch`, `glob`: bytes patterns and names.
 - `tomllib`: `parse_float=`; class patterns for dates and times on a `json.Value` (`case date():`).
 - `io`: `readline(size)`, `readlines(hint)`, `getbuffer`, `read1`/`readinto`, `io.UnsupportedOperation`,

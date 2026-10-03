@@ -1,0 +1,199 @@
+# zipfile: reading encrypted (ZipCrypto) members: setpassword, pwd=, wrong and missing
+# passwords, members as file objects (seeking restarts the decrypter), extracting and testzip.
+import io
+import os
+import shutil
+import tempfile
+import zipfile
+
+# Made by Info-ZIP's `zip -X -P pw` (stored a.txt, deflated b.txt, d/ and d/c.txt): every member
+# has a data descriptor, so the password check byte comes from the time.
+ENC_ZIP = (
+    b'PK\x03\x04\n\x00\t\x00\x00\x00\x05\x19\xa6Xf-\xd0S \x00\x00\x00\x14\x00\x00\x00\x05\x00\x00\x00a.txt\x08\xc0Cx\x90'
+    b'\x8cX\xbe\xbe;\xf7\xc0=3\xaa\x83\xc4\x9cO\x03\xda\xc98\x1a\x19y\xc9Jef\x9c{PK\x07\x08f-\xd0S \x00\x00\x00\x14'
+    b'\x00\x00\x00PK\x03\x04\x14\x00\x0b\x00\x08\x00\x05\x19\xa6X"\x80x\xc7\x91\x00\x00\x00\xce\x04\x00\x00\x05\x00\x00\x00b.txt#\xfd'
+    b'\xd5v\x93\xa0\x04\xc4\xe3We\x16\x1b\x02L\xc4\x01\x86\x85\xc3Lw \x8c\xb9\xb5[\xcd\xce\xdf\x9dq\x82s\xdf\xda\xeeA\\\xd8\x8a1'
+    b'8\x85-\xe7\x94\x0e\xb0\xfe\x95\x00\xb6\xe5Q\xa5\x03d\x06Z7\x810!\xa9\xf3\x84\xcb\x87\x13\xf7\xf8\xbb\xd5\xf9\x9d6\x1b)\xf4]\xfd'
+    b'\xc1\x99.\xca\xb1\xac\x8f"%J\x03tg\x14"i\xf9o\xc8I9n\xcca\x18c\x195\xe3\xb9\xbab\x06\xffp\xed\x91j\x0c\xd9'
+    b'v\xfc\r\n\xf5\xcb\xe2rB\xa8\xb7\x8c\x1f0 \x88.\xb7\xb4\xf6\xbd\x1d\xa2PK\x07\x08"\x80x\xc7\x91\x00\x00\x00\xce\x04\x00\x00P'
+    b'K\x03\x04\n\x00\x00\x00\x00\x00\x05\x19\xa6X\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00d/PK\x03\x04\n\x00\x0b\x00\x00'
+    b'\x00\x05\x19\xa6X\x8cM\x02\xd0\x12\x00\x00\x00\x06\x00\x00\x00\x07\x00\x00\x00d/c.txt\r\xed\xfb\xcfy\xe9\xe1A\x05\xa8\x90\xd7'
+    b'\x14\x1f\xcd\xc0K\x8cPK\x07\x08\x8cM\x02\xd0\x12\x00\x00\x00\x06\x00\x00\x00PK\x01\x02\x1e\x03\n\x00\t\x00\x00\x00\x05\x19\xa6Xf-'
+    b'\xd0S \x00\x00\x00\x14\x00\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xb4\x81\x00\x00\x00\x00a.txtPK\x01\x02\x1e\x03\x14'
+    b'\x00\x0b\x00\x08\x00\x05\x19\xa6X"\x80x\xc7\x91\x00\x00\x00\xce\x04\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\xb4\x81S\x00\x00\x00b'
+    b'.txtPK\x01\x02\x1e\x03\n\x00\x00\x00\x00\x00\x05\x19\xa6X\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00'
+    b'\x00\x00\x10\x00\xfdA\x17\x01\x00\x00d/PK\x01\x02\x1e\x03\n\x00\x0b\x00\x00\x00\x05\x19\xa6X\x8cM\x02\xd0\x12\x00\x00\x00\x06\x00\x00\x00'
+    b'\x07\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\xb4\x817\x01\x00\x00d/c.txtPK\x05\x06\x00\x00\x00\x00\x04\x00\x04\x00\xcb\x00\x00'
+    b'\x00~\x01\x00\x00\x00\x00'
+)
+# `... | zip -X -P pw - -`: a member read from a pipe.
+STREAM_ZIP = (
+    b'PK\x03\x04-\x00\t\x00\x08\x00,^C]Z\x99\xbed\xff\xff\xff\xff\xff\xff\xff\xff\x01\x00\x14\x00-\x01\x00\x10\x00!\x00\x00\x00\x00'
+    b'\x00\x00\x00+\x00\x00\x00\x00\x00\x00\x00\xaf\x8bY\xa8e\xd3\xc3j\xb5\xbd\xb9\xf1\xa5\x1d\xb6l\xee\x07\xc4\xf2\xeb\xf1H}E2\x95\xca\xa4'
+    b'\x84Vz\xc9s7\r\x1b\xbe\xe0\xf8a\x03\xe7PK\x07\x08Z\x99\xbed+\x00\x00\x00\x00\x00\x00\x00!\x00\x00\x00\x00\x00\x00\x00PK'
+    b'\x01\x02\x1e\x03-\x00\t\x00\x08\x00,^C]Z\x99\xbed+\x00\x00\x00!\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x80\x11'
+    b'\x00\x00\x00\x00-PK\x06\x06,\x00\x00\x00\x00\x00\x00\x00\x1e\x03-\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00'
+    b'\x00\x00\x00\x00\x00/\x00\x00\x00\x00\x00\x00\x00v\x00\x00\x00\x00\x00\x00\x00PK\x06\x07\x00\x00\x00\x00\xa5\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00'
+    b'\x00PK\x05\x06\x00\x00\x00\x00\x01\x00\x01\x00/\x00\x00\x00v\x00\x00\x00\x00\x00'
+)
+# Members without a data descriptor (password b"crc"; the check byte comes from the CRC), which zip -P
+# doesn't make: stored c.txt and deflated e.txt.
+CRC_ZIP = (
+    b'PK\x03\x04\x14\x00\x01\x00\x00\x00\x000!X\xaa&\xfed\x1f\x00\x00\x00\x13\x00\x00\x00\x05\x00\x00\x00c.txt`\xe9G\xe9\x14'
+    b'@\xa9\xd8\x95y\xe1s\x99-\x9an\xd1\x07\xb5\xac\xc9\x8c\xffV\x92"\x8fijW>PK\x03\x04\x14\x00\x01\x00\x08\x00\x000!X'
+    b'\x1bW\x9c\xbe\x1c\x00\x00\x00\xc9\x00\x00\x00\x05\x00\x00\x00e.txt`\xe9G\xe9\x14@\xa9\xd8\x95y\xe1\xa9\xa16\x87\xa2\xfd\xc2\xcc'
+    b'm`B\xc9\x17\x94\x9f\x86\xf2PK\x01\x02\x14\x03\x14\x00\x01\x00\x00\x00\x000!X\xaa&\xfed\x1f\x00\x00\x00\x13\x00\x00\x00\x05\x00\x00'
+    b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\xa4\x81\x00\x00\x00\x00c.txtPK\x01\x02\x14\x03\x14\x00\x01\x00\x08\x00\x000!X\x1bW\x9c\xbe'
+    b'\x1c\x00\x00\x00\xc9\x00\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xa4\x81B\x00\x00\x00e.txtPK\x05\x06\x00\x00\x00\x00\x02'
+    b'\x00\x02\x00f\x00\x00\x00\x81\x00\x00\x00\x00\x00'
+)
+
+
+def show_error(e: Exception) -> None:
+    print(type(e).__name__ + ":", e)
+
+
+def passwords() -> None:
+    zf = zipfile.ZipFile(io.BytesIO(ENC_ZIP))
+    for info in zf.infolist():
+        print(info, info.flag_bits & 1)
+    print(zf.pwd)
+    try:
+        zf.read("a.txt")
+    except RuntimeError as e:
+        show_error(e)
+    try:
+        zf.read(zf.getinfo("a.txt"))
+    except RuntimeError as e:
+        show_error(e)
+    try:
+        zf.read("a.txt", b"wrong")
+    except RuntimeError as e:
+        show_error(e)
+    try:
+        zf.read("a.txt", pwd=b"")  # (an empty password is no password)
+    except RuntimeError as e:
+        show_error(e)
+    print(zf.read("a.txt", pwd=b"pw"))
+    print(zf.read("d/"))  # (not encrypted)
+    try:
+        zf.testzip()
+    except RuntimeError as e:
+        show_error(e)
+
+    zf.setpassword(b"pw")
+    print(zf.pwd)
+    print(zf.read("a.txt"))
+    data = zf.read("b.txt")
+    print(len(data), data[:30], data.count(b"\n"))
+    print(zf.read("d/c.txt"))
+    print(zf.testzip())
+    try:
+        zf.read("a.txt", pwd=b"nope")  # (pwd= wins over setpassword's)
+    except RuntimeError as e:
+        show_error(e)
+    try:
+        zf.open("new.txt", "w", pwd=b"pw")
+    except ValueError as e:
+        show_error(e)
+    zf.setpassword(b"")
+    print(zf.pwd)
+    zf.pwd = b"pw"
+    print(zf.read("d/c.txt"))
+    zf.close()
+
+
+def members_as_files() -> None:
+    with zipfile.ZipFile(io.BytesIO(ENC_ZIP)) as zf:
+        with zf.open("b.txt", pwd=b"pw") as f:
+            print(f.readline())
+            print(f.read(10))
+            print(f.tell())
+            f.seek(5)  # back: the decrypter starts again
+            print(f.read(10))
+            f.seek(600)
+            print(f.read(20))
+            f.seek(-31, 2)  # (from the end)
+            print(f.read())
+            f.seek(0)
+            print(len(f.read()))
+        with zf.open("a.txt", pwd=b"pw") as f:
+            print(f.read(5))
+            f.seek(7)
+            print(f.read(6))
+            f.seek(2)
+            print(f.read())
+            for line in f:
+                print(line)
+
+
+def streamed() -> None:
+    with zipfile.ZipFile(io.BytesIO(STREAM_ZIP)) as zf:
+        info = zf.infolist()[0]
+        print(info, info.flag_bits & 8)
+        print(zf.read("-", pwd=b"pw"))
+        try:
+            zf.read("-", pwd=b"pass")
+        except RuntimeError as e:
+            show_error(e)
+
+
+def without_descriptor() -> None:
+    with zipfile.ZipFile(io.BytesIO(CRC_ZIP)) as zf:
+        for info in zf.infolist():
+            print(info, info.flag_bits)
+        zf.setpassword(b"crc")
+        print(zf.read("c.txt"))
+        print(zf.read("e.txt")[:40])
+        print(zf.testzip())
+        try:
+            zf.read("c.txt", pwd=b"pw")
+        except RuntimeError as e:
+            show_error(e)
+
+
+def aes() -> None:  # (a.txt marked as WinZip AES, compression method 99, which Python doesn't read)
+    cd = ENC_ZIP.find(b"PK\x01\x02")
+    data = ENC_ZIP[:8] + b"\x63\x00" + ENC_ZIP[10 : cd + 10] + b"\x63\x00" + ENC_ZIP[cd + 12 :]
+    password: bytes | None = None
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        print(zf.infolist()[0])
+        for pwd in [password, b"pw"]:
+            try:
+                zf.read("a.txt", pwd=pwd)
+            except (RuntimeError, NotImplementedError) as e:
+                show_error(e)
+
+
+def extracting() -> None:
+    tmp = tempfile.mkdtemp()
+    try:
+        with zipfile.ZipFile(io.BytesIO(ENC_ZIP)) as zf:
+            try:
+                zf.extract("a.txt", tmp)
+            except RuntimeError as e:
+                show_error(e)
+            print(zf.extract("a.txt", tmp, pwd=b"pw").replace(tmp, "TMP"))
+            zf.extractall(os.path.join(tmp, "all"), pwd=b"pw")
+            zf.extractall(os.path.join(tmp, "some"), ["d/c.txt"], b"pw")
+            try:
+                zf.extractall(os.path.join(tmp, "bad"), pwd=b"bad")
+            except RuntimeError as e:
+                show_error(e)
+            zf.setpassword(b"pw")
+            zf.extractall(os.path.join(tmp, "stored"))
+        for root, dirs, files in sorted(os.walk(tmp)):
+            for name in sorted(files):
+                path = os.path.join(root, name)
+                with open(path, "rb") as f:
+                    print(path.replace(tmp, "TMP"), len(f.read()))
+    finally:
+        shutil.rmtree(tmp)
+
+
+passwords()
+members_as_files()
+streamed()
+without_descriptor()
+aes()
+extracting()

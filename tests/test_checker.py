@@ -3108,9 +3108,20 @@ def test_zipfile_types_and_errors():
         ("zf = zipfile.ZipFile('a.zip')\nzf.mode += 'b'", "zipfile.ZipFile.mode can't be changed (it's read-only)"),
         ("zf = zipfile.ZipFile('a.zip')\nzf.filename += 'x'",
          "str? might be None; check it first, e.g. `if zf.filename is not None:`"),
+        # (Python's TypeError "pwd: expected bytes, got str" at run time)
+        ("zf = zipfile.ZipFile('a.zip')\nzf.read('a', pwd='secret')", "zipfile.ZipFile.read() argument 'pwd' must be "
+         'bytes or None (a password is bytes: b"secret", or s.encode()), not str'),
+        ("zf = zipfile.ZipFile('a.zip')\nzf.setpassword('secret')", "zipfile.ZipFile.setpassword() argument 'pwd' must be "
+         'bytes or None (a password is bytes: b"secret", or s.encode()), not str'),
+        ("zf = zipfile.ZipFile('a.zip')\nzf.pwd = 'secret'", "zipfile.ZipFile.pwd is bytes?, can't assign str"),
+        ("zf = zipfile.ZipFile('a.zip')\nzf.open('a', 'r', b'pw', True)",
+         "zipfile.ZipFile.open() takes at most 3 positional arguments (4 given)"),
     ]
     for source, message in cases:
         assert err("import zipfile\n" + source + "\n").message == message, source
+    assert variables(ok("import zipfile\nzf = zipfile.ZipFile('a.zip')\nzf.setpassword(b'pw')\np = zf.pwd\n"
+                        "b = zf.read('a', pwd=p)\nf = zf.open('a', pwd=b'x', force_zip64=False)\n"))[1:] == [
+        "p: bytes?", "b: bytes", "f: BinaryIO"]
 
 
 def test_compressed_file_classes_are_types():

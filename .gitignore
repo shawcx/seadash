@@ -7,3 +7,4 @@ build/
 examples/*
 !examples/*.sd
 dist/
+.claude/

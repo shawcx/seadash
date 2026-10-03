@@ -2,8 +2,8 @@
 // members, and ZIP64 for big ones), ported from CPython's zipfile.py so the archives and the
 // errors are Python's. A ZipFile works over any binary file object: one it opens by name, an
 // open file or an io.BytesIO; zf.open(name) gives a binary file object for a member.
-// Not supported: encrypted members (reading one fails as Python's does without a password),
-// Zstandard members, zipfile.Path, PyZipFile, ZipInfo.from_file and metadata_encoding=.
+// Encrypted members are read (legacy ZipCrypto, as in Python; there's no writing them).
+// Not supported: Zstandard members, zipfile.Path, PyZipFile, ZipInfo.from_file and metadata_encoding=.
 #pragma once
 
 #include <bzlib.h>
@@ -196,6 +196,7 @@ struct Info {
                  flag_bits = 0, volume = 0, internal_attr = 0, external_attr = 0, header_offset = 0, CRC = 0,
                  compress_size = 0, file_size = 0;
     std::optional<std::int64_t> end_offset;  // where the next local header (or the central directory) starts
+    std::int64_t raw_time = 0;               // the MS-DOS time as read (an encrypted member's check byte may come from it)
 };
 
 inline std::int64_t dos_date(const DateTime& dt) {
@@ -568,6 +569,7 @@ struct Archive {
     bytes comment;
     std::int64_t start_dir = 0;
     std::int64_t written = 0;  // (the position, in a file that can't tell)
+    std::optional<bytes> pwd;  // for encrypted members (setpassword)
 
     Archive() = default;
     Archive(const Archive&) = delete;
@@ -707,6 +709,7 @@ inline void Archive::real_get_contents() {
         z.flag_bits = flags;
         z.compress_type = get(cd, 10, 2);
         std::int64_t t = get(cd, 12, 2), d = get(cd, 14, 2);
+        z.raw_time = t;
         z.CRC = get(cd, 16, 4);
         z.compress_size = get(cd, 20, 4);
         z.file_size = get(cd, 24, 4);
@@ -863,7 +866,32 @@ inline void Archive::close() {
     release();
 }
 
-// zf.open(name): reading a member, decompressing as it goes (Python's ZipExtFile).
+// Legacy ZIP ("ZipCrypto") decryption: three keys stirred with CRC-32 steps (Python's _ZipDecrypter).
+struct ZipDecrypter {
+    std::uint32_t key0 = 305419896, key1 = 591751049, key2 = 878082192;
+    explicit ZipDecrypter(std::string_view pwd) {
+        for (char c : pwd) update_keys(static_cast<unsigned char>(c));
+    }
+    static std::uint32_t crc32_step(std::uint32_t crc, std::uint32_t c) {
+        static const z_crc_t* table = ::get_crc_table();
+        return (crc >> 8) ^ static_cast<std::uint32_t>(table[(crc ^ c) & 0xFF]);
+    }
+    void update_keys(std::uint32_t c) {
+        key0 = crc32_step(key0, c);
+        key1 = (key1 + (key0 & 0xFF)) * 134775813u + 1;
+        key2 = crc32_step(key2, key1 >> 24);
+    }
+    void decrypt(std::string& data) {
+        for (char& ch : data) {
+            std::uint32_t k = key2 | 2;
+            std::uint32_t c = static_cast<unsigned char>(ch) ^ (((k * (k ^ 1)) >> 8) & 0xFF);
+            update_keys(c);
+            ch = static_cast<char>(c);
+        }
+    }
+};
+
+// zf.open(name): reading a member, decrypting and decompressing as it goes (Python's ZipExtFile).
 struct ExtFile final : BinaryFile {
     std::shared_ptr<BinaryFile> file;  // the archive's
     std::string name;
@@ -872,17 +900,23 @@ struct ExtFile final : BinaryFile {
     std::int64_t pos = 0, compress_left = 0, left = 0;  // in the archive; compressed and uncompressed bytes to come
     std::uint32_t running_crc = 0;
     std::unique_ptr<Decompressor> decompressor;
+    std::optional<std::string> pwd;  // (an encrypted member's)
+    std::optional<ZipDecrypter> decrypter;
     std::string buffer;  // decompressed, from `offset` not read yet
     std::size_t offset = 0;
     bool eof = false, open = true;
 
-    ExtFile(std::shared_ptr<BinaryFile> f, const Info& z, std::int64_t start)
+    ExtFile(std::shared_ptr<BinaryFile> f, const Info& z, std::int64_t start, std::optional<std::string> password = std::nullopt)
         : BinaryFile(nullptr, "", "rb"), file(std::move(f)), name(z.filename), compress_type(z.compress_type),
           compress_size(z.compress_size), file_size(z.file_size), data_start(start),
-          expected_crc(static_cast<std::uint32_t>(z.CRC)) {
-        rewind();
+          expected_crc(static_cast<std::uint32_t>(z.CRC)), pwd(std::move(password)) {
+        int check = rewind();
+        if (pwd) {  // the encryption header's last byte: the CRC's top byte, or the time's if the CRC follows the data
+            std::int64_t want = z.flag_bits & MASK_USE_DATA_DESCRIPTOR ? (z.raw_time >> 8) & 0xFF : (z.CRC >> 24) & 0xFF;
+            if (check != want) raise("RuntimeError", "Bad password for file " + repr_str(z.orig_filename));
+        }
     }
-    void rewind() {
+    int rewind() {  // (the encryption header's check byte, if it's encrypted)
         pos = data_start;
         compress_left = compress_size;
         left = file_size;
@@ -891,6 +925,16 @@ struct ExtFile final : BinaryFile {
         buffer.clear();
         offset = 0;
         eof = false;
+        return pwd ? init_decrypter() : -1;
+    }
+    int init_decrypter() {  // (Python's _init_decrypter): the 12-byte encryption header starts the data
+        decrypter.emplace(*pwd);
+        file->seek(pos, 0);
+        std::string header = file->read_raw(12);
+        pos += static_cast<std::int64_t>(header.size());
+        compress_left -= 12;
+        decrypter->decrypt(header);
+        return header.size() == 12 ? static_cast<unsigned char>(header[11]) : -1;
     }
     void need_open() const {
         if (!open) raise("ValueError", "I/O operation on closed file.");
@@ -904,6 +948,7 @@ struct ExtFile final : BinaryFile {
         pos += static_cast<std::int64_t>(data.size());
         compress_left -= static_cast<std::int64_t>(data.size());
         if (data.empty()) raise("EOFError", "");
+        if (decrypter) decrypter->decrypt(data);
         return data;
     }
     std::string read_some(std::size_t n) {  // at most one read from the archive (Python's _read1)
@@ -1001,6 +1046,7 @@ struct ExtFile final : BinaryFile {
         open = false;
         file = nullptr;
         decompressor = nullptr;
+        decrypter.reset();
         buffer = std::string();
     }
     void flush() override { need_open(); }
@@ -1240,7 +1286,7 @@ struct ZipFile {
     std::optional<std::string> testzip() {
         for (const auto& z : a->filelist) {
             try {
-                auto f = open(z);
+                auto f = open(z.d->filename);  // (by name, as Python does)
                 while (!f->read_raw(1 << 20).empty()) {
                 }
             } catch (const Thrown& t) {
@@ -1251,15 +1297,22 @@ struct ZipFile {
         return std::nullopt;
     }
 
+    // zf.setpassword(pwd), zf.pwd: the default password for encrypted members
+    void setpassword(const std::optional<bytes>& pwd) { a->pwd = pwd && !pwd->empty() ? pwd : std::nullopt; }
+    std::optional<bytes> pwd() const { return a->pwd; }
+    void set_pwd(std::optional<bytes> value) { a->pwd = std::move(value); }
+
     template <class Name>
-    bytes read(const Name& name) {
-        auto f = open(name);
+    bytes read(const Name& name, const std::optional<bytes>& pwd = std::nullopt) {
+        auto f = open(name, "r", pwd);
         return bytes(f->read_raw(-1));
     }
 
     template <class Name>
-    std::shared_ptr<BinaryFile> open(const Name& name, const std::string& mode = "r", bool force_zip64 = false) {
+    std::shared_ptr<BinaryFile> open(const Name& name, const std::string& mode = "r", const std::optional<bytes>& pwd = std::nullopt,
+                                     bool force_zip64 = false) {
         if (mode != "r" && mode != "w") raise("ValueError", "open() requires mode \"r\" or \"w\"");
+        if (pwd && !pwd->empty() && mode == "w") raise("ValueError", "pwd is only supported for reading files");
         open_archive();
         ZipInfo zinfo;
         if constexpr (std::is_same_v<Name, ZipInfo>) {
@@ -1291,13 +1344,18 @@ struct ZipFile {
             if (*z.end_offset == z.header_offset) warn(what);
             else bad(what);
         }
+        std::optional<std::string> password;
         if (z.flag_bits & MASK_ENCRYPTED) {
-            std::string shown;
-            if constexpr (std::is_same_v<Name, ZipInfo>) shown = name.sd_repr();
-            else shown = repr_str(name);
-            raise("RuntimeError", "File " + shown + " is encrypted, password required for extraction");
+            if (pwd && !pwd->empty()) password = pwd->data;
+            else if (a->pwd && !a->pwd->empty()) password = a->pwd->data;
+            if (!password) {
+                std::string shown;
+                if constexpr (std::is_same_v<Name, ZipInfo>) shown = name.sd_repr();
+                else shown = repr_str(name);
+                raise("RuntimeError", "File " + shown + " is encrypted, password required for extraction");
+            }
         }
-        return std::make_shared<ExtFile>(a->fp, z, data_start);
+        return std::make_shared<ExtFile>(a->fp, z, data_start, std::move(password));
     }
 
     std::shared_ptr<BinaryFile> open_to_write(const ZipInfo& zinfo, bool force_zip64) {
@@ -1443,26 +1501,28 @@ struct ZipFile {
         ar.start_dir = ar.tell();
     }
 
-    // zf.extract(member, path=None): where it went
+    // zf.extract(member, path=None, pwd=None): where it went
     template <class Member>
-    std::string extract(const Member& member, const std::optional<pathlib::Path>& path = std::nullopt) {
-        return extract_member(info_for(member), path ? path->str() : std::filesystem::current_path().string());
+    std::string extract(const Member& member, const std::optional<pathlib::Path>& path = std::nullopt,
+                        const std::optional<bytes>& pwd = std::nullopt) {
+        return extract_member(info_for(member), path ? path->str() : std::filesystem::current_path().string(), pwd);
     }
-    // zf.extractall(path=None, members=None)
+    // zf.extractall(path=None, members=None, pwd=None)
     template <class Members = std::nullopt_t>
-    void extractall(const std::optional<pathlib::Path>& path = std::nullopt, const Members& members = std::nullopt) {
+    void extractall(const std::optional<pathlib::Path>& path = std::nullopt, const Members& members = std::nullopt,
+                    const std::optional<bytes>& pwd = std::nullopt) {
         std::string target = path ? path->str() : std::filesystem::current_path().string();
         if constexpr (std::is_same_v<Members, std::nullopt_t>) {
-            for (const auto& name : namelist()) extract_member(getinfo(name), target);
+            for (const auto& name : namelist()) extract_member(getinfo(name), target, pwd);
         } else if constexpr (requires { members.has_value(); }) {
-            if (!members) return extractall(path);
-            for (const auto& m : *members) extract_member(info_for(m), target);
+            if (!members) return extractall(path, std::nullopt, pwd);
+            for (const auto& m : *members) extract_member(info_for(m), target, pwd);
         } else {
-            for (const auto& m : members) extract_member(info_for(m), target);
+            for (const auto& m : members) extract_member(info_for(m), target, pwd);
         }
     }
     // Python's _extract_member: the name made relative, without ".." or "." parts.
-    std::string extract_member(const ZipInfo& member, const std::string& targetpath) {
+    std::string extract_member(const ZipInfo& member, const std::string& targetpath, const std::optional<bytes>& pwd) {
         std::string arcname = member.d->filename;
         std::size_t root = arcname.starts_with('/') ? (arcname.starts_with("//") && !arcname.starts_with("///") ? 2 : 1) : 0;
         std::string kept;
@@ -1490,7 +1550,7 @@ struct ZipFile {
                 raise_os(errno, target);
             return target;
         }
-        auto source = open(member);
+        auto source = open(member, "r", pwd);
         auto out = open_binary(target, "wb");
         for (std::string chunk; !(chunk = source->read_raw(64 * 1024)).empty();) out->write_raw(chunk);
         out->close();

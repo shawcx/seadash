@@ -1,0 +1,54 @@
+<ZipInfo filename='a.txt' filemode='-rw-rw-r--' file_size=20 compress_size=32> 1
+<ZipInfo filename='b.txt' compress_type=deflate filemode='-rw-rw-r--' file_size=1230 compress_size=145> 1
+<ZipInfo filename='d/' filemode='drwxrwxr-x' external_attr=0x10> 0
+<ZipInfo filename='d/c.txt' filemode='-rw-rw-r--' file_size=6 compress_size=18> 1
+None
+RuntimeError: File 'a.txt' is encrypted, password required for extraction
+RuntimeError: File <ZipInfo filename='a.txt' filemode='-rw-rw-r--' file_size=20 compress_size=32> is encrypted, password required for extraction
+RuntimeError: Bad password for file 'a.txt'
+RuntimeError: File 'a.txt' is encrypted, password required for extraction
+b'hello, secret world\n'
+b''
+RuntimeError: File 'a.txt' is encrypted, password required for extraction
+b'pw'
+b'hello, secret world\n'
+1230 b'line 0 of the deflated member\n' 40
+b'inner\n'
+None
+RuntimeError: Bad password for file 'a.txt'
+ValueError: pwd is only supported for reading files
+None
+b'inner\n'
+b'line 0 of the deflated member\n'
+b'line 1 of '
+40
+b'0 of the d'
+b'ed member\nline 20 of'
+b'line 39 of the deflated member\n'
+1230
+b'hello'
+b'secret'
+b'llo, secret world\n'
+<ZipInfo filename='-' compress_type=deflate filemode='prw-------' file_size=33 compress_size=43> 8
+b'streamed data, line one\nline two\n'
+RuntimeError: Bad password for file '-'
+<ZipInfo filename='c.txt' filemode='-rw-r--r--' file_size=19 compress_size=31> 1
+<ZipInfo filename='e.txt' compress_type=deflate filemode='-rw-r--r--' file_size=201 compress_size=28> 1
+b'no descriptor here\n'
+b'deflated, deflated, deflated, deflated, '
+None
+RuntimeError: Bad password for file 'c.txt'
+<ZipInfo filename='a.txt' compress_type=99 filemode='-rw-rw-r--' file_size=20 compress_size=32>
+RuntimeError: File 'a.txt' is encrypted, password required for extraction
+NotImplementedError: That compression method is not supported
+RuntimeError: File <ZipInfo filename='a.txt' filemode='-rw-rw-r--' file_size=20 compress_size=32> is encrypted, password required for extraction
+TMP/a.txt
+RuntimeError: Bad password for file 'a.txt'
+TMP/a.txt 20
+TMP/all/a.txt 20
+TMP/all/b.txt 1230
+TMP/all/d/c.txt 6
+TMP/some/d/c.txt 6
+TMP/stored/a.txt 20
+TMP/stored/b.txt 1230
+TMP/stored/d/c.txt 6
