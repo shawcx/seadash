@@ -1672,7 +1672,7 @@ EXCEPTION_TREE = [
 def make_exceptions() -> dict[str, StructType]:
     out: dict[str, StructType] = {}
     for name, base in EXCEPTION_TREE:
-        out[name] = StructType(name, "class", None, base=out.get(base), builtin=True)
+        out[name] = StructType(name, "class", None, bases=[out[base]] if base else [], builtin=True)
     # Every exception carries a message: `ValueError("bad")`, `str(e)`, `e.message`.
     empty = A.StrLit("")
     empty.ty = STR
@@ -1727,7 +1727,7 @@ def builtin_struct(name: str, cpp: str, fields: dict[str, Type]) -> StructType:
 
 def exception_class(name: str, cpp: str, base: str | StructType = "Exception") -> StructType:
     """A built-in exception class; its base is a built-in exception's name or another class."""
-    return StructType(name, "class", None, base=EXCEPTIONS[base] if isinstance(base, str) else base, builtin=True,
+    return StructType(name, "class", None, bases=[EXCEPTIONS[base] if isinstance(base, str) else base], builtin=True,
                       cpp_name=cpp)
 
 

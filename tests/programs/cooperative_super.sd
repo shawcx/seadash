@@ -1,0 +1,150 @@
+# super() follows the object's MRO: cooperative methods and __init__ through diamonds and
+# mixins, keyword arguments filled per class, and explicit Base.method(self, ...) calls.
+class Base:
+    log: list[str]
+
+    def __init__(self):
+        self.log = ["Base"]
+
+    def save(self) -> str:
+        return "Base.save"
+
+
+class Left(Base):
+    def __init__(self):
+        super().__init__()
+        self.log.append("Left")
+
+    def save(self) -> str:
+        return "Left>" + super().save()
+
+
+class Right(Base):
+    def __init__(self):
+        super().__init__()
+        self.log.append("Right")
+
+    def save(self) -> str:
+        return "Right>" + super().save()
+
+
+class Both(Left, Right):
+    def __init__(self):
+        super().__init__()
+        self.log.append("Both")
+
+    def save(self) -> str:
+        return "Both>" + super().save()
+
+
+print(Both().log, Both().save())
+print(Left().log, Left().save())
+print(Right().log, Right().save())
+r: Right = Both()
+print(r.save())
+
+
+# A mixin that calls super() without a base of its own
+class Saver:
+    def save(self) -> str:
+        return "Saver.save"
+
+
+class LoggingMixin:
+    def save(self) -> str:
+        return "logged(" + super().save() + ")"
+
+
+class Doc(LoggingMixin, Saver):
+    pass
+
+
+print(Doc().save())
+
+
+class Alone(LoggingMixin):  # (nothing after the mixin has save)
+    pass
+
+
+try:
+    print(Alone().save())
+except AttributeError as e:
+    print("AttributeError:", e)
+
+
+# Cooperative __init__ with keyword arguments
+class Shape:
+    name: str
+
+    def __init__(self, name: str):
+        self.name = name
+
+
+class Colored(Shape):
+    color: str
+
+    def __init__(self, name: str, color: str = "red"):
+        super().__init__(name)
+        self.color = color
+
+
+class Sized(Shape):
+    size: int
+
+    def __init__(self, name: str, size: int = 1):
+        super().__init__(name)
+        self.size = size
+
+
+class Widget(Colored, Sized):
+    def __init__(self, name: str):
+        super().__init__(name)
+
+
+w = Widget("w")
+print(w.name, w.color, w.size)
+c = Colored("c", "blue")
+print(c.name, c.color)
+
+
+# Explicit base calls
+class Greeter:
+    def hello(self, who: str) -> str:
+        return "hello " + who
+
+
+class Polite(Greeter):
+    def hello(self, who: str) -> str:
+        return Greeter.hello(self, "dear " + who)
+
+
+class Loud(Polite):
+    def __init__(self):
+        Polite.__init__(self)
+
+    def hello(self, who: str) -> str:
+        return Greeter.hello(self, who).upper() + " / " + Polite.hello(self, who)
+
+
+print(Polite().hello("ann"), Loud().hello("bob"))
+
+
+class Point:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+
+class Point3(Point):
+    z: int
+
+    def __init__(self, x: int, y: int, z: int):
+        Point.__init__(self, x, y)
+        self.z = z
+
+
+p = Point3(1, 2, 3)
+print(p.x, p.y, p.z)

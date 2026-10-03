@@ -112,6 +112,19 @@ def is_synchronized(st: StructType) -> bool:
     return any(t.builtin and t.name == "Synchronized" for t in st.ancestors())
 
 
+def is_frozen(st: StructType) -> bool:
+    """Are st's own fields read-only (it, or a class it inherits, is a frozen dataclass)?"""
+    return any(t.frozen for t in st.ancestors())
+
+
+def unsafe_base(st: StructType) -> StructType | None:
+    """A class st inherits whose fields aren't protected the way st's are: for a Synchronized
+    class, one that isn't Synchronized (its methods would use its fields without the lock); for
+    a frozen class, one that isn't frozen (its methods could change its fields)."""
+    protected = is_synchronized if is_synchronized(st) else is_frozen
+    return next((t for t in st.mro()[1:] if not t.builtin and t.fields and not protected(t)), None)
+
+
 # Every class the checker declares (for deeply_immutable: a subclass could add a list).
 ALL_CLASSES: list[StructType] = []
 
@@ -136,7 +149,7 @@ def deeply_immutable(t: Type, seen: frozenset = frozenset()) -> bool:
                 return True
             classes = [t] + [c for c in ALL_CLASSES if c is not t and c.is_subclass_of(t)]
             return all(
-                any(a.frozen for a in c.ancestors())
+                is_frozen(c) and unsafe_base(c) is None
                 and all(deeply_immutable(f.type, seen | {t}) for f in c.all_fields().values())
                 for c in classes
             )
@@ -174,6 +187,11 @@ def unsendable(t: Type, seen: frozenset = frozenset()) -> str | None:
             return next((r for x in xs if (r := unsendable(x, seen))), None)
         case StructType() if t.kind == "struct":
             return None  # a @value class holds only values (checked where it's defined), so it copies
+        case StructType() if t.kind == "class" and (is_synchronized(t) or is_frozen(t)) and (b := unsafe_base(t)):
+            how = "Synchronized" if is_synchronized(t) else "frozen"
+            return (f"a {t.name} is {how}, but it inherits {b.name}, which isn't, and has fields its methods could "
+                    f"use unprotected (make {b.name} {'a seadash.Synchronized class' if how == 'Synchronized' else 'a frozen dataclass'} "
+                    f"too, or move its fields into {t.name})")
         case StructType() if is_synchronized(t) or deeply_immutable(t):
             return None  # (thread-safe, or can't change: shared, not copied)
         case StructType():
@@ -228,7 +246,7 @@ def not_a_value(t: Type) -> str | None:
 def shareable(t: Type) -> bool:
     """Safe to access from several threads at once without copying."""
     return isinstance(t, (SyncType, FutureType, HTTPServerType)) or t == JSON_VALUE or (isinstance(t, BuiltinClass) and t.threads == LOCKED) or (
-        isinstance(t, StructType) and is_synchronized(t)
+        isinstance(t, StructType) and is_synchronized(t) and unsafe_base(t) is None
     )
 
 
@@ -617,7 +635,7 @@ def table_changes(nodes) -> list[tuple[object, A.Node]]:
             if (kind == "builtin_method" and isinstance(func, A.Attribute) and func.attr in MUTATING_METHODS
                     and (table := module_table(func.value)) is not None):
                 found.append((table, n))
-            elif kind in ("func", "method", "self_call", "static_method", "super_method", "value", "ctor"):
+            elif kind in ("func", "method", "self_call", "static_method", "super_method", "base_method", "value", "ctor"):
                 for arg in [*n.args, *(k.value for k in n.keywords)]:
                     if isinstance(arg, (A.Name, A.Attribute)) and (table := module_table(arg)) is not None:
                         found.append((table, arg))  # (the program's own code could change it)
@@ -829,8 +847,10 @@ class Spawn:
         if isinstance(sym, FuncInfo):
             if sym.owner is not None:  # a bound method: obj.method
                 obj_type = target.value.ty
-                if (isinstance(obj_type, StructType) and obj_type.kind == "class" and not is_synchronized(obj_type)
+                if (isinstance(obj_type, StructType) and obj_type.kind == "class" and not shareable(obj_type)
                         and not deeply_immutable(obj_type)):
+                    if is_synchronized(obj_type):  # (but a base class isn't)
+                        raise self.fail(f"a thread can't run a method of {unsendable(obj_type)}", target)
                     if self.signal_handler:
                         raise self.fail(
                             f"a signal handler can't be a method of a {obj_type.name}: seadash runs signal handlers on "
@@ -869,8 +889,10 @@ class Spawn:
             return [], []
         if isinstance(info.target, FuncInfo) and info.target.owner is not None:
             obj_type = call.args[0].value.ty if isinstance(call.args[0], A.Attribute) else None
-            if isinstance(obj_type, StructType) and obj_type.kind == "class" and not is_synchronized(obj_type) \
+            if isinstance(obj_type, StructType) and obj_type.kind == "class" and not shareable(obj_type) \
                     and not deeply_immutable(obj_type):
+                if is_synchronized(obj_type):  # (but a base class isn't)
+                    raise self.fail(f"a thread can't run a method of {unsendable(obj_type)}", call.args[0])
                 raise self.fail(f"a thread can't run a method of a {obj_type.name}: the object would be shared by both "
                                 f"threads. Make {obj_type.name} a seadash.Synchronized class", call.args[0])
         node = fn.node
@@ -1014,7 +1036,7 @@ class Spawn:
 def callees(call: A.Call) -> list[FuncInfo]:
     ct = call.sym
     kind = getattr(ct, "kind", None)
-    if kind in ("func", "method", "self_call", "super_method"):
+    if kind in ("func", "method", "self_call", "super_method", "base_method"):
         return [ct.target]
     if kind == "ctor":
         init = ct.target.init

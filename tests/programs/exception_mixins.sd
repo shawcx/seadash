@@ -1,0 +1,113 @@
+# Exceptions with more than one base: a mixin and a built-in exception, two built-in
+# exceptions, and super().__init__(message) reaching the built-in one.
+import zlib
+
+
+class Coded:
+    code: int = 0
+
+    def describe(self) -> str:
+        return f"code {self.code}"
+
+
+class NotFound(Coded, LookupError):
+    def __init__(self, what: str):
+        super().__init__(f"{what} not found")
+        self.code = 404
+
+
+class BadKey(ValueError, KeyError):
+    pass
+
+
+class Retry(Coded, RuntimeError):
+    pass
+
+
+def find(name: str) -> str:
+    raise NotFound(name)
+
+
+try:
+    find("cat")
+except LookupError as e:
+    print("lookup:", e, repr(e), type(e).__name__)
+    if isinstance(e, Coded):
+        print(e.describe(), e.code)
+
+try:
+    raise NotFound("dog")
+except Exception as e:
+    print("exception:", e)
+
+for exc in [BadKey("k"), ValueError("v"), KeyError("kk")]:
+    try:
+        raise exc
+    except KeyError as e:
+        print("KeyError caught:", repr(e), str(e), isinstance(e, ValueError))
+    except ValueError as e:
+        print("ValueError caught:", repr(e), str(e))
+
+try:
+    raise BadKey("both")
+except ValueError as e:
+    print("as ValueError:", type(e).__name__, isinstance(e, KeyError), isinstance(e, LookupError))
+
+r = Retry("again")
+print(repr(r), str(r), r.describe(), isinstance(r, Coded))
+c: Coded = r
+print(c.describe(), isinstance(c, RuntimeError))
+
+
+class Tagged:
+    def tag(self) -> str:
+        return "<" + type(self).__name__ + ">"
+
+    def __str__(self) -> str:
+        return "tagged " + self.tag()
+
+
+class TaggedError(Tagged, Exception):
+    pass
+
+
+class ErrorFirst(Exception, Tagged):
+    pass
+
+
+te = TaggedError("boom")
+ef = ErrorFirst("bang")
+print(str(te), repr(te), te.tag())
+print(str(ef), repr(ef), ef.tag())
+try:
+    raise te
+except TaggedError as caught:
+    print("caught", caught)
+
+
+class Corrupt(zlib.error, Coded):
+    pass
+
+
+try:
+    raise Corrupt("bad block")
+except zlib.error as z:
+    print(type(z).__name__, z, isinstance(z, Coded))
+
+
+class AppError(Exception):
+    code: int
+    def __init__(self, msg: str, code: int):
+        super().__init__(msg)
+        self.code = code
+    def describe(self) -> str:
+        return f"{self} ({self.code})"
+
+class Sub(AppError):
+    def describe(self) -> str:
+        return "sub"
+
+try:
+    raise Sub("bad", 3)
+except AppError as e:
+    print(e.describe(), e.code, repr(e))

@@ -171,7 +171,7 @@ PROCESS_METHODS = {
 
 def subprocess_exception(name: str, fields: dict[str, Type]) -> StructType:
     base = MODULES_EXCEPTION_BASE.get(name)
-    st = StructType(name, "class", None, base=base, builtin=True, cpp_name=f"sd::subprocess::{name}")
+    st = StructType(name, "class", None, bases=[base] if base else [], builtin=True, cpp_name=f"sd::subprocess::{name}")
     for fname, ft in fields.items():
         st.fields[fname] = Field(fname, ft, None, Loc(0, 0))
     return st

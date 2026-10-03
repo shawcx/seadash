@@ -46,6 +46,11 @@ in the README and in the design docs, not here.
 - Statements: augmented assignment to a slice (`xs[1:3] += ys`); unpacking a list into other builtins
   (`max(*xs)`; a tuple works), into parameters with defaults, or into zip/chain/product alongside other
   arguments (`zip(a, *rows)`); `**d` into builtins, or more than one `**d` in a call.
+- Classes: `__mro__`/`mro()` as values, `issubclass`, metaclasses, inheriting from built-in containers
+  (`list`, `dict`); with multiple inheritance, fields of the same name from two bases (an error now), a mixin's
+  `super()` call to a class only an importing module puts after it, `*args`/`**kwargs` in a `super()` call that
+  reaches different classes, and combining two module exception classes that share a base (their C++
+  inherits non-virtually); an exception's arguments as a tuple (`e.args`, `Exception(msg, code)`).
 - Decorators on nested functions (other than `@functools.wraps`).
 - `contextlib`: `chdir`, `redirect_stdout`/`redirect_stderr`, `ContextDecorator`, `ExitStack.push`, async
   context managers. Generators can't `yield` in an `except`/`finally` block (C++ can't suspend there).

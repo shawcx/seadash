@@ -1,0 +1,104 @@
+# Mixins on runtime base classes: an HTTP handler whose methods come from mixins (one overriding
+# the runtime's log_message, another its version_string), and a stateless mixin on a
+# Synchronized class shared by threads.
+import http.client
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from seadash import Synchronized
+
+
+class QuietLog:
+    def log_message(self, format: str, *args: str) -> None:
+        print("quiet log:", format.split()[0], len(args))
+
+
+class TextReply:
+    content_type = "text/plain"
+
+    def reply(self, text: str) -> bytes:
+        return text.encode()
+
+    def do_GET(self):
+        print("TextReply.do_GET (overridden)")
+
+
+class Handler(QuietLog, TextReply, BaseHTTPRequestHandler):
+    server_version = "Mixed/1.0"
+
+    def do_GET(self):
+        data = self.reply(f"{self.command} {self.path} {self.content_type}")
+        self.send_response(200)
+        self.send_header("Content-Type", self.content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+class EchoMixin:
+    def version_string(self) -> str:
+        return "Echo/2.0"
+
+
+class PostHandler(EchoMixin, Handler):
+    pass
+
+
+with HTTPServer(("127.0.0.1", 0), Handler) as server:
+    t = threading.Thread(target=server.serve_forever)
+    t.start()
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1])
+    conn.request("GET", "/hi")
+    r = conn.getresponse()
+    print(r.status, r.getheader("Content-Type"), str(r.getheader("Server")).split()[0], r.read())
+    conn.close()
+    server.shutdown()
+    t.join()
+with HTTPServer(("127.0.0.1", 0), PostHandler) as server:
+    t = threading.Thread(target=server.serve_forever)
+    t.start()
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1])
+    conn.request("GET", "/hi")
+    r = conn.getresponse()
+    print(r.status, r.getheader("Content-Type"), str(r.getheader("Server")).split()[0], r.read())
+    conn.close()
+    server.shutdown()
+    t.join()
+
+
+# A stateless mixin on a Synchronized class: its methods call the locked ones.
+class Doubling:
+    def double(self) -> int:
+        self.add(self.total())
+        return self.total()
+
+    def add(self, n: int) -> None:
+        pass
+
+    def total(self) -> int:
+        return 0
+
+
+class Counter(Doubling, Synchronized):
+    count: int
+
+    def add(self, n: int) -> None:
+        self.count += n
+
+    def total(self) -> int:
+        return self.count
+
+
+c = Counter(0)
+
+
+def work() -> None:
+    for i in range(1000):
+        c.add(1)
+
+
+threads = [threading.Thread(target=work) for i in range(4)]
+for th in threads:
+    th.start()
+for th in threads:
+    th.join()
+print(c.total(), c.double(), c)

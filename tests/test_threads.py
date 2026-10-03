@@ -392,6 +392,38 @@ UNSAFE = [
 ]
 
 
+UNSAFE += [
+    ("""
+        from seadash import Synchronized
+        class Tally:
+            seen: int = 0
+            def note(self) -> None:
+                self.seen += 1
+        class Counter(Tally, Synchronized):
+            n: int = 0
+        def work(c: Counter) -> None:
+            c.note()
+        threading.Thread(target=work, args=(Counter(),)).start()
+     """, "can't pass this to a thread: a Counter is Synchronized, but it inherits Tally, which isn't, and has fields "
+          "its methods could use unprotected (make Tally a seadash.Synchronized class too, or move its fields into Counter)"),
+    ("""
+        from dataclasses import dataclass
+        class Tally:
+            seen: int = 0
+        @dataclass(frozen=True)
+        class Base:
+            x: int = 0
+        @dataclass(frozen=True)
+        class Mixed(Base, Tally):
+            pass
+        def work(c: Mixed) -> None:
+            print(c)
+        threading.Thread(target=work, args=(Mixed(),)).start()
+     """, "can't pass this to a thread: a Mixed is frozen, but it inherits Tally, which isn't, and has fields its "
+          "methods could use unprotected (make Tally a frozen dataclass too, or move its fields into Mixed)"),
+]
+
+
 @pytest.mark.parametrize("src,msg", UNSAFE)
 def test_unsafe_sharing_is_an_error(src, msg):
     assert compile_error(src).message.startswith(msg)

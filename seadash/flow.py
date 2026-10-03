@@ -221,7 +221,7 @@ def mark_call(n: A.Call, func: A.Expr, args: list, mark, threads) -> None:
     ct = n.sym
     kind = getattr(ct, "kind", None)
     everything = [*args, *(k.value for k in n.keywords)]
-    if kind in ("func", "method", "self_call", "static_method", "class_func", "super_method", "super_init", "ctor"):
+    if kind in ("func", "method", "self_call", "static_method", "class_func", "super_method", "base_method", "super_init", "ctor"):
         fn = ct.target
         if kind in ("ctor", "super_init"):
             st = ct.target

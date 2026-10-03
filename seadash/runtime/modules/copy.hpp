@@ -4,7 +4,7 @@
 //
 // A class gets two virtual hooks from the compiler when the program imports copy:
 // sd_copy() (a new object of its runtime class with the same field values, or what its
-// __copy__ returns) and sd_deep_copy(memo), both returning its root class's shared_ptr.
+// __copy__ returns) and sd_deep_copy(memo), both returning an sd::object pointer.
 // (value_copy in seadash.hpp is the thread-boundary copy: it shares class instances.)
 #pragma once
 
@@ -38,10 +38,9 @@ template <class T>
 T deep_copy(const T& x, CopyMemo& memo) {
     if constexpr (is_shared<T>::value && requires { x->sd_deep_copy(memo); }) {
         if (!x) return x;
-        using Root = typename decltype(x->sd_copy())::element_type;
         auto it = memo.done.find(dynamic_cast<const void*>(x.get()));
-        if (it != memo.done.end()) return std::static_pointer_cast<typename T::element_type>(std::static_pointer_cast<Root>(it->second));
-        return std::static_pointer_cast<typename T::element_type>(x->sd_deep_copy(memo));
+        if (it != memo.done.end()) return std::dynamic_pointer_cast<typename T::element_type>(std::static_pointer_cast<object>(it->second));
+        return std::dynamic_pointer_cast<typename T::element_type>(x->sd_deep_copy(memo));
     } else if constexpr (is_list<T>::value) {
         if (const T* seen = memo.find(x)) return *seen;
         T out;
@@ -104,7 +103,7 @@ T deepcopy(const T& x) {
 template <class T>
 T copy(const T& x) {
     if constexpr (is_shared<T>::value && requires { x->sd_copy(); }) {
-        return x ? std::static_pointer_cast<typename T::element_type>(x->sd_copy()) : x;
+        return x ? std::dynamic_pointer_cast<typename T::element_type>(x->sd_copy()) : x;
     } else if constexpr (requires { typename T::sd_is_handle; }) {
         return shallow_copy(x);  // (a deque keeps its maxlen)
     } else if constexpr (is_optional<T>::value) {
@@ -120,15 +119,15 @@ auto copy_as(const T& x) {
     if constexpr (is_optional<T>::value) {
         return x ? std::optional<std::shared_ptr<R>>(copy_as<R>(*x)) : std::nullopt;
     } else {
-        return std::static_pointer_cast<R>(x->sd_copy());
+        return std::dynamic_pointer_cast<R>(x->sd_copy());
     }
 }
 
 // A class's sd_deep_copy: `out` is a new object holding this one's fields; copy them all
 // the way down, after noting the copy (so a cycle back to this object finds it).
-template <class Root, class C>
+template <class C>
 void note_copy(const C* original, const std::shared_ptr<C>& out, CopyMemo& memo) {
-    memo.done.emplace(dynamic_cast<const void*>(original), std::shared_ptr<void>(std::static_pointer_cast<Root>(out)));
+    memo.done.emplace(dynamic_cast<const void*>(original), std::shared_ptr<void>(std::shared_ptr<object>(out)));
 }
 
 }  // namespace sd::copymod

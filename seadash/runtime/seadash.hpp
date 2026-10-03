@@ -171,7 +171,25 @@ inline type_object type_from_name(const std::string& qualified) {
     return {qualified.substr(0, dot), qualified.substr(dot + 1)};
 }
 
-struct BaseException : std::enable_shared_from_this<BaseException> {
+// The root of every class's C++: it gives shared_from_this() (`self` as a shared pointer).
+// A class inherits it virtually where two of its bases would otherwise each have one.
+struct object : std::enable_shared_from_this<object> {
+    virtual ~object() = default;
+};
+
+// In a program with an exception class of several bases (`class E(ValueError, KeyError)`,
+// `class E(Mixin, ValueError)`), the compiler defines SD_VIRTUAL_EXCEPTIONS: exceptions then
+// inherit their bases (and sd::object) virtually, so that class has one of each. Only then:
+// virtual bases make a bigger program, which can change how well the rest is optimized.
+// (So a constructor that passes its message on sets it in its body: a virtual base is
+// initialized by the most derived class.)
+#ifdef SD_VIRTUAL_EXCEPTIONS
+#define SD_EXCEPTION_BASE(Base) virtual Base
+#else
+#define SD_EXCEPTION_BASE(Base) Base
+#endif
+
+struct BaseException : SD_EXCEPTION_BASE(object) {
     std::string message;
     std::vector<trace::Record> traceback;  // where it was raised (debug builds)
     BaseException() = default;
@@ -184,20 +202,22 @@ struct BaseException : std::enable_shared_from_this<BaseException> {
 };
 
 #define SD_EXCEPTION(Name, Base)                                  \
-    struct Name : Base {                                          \
+    struct Name : SD_EXCEPTION_BASE(Base) {                       \
         using Base::Base;                                         \
         std::string sd_type() const override { return #Name; }    \
     };
 
 SD_EXCEPTION(Exception, BaseException)
 // OSError carries errno, strerror and filename, like Python's (None unless the OS set them).
-struct OSError : Exception {
+struct OSError : SD_EXCEPTION_BASE(Exception) {
     std::optional<std::int64_t> errno_;
     std::optional<std::string> strerror, filename;
     OSError() = default;
     explicit OSError(std::string msg, std::optional<std::int64_t> err = std::nullopt, std::optional<std::string> what = std::nullopt,
                      std::optional<std::string> path = std::nullopt)
-        : Exception(std::move(msg)), errno_(err), strerror(std::move(what)), filename(std::move(path)) {}
+        : errno_(err), strerror(std::move(what)), filename(std::move(path)) {
+        message = std::move(msg);
+    }
     std::string sd_type() const override { return "OSError"; }
     std::string sd_repr() const override;  // FileNotFoundError(2, 'No such file or directory'), as Python's
 };
@@ -210,7 +230,7 @@ SD_EXCEPTION(IndexError, LookupError)
 // Python shows a KeyError's argument as a repr: str(KeyError('k')) is 'k'. One from a
 // failed lookup already holds repr(key) as its message (from_lookup), so its repr is
 // KeyError('b') rather than KeyError("'b'").
-struct KeyError : LookupError {
+struct KeyError : SD_EXCEPTION_BASE(LookupError) {
     using LookupError::LookupError;
     bool from_lookup = false;
     std::string sd_type() const override { return "KeyError"; }

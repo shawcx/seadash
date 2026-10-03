@@ -43,7 +43,7 @@ from .types import (
     SYNC_ARITY, SelectorType, ClassAttr, ClassRefType, CmpKeyType, ContextManagerType, EXIT_STACK, HTTPServerType, CounterType, FutureType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
     VarTupleType, DefaultDictType, DequeType, DictType, Field, FileType, FuncInfo, FuncType, IterType, ListType, ModuleType, OptionalType, Param, SyncType,
     Prim, SetType, StructType, TupleType, Type, Var, EnumInfo, EnumMember, bool_decays, enum_decays, enum_flag_op, enum_mixin,
-    Signature, UNKNOWN, assignable, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional,
+    Signature, UNKNOWN, assignable, c3_conflict, c3_merge, runtime_virtual, contains_unknown, element_type, is_hashable, is_numeric, join, strip_optional,
     filled_for, strip_sig, widen, EXECUTOR, HTTP_HEADERS, HTTP_RESPONSE, NORMAL_DIST, SIGNAL_HANDLER, SSL_SOCKET, TARFILE,
 )
 
@@ -192,6 +192,27 @@ class CallTarget:
     target: object
     args: list[A.Expr | None] | None = None
     params: list[Param] | None = None  # for 'ctor': the parameters `args` line up with
+    dispatch: SuperCall | None = None  # super().m(...): where it goes, for each class that inherits the method
+
+
+@dataclass(eq=False)
+class SuperCall:
+    """`super().m(...)` (or super().__init__) in a method of `owner`. Which class's m it calls
+    depends on the object's class: the next class after `owner` in *its* MRO with an m. For each
+    class that inherits owner (and owner itself), `targets` has that class and how the call's
+    arguments fill its parameters: one entry per parameter, an index into `args` or None for
+    the default. (Codegen calls it directly, or through a virtual hook when the classes differ.)"""
+
+    owner: StructType
+    name: str
+    node: A.Call
+    args: list[A.Expr]  # the arguments as written: positional ones, then keyword values
+    keywords: list[str | None]  # each argument's keyword (None: positional)
+    index: int  # (names the hook: sd_next_<owner>_<index>)
+    targets: dict[int, tuple] = field(default_factory=dict)  # id(class) -> (class, target class or None, slots)
+    primary: StructType | None = None  # the target the call was checked against (owner's own, mostly)
+    ret: Type | None = None
+    spread: bool = False  # f(*xs) / f(**d): only the primary target can be called
 
 
 @dataclass
@@ -341,11 +362,14 @@ class Checker:
 
         for node in struct_nodes:
             self.resolve_base(node.sym)
+        for node in struct_nodes:
+            self.check_mro(node.sym)
         # Bases before subclasses, so a subclass can see what it inherits.
         for node in sorted(struct_nodes, key=lambda n: len(n.sym.ancestors())):
             self.resolve_struct_members(node.sym)
         for node in struct_nodes:
             self.check_overrides(node.sym)
+            self.check_inherited_super_calls(node.sym)
         for node in func_nodes:
             key = self.decorated.get(node.name, node.name)
             info = self.resolve_signature(node, owner=None)
@@ -405,8 +429,6 @@ class Checker:
             raise self.error(f"'{node.name}' is already defined", node)
         if node.name in PRIMITIVES or node.name in builtins.CONTAINER_TYPES or node.name in builtins.EXCEPTIONS:
             raise self.error(f"can't define a class named '{node.name}'; that's a built-in type", node)
-        if len(node.bases) > 1:
-            raise self.error("multiple inheritance is not supported", node.bases[1])
         self.set_class_kind(node)
         st = StructType(node.name, node.kind, node, module=self.module_name)
         if (base := self.enum_base(node)) is not None:
@@ -503,42 +525,130 @@ class Checker:
         return m if isinstance(m, StructType) else None
 
     def resolve_base(self, st: StructType) -> None:
-        """`class Dog(Animal):` Classes inherit from one class; structs (values) can't inherit."""
+        """`class Dog(Animal):` / `class Duck(Flyer, Swimmer):` the classes it inherits from.
+        Structs (values) can't inherit. (check_mro then checks their order.)"""
+        st._mro = None
         if not st.node.bases or st.enum is not None:
             return
-        base_expr = st.node.bases[0]
-        base = self.resolve_type(base_expr)
-        if isinstance(base, StructType) and base.enum is not None:
-            raise self.error(f"an enum with members can't be inherited from: '{base.name}' is a fixed set of values",
-                             base_expr)
-        if not isinstance(base, StructType):
-            raise self.error(f"a class can only inherit from another class, not {base}", base_expr)
+        bases: list[StructType] = []
+        for base_expr in st.node.bases:
+            base = self.resolve_type(base_expr)
+            if isinstance(base, StructType) and base.enum is not None:
+                raise self.error(f"an enum with members can't be inherited from: '{base.name}' is a fixed set of values",
+                                 base_expr)
+            if not isinstance(base, StructType):
+                raise self.error(f"a class can only inherit from another class, not {base}", base_expr)
+            if base.kind != "class" and st.kind == "class":
+                raise self.error(f"can't inherit from '{base.name}', a @value class; only ordinary classes can be "
+                                 f"inherited from", base_expr)
+            if base is st:
+                raise self.error(f"'{st.name}' can't inherit from itself", base_expr)
+            if base in bases:
+                raise self.error(f"duplicate base class {base.name}", base_expr)
+            bases.append(base)
+        st.bases = bases
+
+        def reaches(t: StructType, seen: set) -> bool:
+            if t is st:
+                return True
+            if id(t) in seen:
+                return False
+            seen.add(id(t))
+            return any(reaches(b, seen) for b in t.bases)
+
+        for b, expr in zip(st.bases, st.node.bases):
+            if reaches(b, set()):
+                st.bases = []
+                raise self.error(f"'{st.name}' can't inherit from itself", expr)
+
+    def check_mro(self, st: StructType) -> None:
+        """After every class's bases are known: no cycles, and an order Python's C3 can make."""
+        st._mro = None
+        if not st.bases:
+            return
         if st.kind != "class":
-            what = ("an exception can't be a @value class" if base.is_exception
+            what = ("an exception can't be a @value class" if any(b.is_exception for b in st.bases)
                     else "a @value class can't inherit (it's a value, not a shared object)")
-            raise self.error(f"{what}: remove @value to make `class {st.name}({base.name}):` an ordinary class", st.node)
-        if base.kind != "class":
-            raise self.error(f"can't inherit from '{base.name}', a @value class; only ordinary classes can be inherited from",
-                             base_expr)
-        if base.is_subclass_of(st):
-            raise self.error(f"'{st.name}' can't inherit from itself", base_expr)
-        st.base = base
+            bases = ", ".join(b.name for b in st.bases)
+            raise self.error(f"{what}: remove @value to make `class {st.name}({bases}):` an ordinary class", st.node)
+        if c3_merge([b.mro() for b in st.bases] + [list(st.bases)]) is None:
+            names = ", ".join(t.name for t in c3_conflict(st.bases))
+            raise self.error(f"Cannot create a consistent method resolution order (MRO) for bases {names}", st.node)
+        if len(st.bases) > 1:
+            self.check_runtime_layout(st)
+
+    def check_runtime_layout(self, st: StructType) -> None:
+        """Runtime classes can be combined only where their C++ shares what they have in common
+        (the built-in exceptions inherit virtually; a module's exception classes don't)."""
+        mro = st.mro()
+        for c in mro:
+            if not c.builtin:
+                continue
+            parents = [t for t in mro if c in t.bases]
+            separate = [t for t in parents if t.builtin and not runtime_virtual(t)]
+            if len(separate) + (len(separate) < len(parents)) > 1:
+                p1, p2 = (separate + [t for t in parents if t not in separate])[:2]
+                def shown(t: StructType) -> str:  # (zlib.error, not error)
+                    return ".".join(t.cpp_name.split("::")[1:]) if t.builtin and t.cpp_name else t.name
+                raise self.error(f"{st.name} can't inherit from both {shown(p1)} and {shown(p2)} (yet): in seadash's "
+                                 f"runtime, each has its own {shown(c)}", st.node)
 
     def check_overrides(self, st: StructType) -> None:
-        """An override must match the base method's signature (it becomes a C++ virtual override)."""
-        if st.base is None:
+        """An override must match the base methods' signatures (it becomes a C++ virtual
+        override); a name two bases both define must mean the same in each."""
+        if not st.bases:
             return
+        mro = st.mro()
         for name, m in st.methods.items():
-            if st.base.find_field(name):
-                raise self.error(f"'{name}' is a field in {st.base.name}; a method can't reuse the name", m.node)
-            base_m = st.base.find_method(name)
-            if base_m is None or name == "__init__":
+            if (f := st.inherited("fields", name)) is not None:
+                owner = next(t for t in mro if name in t.fields)
+                raise self.error(f"'{name}' is a field in {owner.name}; a method can't reuse the name", m.node)
+        # Every name a base class defines, checked against each other definition along the MRO.
+        names = dict.fromkeys(n for t in mro for n in [*t.methods, *t.fields, *t.class_attrs])
+        for name in names:
+            owners = [t for t in mro if name in t.methods or name in t.fields or name in t.class_attrs]
+            if len(owners) < 2:
                 continue
-            if [p.type for p in m.params] != [p.type for p in base_m.params] or m.ret != base_m.ret:
-                raise self.error(
-                    f"{st.name}.{name}() overrides {base_m.owner.name}.{name}(), so it must have the same "
-                    f"parameter and return types: {base_m}", m.node,
-                )
+            first = owners[0]
+            kinds = {("method" if name in t.methods else "field" if name in t.fields else "class attribute"): t
+                     for t in owners}
+            if len(kinds) > 1:
+                (k1, t1), (k2, t2) = list(kinds.items())[:2]
+                if st in (t1, t2) or (t1.builtin and t2.builtin):
+                    continue  # (reported where it's declared, or the runtime's own)
+                raise self.error(f"'{name}' is a {k1} in {t1.name} but a {k2} in {t2.name}; {st.name} inherits both, "
+                                 f"so rename one", st.node)
+            if name in first.fields:
+                if not all(t.builtin for t in owners):
+                    raise self.error(f"field '{name}' is defined in both {owners[0].name} and {owners[1].name}; "
+                                     f"{st.name} inherits both, so rename one (a field can only come from one class)",
+                                     st.node)
+                continue
+            if name in first.class_attrs:
+                for other in owners[1:]:
+                    if other.class_attrs[name].type != first.class_attrs[name].type and first is not st:
+                        raise self.error(f"{st.name} inherits class attribute '{name}' from both {first.name} and "
+                                         f"{other.name}, with different types ({first.class_attrs[name].type} and "
+                                         f"{other.class_attrs[name].type}); give them the same type", st.node)
+                continue
+            if name in first.methods and name != "__init__":
+                def sig(m: FuncInfo) -> tuple:
+                    return [p.type for p in m.params], m.ret
+                m = first.methods[name]
+                # (a generated __eq__ has an overload for each base's: __eq__@B)
+                allowed = [sig(f) for k, f in st.methods.items() if k == name or k.startswith(name + "@")] or [sig(m)]
+                for other in owners[1:]:
+                    om = other.methods[name]
+                    if sig(om) not in allowed:
+                        if first is st:
+                            raise self.error(
+                                f"{st.name}.{name}() overrides {other.name}.{name}(), so it must have the same "
+                                f"parameter and return types: {om}", m.node,
+                            )
+                        raise self.error(
+                            f"{st.name} inherits {name}() from both {first.name} and {other.name}, with different "
+                            f"parameter or return types ({m} and {om}); give them the same types", st.node,
+                        )
 
     def resolve_struct_members(self, st: StructType) -> None:
         if st.enum is not None:
@@ -547,7 +657,7 @@ class Checker:
         for stmt in st.node.body:
             match stmt:
                 case A.AnnAssign(A.Name(name), annotation, default):
-                    if name in st.fields or (st.base and st.base.find_field(name)):
+                    if name in st.fields or st.inherited("fields", name):
                         raise self.error(f"field '{name}' is already defined", stmt)
                     default = self.field_default(default)
                     stmt.value = default
@@ -686,10 +796,10 @@ class Checker:
             )
         if name in st.class_attrs:
             raise self.error(f"class attribute '{name}' is already defined", stmt)
-        if name in st.fields or (st.base and st.base.find_field(name)):
+        if name in st.fields or st.inherited("fields", name):
             raise self.error(f"'{name}' is a field of {st.name}; a class attribute can't reuse the name", stmt)
         t = self.check_expr(value)
-        if (inherited := st.base.find_class_attr(name) if st.base else None) is not None:
+        if (inherited := st.inherited("class_attrs", name)) is not None:
             if not assignable(t, inherited.type):
                 raise self.error(f"{st.name}.{name} redefines {inherited.name} as {t}, but it's {inherited.type} in the "
                                  f"base class", value)
@@ -1190,12 +1300,15 @@ class Checker:
                         mangled=mangle(gen.name, type_args), origin=gen.name, type_args=type_args)
         copy.sym = st
         self.instances[key] = st  # before resolving members: fields may mention Stack[T] itself
+        threads.ALL_CLASSES.append(st)
         self.out_structs.append(st)
 
         def resolve() -> None:
             self.resolve_base(st)
+            self.check_mro(st)
             self.resolve_struct_members(st)
             self.check_overrides(st)
+            self.check_inherited_super_calls(st)
             self.check_value_recursion(st)
             self.check_field_defaults(st)
             for m in st.methods.values():
@@ -2470,7 +2583,7 @@ class Checker:
             raise self.error(f"'{describe_short(cls)}' isn't a class that patterns can match", cls)
         if not isinstance(inner, StructType):
             raise self.never_matches(p, t, f"{with_article(t)} is never {with_article(st.name)}")
-        if not (inner.is_subclass_of(st) or (st.is_subclass_of(inner) and inner.kind == "class")):
+        if not (inner.is_subclass_of(st) or (inner.kind == "class" and (st.is_subclass_of(inner) or common_subclass(inner, st)))):
             raise self.never_matches(p, t, f"{with_article(inner.name)} is never {with_article(st.name)}")
         p.sym = st
         fields = list(st.all_fields())
@@ -3644,6 +3757,9 @@ class Checker:
             ):
                 st = owner.st if isinstance(owner, ClassRefType) else owner
                 method = st.find_method(func.attr)
+                if isinstance(owner, ClassRefType) and e.args and (func.attr == "__init__" or (
+                        method is not None and method.kind not in ("static", "classmethod"))):
+                    return self.check_base_call(e, st, func.attr)
                 if method is None or method.kind not in ("static", "classmethod"):
                     raise self.error(
                         f"{st.name}.{func.attr}() needs an instance: only @staticmethod and @classmethod "
@@ -4277,16 +4393,18 @@ class Checker:
                    for name, expr in derive[root].items() if name not in roots]
         self.synthesize_methods(st, methods, d)
 
-    def synthesize_methods(self, st: StructType, methods: list[str], d: A.Expr) -> None:
-        """Add methods written as source (by @dataclass, @total_ordering) to a class."""
+    def synthesize_methods(self, st: StructType, methods: list, d: A.Expr) -> None:
+        """Add methods written as source (by @dataclass, @total_ordering) to a class: each is
+        its source, or (key, source) for one stored under another key (an overload, `__eq__@B`)."""
         if not methods:
             return
-        source = "class Synthesized:\n" + "\n".join(textwrap.indent(m, "    ") for m in methods) + "\n"
-        for fn in parse(source).body[0].body:
+        keyed = [m if isinstance(m, tuple) else (None, m) for m in methods]
+        source = "class Synthesized:\n" + "\n".join(textwrap.indent(m, "    ") for _, m in keyed) + "\n"
+        for (key, _), fn in zip(keyed, parse(source).body[0].body):
             for n in walk(fn):
                 n.loc = d.loc  # errors in generated methods point at the decorator
             st.node.body.append(fn)
-            st.methods[fn.name] = self.resolve_signature(fn, owner=st)
+            st.methods[key or fn.name] = self.resolve_signature(fn, owner=st)
 
     def apply_dataclass(self, st: StructType, d: A.Expr) -> None:
         """@dataclass(eq=True, order=False, frozen=False, unsafe_hash=False): generate the
@@ -4298,30 +4416,36 @@ class Checker:
             if not isinstance(kw.value, A.BoolLit):
                 raise self.error(f"@dataclass({kw.name}=...) must be True or False", kw.value)
             options[kw.name] = kw.value.value
-        st.frozen = options["frozen"]
+        st.frozen, st.dataclass = options["frozen"], True
         fields = list(st.all_fields())
         mine = "(" + "".join(f"self.{f}, " for f in fields) + ")"
         theirs = "(" + "".join(f"other.{f}, " for f in fields) + ")"
-        def other(name: str) -> str:
+        def others(name: str) -> list[str]:
             # Like Python's, the generated method only compares objects of exactly this class;
             # it takes what the method it overrides takes (a subclass's __eq__ takes a Base).
-            overridden = st.base.find_method(name) if st.base is not None else None
-            return f"other: {overridden.params[0].type if overridden is not None else st.name}"
+            # Bases with different such methods (two dataclasses) get one each: C++ overloads.
+            inherited = [t.methods[name].params[0].type for t in st.mro()[1:] if name in t.methods]
+            return [f"other: {t}" for t in dict.fromkeys(inherited)] or [f"other: {st.name}"]
+
+        def add(name: str, make) -> None:
+            for i, other in enumerate(others(name)):
+                methods.append((name if i == 0 else f"{name}@{other.removeprefix('other: ')}", make(other)))
 
         same = f"isinstance(other, {st.name}) and __same_class__(self, other)" if st.kind == "class" else "True"
         methods = []
         if options["eq"] and st.kind == "class" and "__eq__" not in st.methods:  # structs already compare fields
-            methods.append(f"def __eq__(self, {other('__eq__')}) -> bool:\n"
-                           f"    if {same}:\n        return {mine} == {theirs}\n    return False")
+            add("__eq__", lambda other: f"def __eq__(self, {other}) -> bool:\n"
+                                        f"    if {same}:\n        return {mine} == {theirs}\n    return False")
         if options["order"]:
             for op, name in (("<", "__lt__"), ("<=", "__le__"), (">", "__gt__"), (">=", "__ge__")):
                 if name not in st.methods:
                     fail = (f"    raise TypeError(f\"'{op}' not supported between instances of "
                             f"'{{__class_name__(self)}}' and '{{__class_name__(other)}}'\")")
-                    methods.append(f"def {name}(self, {other(name)}) -> bool:\n"
-                                   f"    if {same}:\n        return {mine} {op} {theirs}\n{fail}"
-                                   if st.kind == "class" else
-                                   f"def {name}(self, other: {st.name}) -> bool:\n    return {mine} {op} {theirs}")
+                    if st.kind == "class":
+                        add(name, lambda other, name=name, op=op, fail=fail:
+                            f"def {name}(self, {other}) -> bool:\n    if {same}:\n        return {mine} {op} {theirs}\n{fail}")
+                    else:
+                        methods.append(f"def {name}(self, other: {st.name}) -> bool:\n    return {mine} {op} {theirs}")
         hashable = all(is_hashable(f.type) for f in st.all_fields().values())  # (a list field: like Python, it can't be hashed)
         if (options["unsafe_hash"] or (options["eq"] and options["frozen"])) and "__hash__" not in st.methods and hashable:
             methods.append(f"def __hash__(self) -> int:\n    return hash({mine})")
@@ -4344,8 +4468,9 @@ class Checker:
             st = (self.lookup_struct(x.id) if isinstance(x, A.Name) else self.module_struct(x))
             if st is None:
                 raise self.error("isinstance() needs a class (or a tuple of classes) as its second argument", x)
-            if not (st.is_subclass_of(base) or base.is_subclass_of(st)):
-                raise self.error(f"a {base.name} can never be a {st.name} (they're unrelated classes)", x)
+            if not (st.is_subclass_of(base) or base.is_subclass_of(st) or common_subclass(base, st)):
+                raise self.error(f"a {base.name} can never be a {st.name} (they're unrelated classes, and no class "
+                                 f"inherits from both)", x)
             classes.append(st)
         e.sym = CallTarget("isinstance", classes)
         return BOOL
@@ -4357,9 +4482,10 @@ class Checker:
         declared = strip_optional(subject.ty)
         narrow = classes[0]
         for c in classes[1:]:
-            narrow = join(narrow, c)
-        if not narrow.is_subclass_of(declared):
+            narrow = join(narrow, c) or declared
+        if declared.is_subclass_of(narrow):
             narrow = declared  # isinstance(dog, Animal): nothing new to learn beyond "not None"
+        # (or a subclass, or an unrelated class some class inherits along with this one: a cross-cast)
         state = self.state.copy()
         if isinstance(subject, A.Name):
             entry = state.names.get(subject.id)
@@ -4370,23 +4496,118 @@ class Checker:
         return state
 
     def check_super_call(self, e: A.Call, sup: A.Call, method_name: str) -> Type:
-        """super().method(...) calls the base class's version; super().__init__(...) its initializer."""
+        """super().method(...) calls the next class's version, after this one in the object's
+        MRO; super().__init__(...) its initializer. With multiple inheritance that class can
+        depend on the object's class: each one that inherits this method is checked."""
         info = self.scope.info
         if sup.args or sup.keywords or info is None or info.owner is None or self.lambda_depth:
             raise self.error("super() only works as `super().method(...)` directly inside a method", sup)
-        base = info.owner.base
-        if base is None or base.builtin:
-            raise self.error(f"{info.owner.name} has no base class to call with super()", sup)
-        if method_name == "__init__":
-            params = self.constructor_params(base, e)
-            owner = base.init.owner if base.init is not None else base
-            e.sym = CallTarget("super_init", owner, self.match_args(e, params, f"{base.name}.__init__()"), params)
+        owner = info.owner
+        subclasses = [d for d in threads.ALL_CLASSES if d is not owner and owner in d.mro()[1:]]
+        primary = next_after(owner, owner, method_name)
+        if primary is None and method_name != "__init__":
+            primary = next((t for d in subclasses if (t := next_after(d, owner, method_name)) is not None), None)
+            if primary is None:
+                if not owner.bases:
+                    raise self.error(f"{owner.name} has no base class to call with super()", sup)
+                if len(owner.bases) == 1:
+                    raise self.error(f"{owner.base.name} has no method '{method_name}'", e.func)
+                raise self.error(f"none of {owner.name}'s base classes ({', '.join(b.name for b in owner.bases)}) has a "
+                                 f"method '{method_name}'", e.func)
+        if primary is None:  # super().__init__() reaching object.__init__
+            for arg in [*e.args, *(k.value for k in e.keywords), *e.double_star]:
+                self.check_expr(arg)
+            e.sym = CallTarget("super_noop", None)
+            ret = NONE
+        elif method_name == "__init__":
+            params = self.target_params(primary, "__init__")
+            e.sym = CallTarget("super_init", primary, self.match_args(e, params, f"{primary.name}.__init__()"), params)
+            ret = NONE
+        else:
+            method = primary.methods[method_name]
+            e.sym = CallTarget("super_method", method, self.match_args(e, method.params, f"{method_name}()"))
+            ret = method.ret
+        sc = SuperCall(owner, method_name, e, [*e.args, *(k.value for k in e.keywords)],
+                       [None] * len(e.args) + [k.name for k in e.keywords], len(owner.super_calls))
+        sc.primary, sc.ret = primary, ret
+        sc.spread = any(isinstance(a, A.Starred) for a in e.args) or bool(e.double_star)
+        e.sym.dispatch = sc
+        owner.super_calls.append(sc)
+        for d in [owner, *subclasses]:
+            self.super_target(sc, d)
+        return ret
+
+    def check_base_call(self, e: A.Call, st: StructType, name: str) -> Type:
+        """`Base.method(self, ...)` / `Base.__init__(self, ...)`: that class's version, called
+        directly (not the object's override)."""
+        receiver = e.args[0]
+        if isinstance(receiver, A.Starred):
+            raise self.error(f"{st.name}.{name}() needs the instance as its first argument, not *", receiver)
+        rt = self.check_expr(receiver)
+        if not isinstance(rt, StructType) or not rt.is_subclass_of(st):
+            raise self.error(f"{st.name}.{name}() needs {with_article(st.name)} (or a subclass) as its first argument, "
+                             f"not {with_article(str(rt))}", receiver)
+        rest = dataclasses.replace(e, args=e.args[1:])  # (shares e's notes, for f(*xs))
+        if name == "__init__":
+            if not (isinstance(receiver, A.Name) and receiver.id == "self" and self.scope.info is not None
+                    and self.scope.info.owner is not None and not self.lambda_depth):
+                raise self.error(f"{st.name}.__init__() can only be called on self, inside a method", receiver)
+            target = init_target(st.mro())
+            if target is None:
+                if len(e.args) > 1 or e.keywords:
+                    raise self.error("object.__init__() takes exactly one argument (the instance to initialize)", e)
+                e.sym = CallTarget("super_noop", None)
+                return NONE
+            params = self.target_params(target, "__init__")
+            e.sym = CallTarget("super_init", target, self.match_args(rest, params, f"{target.name}.__init__()"), params)
             return NONE
-        method = base.find_method(method_name)
-        if method is None:
-            raise self.error(f"{base.name} has no method '{method_name}'", e.func)
-        e.sym = CallTarget("super_method", method, self.match_args(e, method.params, f"{method_name}()"))
+        method = st.find_method(name)
+        e.sym = CallTarget("base_method", method, self.match_args(rest, method.params, f"{st.name}.{name}()"))
         return method.ret
+
+    def target_params(self, t: StructType, name: str) -> list[Param]:
+        if name != "__init__":
+            return t.methods[name].params
+        return t.methods["__init__"].params if "__init__" in t.methods else self.constructor_params(t, t.node)
+
+    def super_target(self, sc: SuperCall, d: StructType) -> None:
+        """Where sc's call goes for an object of class d, checked: the arguments must fit."""
+        if id(d) in sc.targets:
+            return
+        t = next_after(d, sc.owner, sc.name)
+        what = sc.name
+        where = (f"super().{what}(...) in {sc.owner.name}" if d is sc.owner else
+                 f"super().{what}(...) in {sc.owner.name}, for {with_article(d.name)} (MRO: "
+                 f"{', '.join(c.name for c in d.mro())}),")
+        if t is None:
+            if sc.name == "__init__" and sc.args and d is not sc.owner:
+                raise self.error(f"{where} reaches no class after {sc.owner.name} with an __init__, so it calls "
+                                 f"object.__init__(), which takes no arguments; leave them out, or list a base class "
+                                 f"whose __init__ takes them after {sc.owner.name} in {d.name}'s bases", sc.node)
+            sc.targets[id(d)] = (d, None, None)
+            return
+        fix = (f"; make their parameters fit the call, or call the one you mean directly, like "
+               f"{(sc.primary or t).name}.{what}(self, ...)")
+        if sc.spread:
+            if t is not sc.primary:
+                raise self.error(f"{where} calls {t.name}.{what}(), not {sc.primary.name if sc.primary else 'object'}'s; "
+                                 f"a call that can reach different classes can't use * or ** arguments (yet)", sc.node)
+            sc.targets[id(d)] = (d, t, None)
+            return
+        params = self.target_params(t, sc.name)
+        slots = alt_slots(sc, params)
+        if isinstance(slots, str):
+            raise self.error(f"{where} calls {t.name}.{what}(), which {slots}{fix}", sc.node)
+        if sc.name != "__init__" and t.methods[sc.name].ret != sc.ret:
+            raise self.error(f"{where} calls {t.name}.{what}(), which returns {t.methods[sc.name].ret}, not {sc.ret}{fix}",
+                             sc.node)
+        sc.targets[id(d)] = (d, t, slots)
+
+    def check_inherited_super_calls(self, st: StructType) -> None:
+        """A class from a later module that inherits methods calling super(): where those go."""
+        for a in st.mro()[1:]:
+            for sc in a.super_calls:
+                self.super_target(sc, st)
 
     def call_value(self, e: A.Call, t: Type) -> Type:
         """Calling a function *value*: a variable, parameter, field or expression of function type."""
@@ -4616,6 +4837,72 @@ class Checker:
 
 
 # ---- helpers ----------------------------------------------------------------
+
+
+def next_after(d: StructType, a: StructType, name: str) -> StructType | None:
+    """The class super().name reaches from a method of `a`, for an object of class `d`: the next
+    after `a` in d's MRO that defines it (for __init__, one that a constructor call would run:
+    its own __init__, or field assignments in a class with no __init__ to inherit)."""
+    mro = d.mro()
+    rest = mro[mro.index(a) + 1:]
+    if name == "__init__":
+        return init_target(rest)
+    return next((t for t in rest if name in t.methods), None)
+
+
+def init_target(classes: list[StructType]) -> StructType | None:
+    """The first of these classes (part of an MRO) with an initializer of its own, which
+    super().__init__() runs: its __init__, a dataclass's field assignments, or a runtime
+    exception's (which sets the message). A plain class with fields and no __init__ counts only
+    if no later class has one (seadash gives it field assignments, where Python has none)."""
+    def own(t: StructType) -> bool:
+        if t.builtin:
+            return t.is_exception
+        return "__init__" in t.methods or (t.dataclass and t.init is None)
+
+    for i, t in enumerate(classes):
+        if own(t):
+            return t
+        if not t.builtin and t.init is None and t.all_fields() and not any(own(u) for u in classes[i + 1:]):
+            return t
+    return None
+
+
+def alt_slots(sc: SuperCall, params: list[Param]) -> list | str:
+    """How sc's arguments fill `params` (an index into sc.args per parameter, None for its
+    default), or what's wrong. Like Checker.match_args, but for arguments already checked."""
+    if any(p.star or p.double_star for p in params):
+        return "takes *args or **kwargs, which a call through super() to different classes can't fill (yet)"
+    named = list(params)
+    positional = [p for p in named if p.kind != "kwonly"]
+    count = sum(1 for k in sc.keywords if k is None)
+    if count > len(positional):
+        return f"takes {plural(len(positional), 'positional argument')} but {count} were given"
+    slots: dict[str, int | None] = {p.name: None for p in named}
+    by_name = {p.name: p for p in named}
+    for i, p in enumerate(positional[:count]):
+        slots[p.name] = i
+    for i, k in enumerate(sc.keywords):
+        if k is None:
+            continue
+        if k not in by_name or by_name[k].kind == "posonly":
+            return f"got an unexpected keyword argument '{k}'"
+        if slots[k] is not None:
+            return f"got multiple values for argument '{k}'"
+        slots[k] = i
+    for p in named:
+        i = slots[p.name]
+        if i is None:
+            if p.default is None:
+                return f"is missing argument '{p.name}'"
+        elif not assignable(sc.args[i].ty, p.type):
+            return f"takes {p.type} for '{p.name}', not {sc.args[i].ty}"
+    return [slots[p.name] for p in named]
+
+
+def common_subclass(a: StructType, b: StructType) -> StructType | None:
+    """A class (known so far) that inherits from both a and b: an `a` might also be a `b`."""
+    return next((c for c in threads.ALL_CLASSES if c.is_subclass_of(a) and c.is_subclass_of(b)), None)
 
 
 def enum_members_matched(p: A.Pattern) -> set[str]:

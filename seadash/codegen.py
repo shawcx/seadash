@@ -46,8 +46,8 @@ from .types import (
     CSV_WRITER, CSV_DICT_READER, CSV_DICT_WRITER, HTTP_CONNECTION, SIGNAL_HANDLER, NORMAL_DIST,
     PARSER, ParserType, SubParsersType, HTTPServerType, CmpKeyType, ContextManagerType, EXIT_STACK,
     CounterType, DefaultDictType, DequeType, DictType, GeneratorType, MatchType, NamespaceType, PatternType, ProcessType,
-    VarTupleType, FileType, FuncInfo, FuncType, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
-    TupleType, Type, Var, element_type, fills_defaults, is_numeric, user_dunder, ClassRefType, bool_decays, enum_decays, enum_flag_op, enum_mixin,
+    VarTupleType, FileType, FuncInfo, FuncType, Param, IterType, ListType, OptionalType, SetType, StructType, strip_optional,
+    TupleType, Type, Var, element_type, runtime_virtual, fills_defaults, is_numeric, user_dunder, ClassRefType, bool_decays, enum_decays, enum_flag_op, enum_mixin,
 )
 
 CPP_KEYWORDS = frozenset(
@@ -102,6 +102,118 @@ def qualified(name: str, module: str) -> str:
     return name
 
 
+# The C++ root of every class: sd::object (in seadash.hpp), which gives shared_from_this().
+OBJECT_ROOT = StructType("object", "class", None, builtin=True, cpp_name="sd::object")
+
+
+def cpp_bases(st: StructType) -> list[StructType]:
+    """A class's C++ base classes: its bases, or for a root class, sd::object."""
+    if st.bases or st is OBJECT_ROOT or st.kind != "class":
+        return st.bases
+    return [OBJECT_ROOT]
+
+
+def shared_bases(structs: list[StructType]) -> set[tuple[int, int]]:
+    """The inheritance edges (ids of class, base) C++ makes `virtual`, so that every class has
+    one copy of each of its bases: a base some class would otherwise hold twice (a diamond) is
+    inherited virtually by all the classes in that class's ancestry. Single inheritance has none."""
+    def ancestry(t: StructType, out: dict) -> dict:
+        out[id(t)] = t
+        for b in cpp_bases(t):
+            ancestry(b, out)
+        return out
+
+    def plain_paths(t: StructType, edges: set, memo: dict) -> dict[int, int]:
+        """How many copies of each base t holds along non-virtual edges alone."""
+        if id(t) not in memo:
+            count = {id(t): 1}
+            for b in cpp_bases(t):
+                if (id(t), id(b)) not in edges and not (t.builtin and virtual_edge(t, b)):
+                    for k, n in plain_paths(b, edges, memo).items():
+                        count[k] = count.get(k, 0) + n
+            memo[id(t)] = count
+        return memo[id(t)]
+
+    edges: set[tuple[int, int]] = set()
+    while True:
+        added = False
+        memo: dict = {}
+        for st in structs:
+            if st.builtin:
+                continue
+            classes = ancestry(st, {})
+            shared = {id(b): b for x in classes.values() for b in cpp_bases(x)
+                      if (id(x), id(b)) in edges or (x.builtin and virtual_edge(x, b))}
+            copies: dict[int, int] = {}
+            for t in [st, *shared.values()]:  # (a virtual base is one copy, with its own plain bases)
+                for k, n in plain_paths(t, edges, memo).items():
+                    copies[k] = copies.get(k, 0) + n
+            twice = {k for k, n in copies.items() if n > 1}
+            # (sharing the most derived of them may be enough: its bases come with it)
+            twice = {k for k in twice if not any(k != j and k in ancestry(classes[j], {}) for j in twice)}
+            new = {(id(x), id(b)) for x in classes.values() for b in cpp_bases(x) if id(b) in twice} - edges
+            if new:
+                edges |= new
+                added = True
+                break
+        if not added:
+            return edges
+
+
+def virtual_edge(st: StructType, base: StructType) -> bool:
+    """Does `st`'s C++ inherit `base` virtually? The runtime's classes inherit sd::object, and
+    exceptions their bases, virtually; a program's classes only where a diamond needs it."""
+    if st.builtin:
+        if st.is_exception:
+            return getattr(_QUALIFY, "virtual_exceptions", False) and runtime_virtual(st)
+        return base is OBJECT_ROOT
+    return (id(st), id(base)) in getattr(_QUALIFY, "shared", set())
+
+
+def needs_dynamic_cast(src: StructType, dst: StructType) -> bool:
+    """Converting a `src` pointer to a `dst` one: a static cast works down a path without a
+    virtual base; anything else (a virtual base, or a cross-cast) needs dynamic_pointer_cast."""
+    if not dst.is_subclass_of(src):
+        return True
+
+    def virtual_path(t: StructType) -> bool:
+        return any(src in b.mro() and (virtual_edge(t, b) or virtual_path(b)) for b in t.bases)
+
+    return virtual_path(dst)
+
+
+def runtime_hooks(c: StructType) -> set[str]:
+    """The protocol hooks a runtime root class's C++ declares (a program's root class declares all)."""
+    if c.is_exception:
+        return {"sd_str", "sd_repr", "sd_type_object", "sd_type"}
+    return {"sd_str", "sd_truthy", "sd_repr", "sd_class_name"}
+
+
+def ambiguous_winner(st: StructType, defines) -> StructType | None:
+    """Of the classes st inherits from, those that `defines(t)` some virtual member: if none
+    of them overrides all the others (C++ would find no unique final overrider, or an
+    ambiguous name), the one Python's MRO finds first, which st must forward to."""
+    definers = [t for t in st.mro()[1:] if defines(t)]
+    if len(definers) < 2 or all(definers[0].is_subclass_of(t) for t in definers[1:]):
+        return None
+    return definers[0]
+
+
+def needs_hook(sc) -> bool:
+    """Does super().m() in sc.owner reach different classes for different objects?"""
+    targets = {id(t) for _, t, _ in sc.targets.values()}
+    return len(targets) > 1
+
+
+def hook_name(sc) -> str:
+    return f"sd_next_{local_name(sc.owner)}_{sc.index}"
+
+
+def pointer_cast(code: str, src: StructType, dst: StructType) -> str:
+    kind = "dynamic" if needs_dynamic_cast(src, dst) else "static"
+    return f"std::{kind}_pointer_cast<{class_name(dst)}>({code})"
+
+
 def generate(module: A.Module, info: ModuleInfo) -> str:
     return generate_program([ModuleUnit(module, info)])
 
@@ -110,10 +222,15 @@ def generate_program(units: list[ModuleUnit]) -> str:
     """The whole program as one C++ file: every module's namespace, dependencies first,
     then main(), which runs each module's top-level code in that same order."""
     _QUALIFY.namespaces = {u.name: u.namespace for u in units}
+    structs = [st for u in units for st in u.info.structs]
+    # (an exception class with several bases needs the runtime's exceptions to inherit virtually)
+    _QUALIFY.virtual_exceptions = any(st.is_exception and len(st.bases) > 1 for st in structs)
+    _QUALIFY.shared = shared_bases(structs)
     imports = [m for u in units for m in u.info.imports]
     uses_json = any(m.name in ("json", "tomllib") for m in imports)
     uses_copy = any(m.name == "copy" for m in imports)
-    out = ["// Generated by the seadash compiler. Do not edit.", '#include "seadash.hpp"']
+    out = ["// Generated by the seadash compiler. Do not edit.",
+           *(["#define SD_VIRTUAL_EXCEPTIONS"] if _QUALIFY.virtual_exceptions else []), '#include "seadash.hpp"']
     out += [f'#include "{h}"' for h in dict.fromkeys(m.header for m in imports if m.header)]
     out.append("")
     for u in units:
@@ -450,8 +567,9 @@ class CodeGen:
         def visit(st: StructType) -> None:
             if st in done:
                 return
-            if st.base is not None and not st.base.builtin:
-                visit(st.base)  # a C++ base class must be defined first
+            for b in st.bases:
+                if not b.builtin and b in self.info.structs:  # (another module's is defined with it)
+                    visit(b)  # a C++ base class must be defined first
             for f in st.fields.values():
                 for dep in value_deps(f.type):
                     if dep is not st:
@@ -465,9 +583,6 @@ class CodeGen:
     def struct_definition(self, st: StructType) -> None:
         if st.enum is not None:
             self.enum_definition(st)
-            return
-        if st.is_exception:
-            self.exception_definition(st)
             return
         if st.kind == "class":
             self.class_definition(st)
@@ -612,7 +727,7 @@ class CodeGen:
             self.line(f"bool operator<(const {name}& o) const {{ return {self_}->sd_op_lt(o); }}")
         elif info.mixin is not None:
             self.line(f"bool operator<(const {name}& o) const {{ return sd_value() < o.sd_value(); }}")
-        if "__iter__" in st.methods:
+        if "__iter__" in st.methods or (len(st.bases) > 1 and st.find_method("__iter__")):  # (non-virtual)
             self.line(f"auto sd_iter() const {{ return sd::iter({self_}->sd_op_iter()); }}")
         for m in st.methods.values():
             static = "static " if is_static(m) else ""
@@ -649,21 +764,24 @@ class CodeGen:
         """Does this class define sd_init itself (its __init__, or generated field assignments)?"""
         return "__init__" in st.methods or st.init is None
 
+    def base_clause(self, st: StructType) -> str:
+        """` : public A, public virtual B`: virtual where a diamond shares the base."""
+        bases = [f"public {'virtual ' if virtual_edge(st, b) else ''}{class_name(b)}" for b in cpp_bases(st)]
+        return f" : {', '.join(bases)}"
+
     def class_definition(self, st: StructType) -> None:
         """A class: shared (std::shared_ptr) and polymorphic. Methods are virtual so calls
         through a base class reach overrides; construction runs sd_init (the __init__ body,
         or field assignments), which super().__init__(...) can call directly."""
         name = local_name(st)
-        base = f" : public {class_name(st.base)}" if st.base else f" : public std::enable_shared_from_this<{name}>"
-        self.open(f"struct {name}{base}")
+        self.open(f"struct {name}{self.base_clause(st)}")
+        seen_overloads: set[str] = set()
         for f in st.fields.values():
             init = f" = {self.expr_as(f.default, f.type)}" if f.default is not None else "{}"
             self.line(f"{self.cpp_type(f.type)} {ident(f.name)}{init};")
         if st.fields:
             self.line()
         self.line(f"{name}() = default;")
-        if st.base is None:
-            self.line(f"virtual ~{name}() = default;")
         types = self.ctor_params(st)
         names = [f"sd_a{i}" for i in range(len(types))]
         owner = st if self.own_init(st) else st.init.owner
@@ -683,28 +801,43 @@ class CodeGen:
             if is_static(m):
                 self.line(f"static {decl};")
                 continue
-            overrides = st.base is not None and st.base.find_method(key) is not None
+            overrides = st.inherited("methods", key) is not None or ("@" in key and any(
+                [p.type for p in f.params] == [p.type for p in m.params]
+                for t in st.mro()[1:] for k, f in t.methods.items() if k.split("@")[0] == m.name))
             self.line(f"{decl} override;" if overrides else f"virtual {decl};")
-        self.line("std::string sd_repr() const override;" if st.base else "virtual std::string sd_repr() const;")
-        virtual, override = ("", " override") if st.base else ("virtual ", "")  # (the runtime class, for dataclass __eq__)
-        self.line(f'{virtual}std::string sd_class_name() const{override} {{ return {cpp_string(st.origin or st.name)}; }}')
-        user_base = st.base is not None and not st.base.builtin  # (a runtime base, like Synchronized, has none to override)
-        self.line(f"{'' if user_base else 'virtual '}sd::type_object sd_type_object() const{' override' if user_base else ''} "
-                  f"{{ return {self.type_object_literal(st)}; }}")  # type(x)
+        self.method_forwarders(st)
+        self.super_hooks(st)
+        for key, m in st.methods.items():  # (overloads, __eq__@B: an argument of this class picks the first)
+            if "@" in key and key.split("@")[0] in st.methods and f"{key.split('@')[0]}@" not in seen_overloads:
+                seen_overloads.add(f"{key.split('@')[0]}@")
+                primary = st.methods[key.split("@")[0]]
+                p = self.cpp_type(primary.params[0].type)
+                self.line(f"template <class T> requires std::is_base_of_v<{name}, T> auto {fn_name(m)}(const std::shared_ptr<T>& o) "
+                          f"{{ return {fn_name(m)}({p}(o)); }}")
+        derived = bool(st.bases)  # (a runtime base, like Synchronized, has these too)
+        virtual, override = ("", " override") if derived else ("virtual ", "")
+        if st.is_exception:
+            self.exception_members(st, name)
+        else:
+            self.line(f"{virtual}std::string sd_repr() const{override};")
+            self.line(f'{virtual}std::string sd_class_name() const{override} {{ return {cpp_string(st.origin or st.name)}; }}')
+            user_base = any(not t.builtin for t in st.mro()[1:])  # (a runtime base has no type object to override)
+            self.line(f"{'' if user_base else 'virtual '}sd::type_object sd_type_object() const{' override' if user_base else ''} "
+                      f"{{ return {self.type_object_literal(st)}; }}")  # type(x)
         self.protocol_members(st, name)
         self.class_attr_members(st)
         self.lazy_members(st)
         self.handler_dispatch(st)
         if self.copy_hooks(st):
-            root = class_name(st.ancestors()[-1])
-            virtual, override = ("", " override") if st.base else ("virtual ", "")
-            self.line(f"{virtual}std::shared_ptr<{root}> sd_copy() const{override};")
-            self.line(f"{virtual}std::shared_ptr<{root}> sd_deep_copy(sd::CopyMemo& memo) const{override};")
+            self.line(f"{virtual}std::shared_ptr<sd::object> sd_copy() const{override};")
+            self.line(f"{virtual}std::shared_ptr<sd::object> sd_deep_copy(sd::CopyMemo& memo) const{override};")
         if self.json_hooks(st):
             if self.encodable(st):
-                inherited = st.base and self.json_hooks(st.base) and self.encodable(st.base)
-                virtual, suffix = ("", " override") if inherited else ("virtual ", "")
+                definers = [t for t in st.mro()[1:] if not t.builtin and self.json_hooks(t) and self.encodable(t)]
+                virtual, suffix = ("", " override") if definers else ("virtual ", "")
                 self.line(f"{virtual}sd::json::Value sd_to_json() const{suffix};")
+            elif (winner := ambiguous_winner(st, lambda t: not t.builtin and self.json_hooks(t) and self.encodable(t))):
+                self.line(f"sd::json::Value sd_to_json() const override {{ return this->{class_name(winner)}::sd_to_json(); }}")
             if self.decodable(st):
                 self.line(f"static {self.cpp_type(st)} sd_from_json(const sd::json::Value& v, const std::string& path);")
         self.close(";")
@@ -716,16 +849,85 @@ class CodeGen:
             self.line(f"inline bool operator<(const {ptr}& a, const {ptr}& b) {{ return a->sd_op_lt(b); }}")
         self.line()
 
+    def super_hooks(self, st: StructType) -> None:
+        """super().m(...) that reaches different classes for different objects (cooperative
+        multiple inheritance): a virtual hook in the class that calls it, and an override in each
+        class whose MRO puts a different class next."""
+        for a in st.mro():
+            for sc in a.super_calls:
+                if not needs_hook(sc) or id(st) not in sc.targets:
+                    continue
+                _, t, slots = sc.targets[id(st)]
+                if a is not st:
+                    relevant = [b for b in st.bases if a in b.mro()]
+                    if len(relevant) == 1 and sc.targets.get(id(relevant[0]), (None, t))[1] is t:
+                        continue  # (it inherits the right one)
+                ret = "void" if sc.name == "__init__" else self.cpp_type(sc.ret)
+                params = ", ".join(f"{self.cpp_type(arg.ty)} sd_h{i}" for i, arg in enumerate(sc.args))
+                head = f"virtual {ret} {hook_name(sc)}({params})" if a is st else f"{ret} {hook_name(sc)}({params}) override"
+                self.line(f"{head} {{ {self.super_hook_body(sc, t, slots)} }}")
+
+    def super_hook_body(self, sc, t: StructType | None, slots: list | None) -> str:
+        if t is None:
+            if sc.name != "__init__":
+                message = cpp_string(f"'super' object has no attribute '{sc.name}'")
+                return f"throw sd::Thrown{{std::make_shared<sd::AttributeError>({message})}};"
+            if sc.args:
+                message = cpp_string("object.__init__() takes exactly one argument (the instance to initialize)")
+                return f"throw sd::Thrown{{std::make_shared<sd::TypeError>({message})}};"
+            return ""
+        params = t.methods[sc.name].params if sc.name in t.methods else self.init_params(t)
+        args = [self.coerce(f"sd_h{i}", sc.args[i].ty, p.type) if i is not None else self.expr_as(p.default, p.type)
+                for i, p in zip(slots, params)]
+        if sc.name == "__init__" and t.builtin:
+            return " ".join(f"this->{ident(p.name)} = {a};" for p, a in zip(params, args))
+        if sc.name == "__init__":
+            return f"this->{class_name(t)}::sd_init({', '.join(args)});"
+        return f"return this->{class_name(t)}::{fn_name(t.methods[sc.name])}({', '.join(args)});"
+
+    def init_params(self, t: StructType) -> list:
+        """What sd_init takes in a class without __init__: its fields (with their defaults)."""
+        return [Param(f.name, f.type, f.default, f.loc) for f in t.all_fields().values()]
+
+    def forward_params(self, m: FuncInfo) -> tuple[str, str]:
+        """A forwarding override's parameters (the same C++ types as params()) and arguments."""
+        decls, args = [], []
+        for i, p in enumerate(m.params):
+            t = self.cpp_type(p.type)
+            if by_value(p.type) or m.generator:
+                decls.append(f"{t} sd_f{i}")
+                args.append(f"std::move(sd_f{i})")
+            else:
+                decls.append(f"const {t}& sd_f{i}")
+                args.append(f"sd_f{i}")
+        return ", ".join(decls), ", ".join(args)
+
+    def method_forwarders(self, st: StructType) -> None:
+        """A method this class inherits from more than one base, none overriding the others:
+        an override that calls the one Python's MRO finds first (C++ would find it ambiguous)."""
+        names = dict.fromkeys(n for t in st.mro()[1:] for n, m in t.methods.items()
+                              if n != "__init__" and n not in st.methods and not is_static(m))
+        for n in names:
+            winner = ambiguous_winner(st, lambda t: n in t.methods)
+            if winner is None:
+                continue
+            m = winner.methods[n]
+            params, args = self.forward_params(m)
+            self.line(f"{self.cpp_type(m.ret)} {fn_name(m)}({params}) override "
+                      f"{{ return this->{class_name(winner)}::{fn_name(m)}({args}); }}")
+
     def handler_dispatch(self, st: StructType) -> None:
         """A BaseHTTPRequestHandler subclass: the request's method calls its do_<METHOD>()."""
         if not st.is_subclass_of(builtins.HANDLER):
             return
-        handlers = [m for key, m in st.methods.items() if key.startswith("do_")]
-        if not handlers:
+        handlers = {key: st.find_method(key) for t in st.mro() if not t.builtin for key in t.methods if key.startswith("do_")}
+        if not handlers or not (any(k.startswith("do_") for k in st.methods) or len(st.bases) > 1):
             return
-        tests = " ".join(f"if (sd_command == {cpp_string(m.name[3:])}) {{ this->{fn_name(m)}(); return true; }}" for m in handlers)
+        runtime = next(t for t in st.mro() if t.builtin)
+        tests = " ".join(f"if (sd_command == {cpp_string(key[3:])}) {{ this->{fn_name(m)}(); return true; }}"
+                         for key, m in handlers.items())
         self.line(f"bool sd_dispatch(const std::string& sd_command) override {{ {tests} "
-                  f"return {class_name(st.base)}::sd_dispatch(sd_command); }}")
+                  f"return {class_name(runtime)}::sd_dispatch(sd_command); }}")
 
     def reflection_call(self, name: str, e: A.Call) -> str:
         if name == "type":
@@ -783,68 +985,79 @@ class CodeGen:
             self.line(f"static {t} sd_class_{ca.name}() {{ return {self.expr_as(ca.value, ca.type)}; }}")
             if st.kind != "class":
                 self.line(f"{t} sd_attr_{ca.name}() const {{ return sd_class_{ca.name}(); }}")
-            elif st.base is not None and st.base.find_class_attr(ca.name) is not None:
+            elif st.inherited("class_attrs", ca.name) is not None:
                 self.line(f"{t} sd_attr_{ca.name}() const override {{ return sd_class_{ca.name}(); }}")
             else:
                 self.line(f"virtual {t} sd_attr_{ca.name}() const {{ return sd_class_{ca.name}(); }}")
+        if st.kind != "class":
+            return
+        names = dict.fromkeys(n for t in st.mro()[1:] for n in t.class_attrs if n not in st.class_attrs)
+        for n in names:  # (inherited from two bases: the MRO's)
+            if (winner := ambiguous_winner(st, lambda t: n in t.class_attrs)) is not None:
+                t = self.cpp_type(winner.class_attrs[n].type)
+                self.line(f"{t} sd_attr_{n}() const override {{ return {class_name(winner)}::sd_class_{n}(); }}")
 
     def protocol_members(self, st: StructType, name: str) -> None:
         """Hooks the runtime uses for str(), truthiness and iteration, from __str__,
         __bool__/__len__ and __iter__. Classes make them virtual, so a subclass's
         dunder methods are found through a base-class reference."""
         self_ = f"const_cast<{name}*>(this)"
-        is_class = st.kind == "class"
-        root = is_class and st.base is None
-        if "__str__" in st.methods or root:
-            body = f"{self_}->sd_op_str()" if "__str__" in st.methods else "sd_repr()"
-            prefix = "virtual " if root else ""
-            suffix = " override" if is_class and not root else ""
-            self.line(f"{prefix}std::string sd_str() const{suffix} {{ return {body}; }}")
-        if "__bool__" in st.methods or "__len__" in st.methods or root:
+        if st.kind != "class":
+            if "__str__" in st.methods:
+                self.line(f"std::string sd_str() const {{ return {self_}->sd_op_str(); }}")
+            if "__bool__" in st.methods or "__len__" in st.methods:
+                op = "sd_op_bool()" if "__bool__" in st.methods else "sd_op_len() != 0"
+                self.line(f"bool sd_truthy() const {{ return {self_}->{op}; }}")
+        else:
             if "__bool__" in st.methods:
-                body = f"{self_}->sd_op_bool()"
+                truthy = f"{self_}->sd_op_bool()"
             elif "__len__" in st.methods:
-                body = f"{self_}->sd_op_len() != 0"
+                truthy = f"{self_}->sd_op_len() != 0"
             else:
-                body = "true"
-            prefix = "virtual " if root else ""
-            suffix = " override" if is_class and not root else ""
-            self.line(f"{prefix}bool sd_truthy() const{suffix} {{ return {body}; }}")
-        if "__iter__" in st.methods:
+                truthy = "true"
+            self.hook(st, "sd_str", "std::string", f"{self_}->sd_op_str()" if "__str__" in st.methods else "sd_repr()",
+                      lambda c: "__str__" in c.methods if not c.builtin else c.is_exception and c.cpp_name is None
+                      and c.name in ("BaseException", "KeyError"))
+            self.hook(st, "sd_truthy", "bool", truthy, lambda c: not c.builtin and ("__bool__" in c.methods or "__len__" in c.methods))
+        if "__iter__" in st.methods or (len(st.bases) > 1 and st.find_method("__iter__")):  # (non-virtual)
             self.line(f"auto sd_iter() const {{ return sd::iter({self_}->sd_op_iter()); }}")
 
-    def exception_definition(self, st: StructType) -> None:
-        """`class NotFound(ValueError)` derives from the runtime's sd::ValueError."""
-        name = local_name(st)
-        self.open(f"struct {name} : {class_name(st.base)}")
-        for f in st.fields.values():
-            init = f" = {self.expr_as(f.default, f.type)}" if f.default is not None else "{}"
-            self.line(f"{self.cpp_type(f.type)} {ident(f.name)}{init};")
-        self.line(f"{name}() = default;")
-        if st.init is not None:
-            self.line(f"{name}({', '.join(['sd::init_t', *self.params(st.init)])});")
-        else:
-            fields = list(st.all_fields().values())
-            params = ", ".join(f"{self.cpp_type(f.type)} sd_{f.name}" for f in fields)
-            sets = " ".join(f"this->{ident(f.name)} = std::move(sd_{f.name});" for f in fields)
-            self.line(f"{name}({params}) {{ {sets} }}")
-        for m in st.methods.values():
-            if m.name != "__init__":
-                self.line(f"{self.cpp_type(m.ret)} {ident(m.name)}({', '.join(self.params(m))});")
+    def hook(self, st: StructType, hook: str, ret: str, body: str, defines) -> None:
+        """A virtual hook such as sd_str: declared by every root class (with the default, which
+        stands for object's), overridden by a class that `defines(c)` it (with `body`). A class
+        that inherits it from more than one base overrides it with the MRO's first, where C++
+        wouldn't find that one alone."""
+        def declares(c: StructType) -> bool:  # (a runtime base: the hooks its C++ declares)
+            return defines(c) or (not c.bases and (not c.builtin or hook in runtime_hooks(c)))
+
+        inherited = any(declares(c) for c in st.mro()[1:])
+        virtual, override = ("", " override") if inherited else ("virtual ", "")
+        if defines(st) or not st.bases:
+            self.line(f"{virtual}{ret} {hook}() const{override} {{ return {body}; }}")
+            return
+        mine = [c for c in st.mro()[1:] if defines(c)]
+        cpp = [c for c in st.mro()[1:] if declares(c)]
+        if mine and not all(mine[0].is_subclass_of(c) for c in cpp):
+            self.line(f"{ret} {hook}() const override {{ return this->{class_name(mine[0])}::{hook}(); }}")
+        elif not mine and len(cpp) > 1:
+            self.line(f"{ret} {hook}() const override {{ return {body}; }}")
+
+    def exception_members(self, st: StructType, name: str) -> None:
+        """An exception class's hooks: its runtime base's, and a mixin's (`class E(Mixin,
+        ValueError)`) where it has one, with Python's choice between them."""
         self.line(f'std::string sd_type() const override {{ return "{st.name}"; }}')
         self.line(f"sd::type_object sd_type_object() const override {{ return {self.type_object_literal(st)}; }}")
-        self.close(";")
-        self.line()
+        mixins = [t for t in st.mro()[1:] if not t.builtin and not t.is_exception]
+        if mixins:  # (they have hooks of their own, for object's behaviour)
+            self.line(f'std::string sd_class_name() const override {{ return {cpp_string(st.name)}; }}')
+        if "__repr__" in st.methods or mixins:
+            winner = next(t for t in st.mro() if ("__repr__" in t.methods and not t.builtin) or (t.builtin and t.is_exception))
+            body = (f"const_cast<{name}*>(this)->sd_op_repr()" if not winner.builtin
+                    else f"this->{class_name(winner)}::sd_repr()")
+            self.line(f"std::string sd_repr() const override {{ return {body}; }}")
 
     def struct_members(self, st: StructType) -> None:
         name = local_name(st)
-        if st.is_exception:
-            for m in st.methods.values():
-                if m.name == "__init__":
-                    self.function_body(m, f"{name}::{name}({', '.join(['sd::init_t', *self.params(m)])})")
-                else:
-                    self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{ident(m.name)}({', '.join(self.params(m))})")
-            return
         if st.enum is not None:  # (its repr and str are in its definition)
             for m in st.methods.values():
                 if m.generator and not is_static(m):
@@ -853,6 +1066,9 @@ class CodeGen:
                     self.function_body(m, f"{self.cpp_type(m.ret)} {name}::{fn_name(m)}({', '.join(self.params(m))})")
             return
         fields = list(st.all_fields().values())
+        if st.is_exception:  # (its repr is the runtime's, ValueError('...'), or its own __repr__)
+            self.class_members(st, name)
+            return
         parts = [cpp_string(f"{st.origin or st.name}(")]
         for i, f in enumerate(fields):
             parts.append(cpp_string(("" if i == 0 else ", ") + f"{f.name}="))
@@ -868,6 +1084,10 @@ class CodeGen:
             self.json_members(st)
         if self.copy_hooks(st):
             self.copy_members(st)
+        self.class_members(st, name)
+
+    def class_members(self, st: StructType, name: str) -> None:
+        """Its initializer (__init__'s body, or field assignments) and methods."""
         if st.kind == "class" and self.own_init(st) and "__init__" not in st.methods:
             fields_all = list(st.all_fields().values())
             params = ", ".join(f"{self.cpp_type(f.type)} sd_a{i}" for i, f in enumerate(fields_all))
@@ -897,7 +1117,7 @@ class CodeGen:
 
     def copy_members(self, st: StructType) -> None:
         name = local_name(st)
-        root = class_name(st.ancestors()[-1])
+        root = "sd::object"
         if (m := st.find_method("__copy__")) is not None:  # the class's own way to copy itself
             body = f"return const_cast<{name}*>(this)->{fn_name(m)}();"
         else:
@@ -906,7 +1126,7 @@ class CodeGen:
         deep = " ".join(f"sd_out->{ident(f.name)} = sd::copymod::deep_copy(sd_out->{ident(f.name)}, memo);"
                         for f in st.all_fields().values())
         self.line(f"std::shared_ptr<{root}> {name}::sd_deep_copy(sd::CopyMemo& memo) const {{ "
-                  f"auto sd_out = std::make_shared<{name}>(*this); sd::copymod::note_copy<{root}>(this, sd_out, memo); "
+                  f"auto sd_out = std::make_shared<{name}>(*this); sd::copymod::note_copy(this, sd_out, memo); "
                   f"{deep} return sd_out; }}")
         self.line()
 
@@ -1017,7 +1237,7 @@ class CodeGen:
         self.line(f"return sd_gen_{fn_name(fn)}({', '.join([self.var_code(self_var, self_var.type), *names])});")
         self.close()
         self.line()
-        header = f"{ret} {owner}::sd_gen_{fn_name(fn)}({', '.join([f'{self.self_type(fn.owner)} sd_self', *params])})"
+        header = f"{ret} {owner}::sd_gen_{fn_name(fn)}({', '.join([f'[[maybe_unused]] {self.self_type(fn.owner)} sd_self', *params])})"
         self.function_body(fn, header, coroutine_self=True)
 
     def self_type(self, st: StructType) -> str:
@@ -1663,7 +1883,8 @@ class CodeGen:
                 obj = path
                 if st.kind == "class" and not (isinstance(t, StructType) and t.is_subclass_of(st)):
                     tests.append(f"sd::isinstance_of<{class_name(st)}>({path})")
-                    obj = f"std::static_pointer_cast<{class_name(st)}>({path})"
+                    obj = (pointer_cast(path, strip_optional(t), st) if isinstance(strip_optional(t), StructType)
+                           else f"std::dynamic_pointer_cast<{class_name(st)}>({path})")
                 arrow = "->" if st.kind == "class" else "."
                 binds = []
                 for field_name, sub in zip(p.notes["fields"], (*p.patterns, *p.kwd_patterns)):
@@ -1684,7 +1905,7 @@ class CodeGen:
         if isinstance(t, OptionalType) and not isinstance(bound, OptionalType):
             path, t = f"(*{path})", t.inner
         if isinstance(bound, StructType) and isinstance(t, StructType) and bound is not t:
-            path = f"std::static_pointer_cast<{class_name(bound)}>({path})"
+            path = pointer_cast(path, t, bound)
         return path
 
     def sequence_pattern_code(self, items: list[A.Pattern], path: str, t: Type, tests: list[str],
@@ -2087,7 +2308,7 @@ class CodeGen:
         if isinstance(declared, OptionalType) and not isinstance(seen, OptionalType) and seen != NONE:
             code, declared = f"(*{code})", declared.inner
         if isinstance(seen, StructType) and isinstance(declared, StructType) and seen is not declared:
-            return f"std::static_pointer_cast<{class_name(seen)}>({code})"
+            return pointer_cast(code, declared, seen)
         return code
 
     def var_ref(self, var: Var) -> str:
@@ -2103,9 +2324,8 @@ class CodeGen:
                 return "sd_self"
             if var.type.kind == "struct":
                 return "(*this)"
-            if var.type.base is not None:  # shared_from_this() gives the root class's pointer
-                return f"std::static_pointer_cast<{class_name(var.type)}>(this->shared_from_this())"
-            return "this->shared_from_this()"
+            # (shared_from_this() gives an sd::object pointer: this one shares its ownership)
+            return f"std::shared_ptr<{class_name(var.type)}>(this->shared_from_this(), this)"
         if isinstance(var.type, ClassRefType) and var.type.st.enum is not None:
             return f"{class_name(var.type.st)}::sd_members()"  # `for m in cls` in an enum's classmethod
         return self.view(self.var_ref(var), var.type, seen)
@@ -2197,7 +2417,7 @@ class CodeGen:
                 args.append(self.expr_as(p.default, p.type))
         if isinstance(info.target, StructType):
             st = info.target
-            if st.init is not None or (st.kind == "class" and not st.is_exception):
+            if st.init is not None or (st.kind == "class" and not st.builtin):
                 args = ["sd::init", *args]
             call = (f"std::make_shared<{class_name(st)}>({', '.join(args)})" if st.kind == "class"
                     else f"{class_name(st)}({', '.join(args)})")
@@ -2283,7 +2503,8 @@ class CodeGen:
                 return f"sd::unwrap({code}, {cpp_string('.'.join(attr_chain(e)))[:-1]})"  # narrowed: checked
             return code
         if isinstance(e.sym, tuple) and e.sym[0] == "class_attr_of":  # Handler.version
-            return f"{class_name(e.sym[1])}::sd_class_{e.sym[2].name}()"
+            owner = next(t for t in e.sym[1].mro() if e.sym[2].name in t.class_attrs)  # (the MRO's: unambiguous)
+            return f"{class_name(owner)}::sd_class_{e.sym[2].name}()"
         if isinstance(e.sym, tuple) and e.sym[0] == "builtin_attr" and e.value.ty == TYPE_OBJECT:  # type(x).__name__
             return f"{self.expr(e.value)}.{'attr_module' if e.sym[1] == '__module__' else 'attr_name'}()"
         if isinstance(e.sym, tuple) and e.sym[0] == "builtin_attr":
@@ -2632,7 +2853,7 @@ class CodeGen:
                 args = self.slot_codes(target.args, target.params)
                 if st.enum is not None:  # Color(1): the member with that value (Color(member) is itself)
                     return args[0] if target.args[0].ty == st else f"{class_name(st)}::sd_lookup({args[0]})"
-                if st.init is not None or (st.kind == "class" and not st.is_exception):
+                if st.init is not None or (st.kind == "class" and not st.builtin):
                     args = ["sd::init", *args]
                 if st.kind == "class":
                     return f"std::make_shared<{class_name(st)}>({', '.join(args)})"
@@ -2640,6 +2861,10 @@ class CodeGen:
             case "call_dunder":  # obj(args) -> obj.__call__(args)
                 m = target.target
                 return self.dunder_call(Dunder(m), self.expr(e.func), e.func.ty, self.slot_codes(target.args, m.params))
+            case "super_method" | "super_init" | "super_noop" if target.dispatch is not None and needs_hook(target.dispatch):
+                sc = target.dispatch  # the class it reaches depends on the object's: a virtual hook
+                prefix = self.self_prefix(self.func.owner)
+                return f"{prefix}{hook_name(sc)}({', '.join(self.expr(a) for a in sc.args)})"
             case "super_method":
                 fn = target.target
                 prefix = self.self_prefix(self.func.owner)
@@ -2648,7 +2873,18 @@ class CodeGen:
             case "super_init":
                 owner = target.target
                 prefix = self.self_prefix(self.func.owner)
-                return f"{prefix}{class_name(owner)}::sd_init({', '.join(self.slot_codes(target.args, target.params))})"
+                args = self.slot_codes(target.args, target.params)
+                if owner.builtin:  # BaseException.__init__(message): sets the fields
+                    return f"({', '.join(f'{prefix}{ident(p.name)} = {a}' for p, a in zip(target.params, args))}, void())"
+                return f"{prefix}{class_name(owner)}::sd_init({', '.join(args)})"
+            case "super_noop":  # object.__init__()
+                return "(void)0"
+            case "base_method":  # Base.m(obj, ...): that class's m, not obj's override
+                fn = target.target
+                recv = e.args[0]
+                args = self.call_args(target.args, fn)
+                prefix = self.self_prefix(self.func.owner) if is_self(recv) else f"{self.expr(recv)}->"
+                return f"{prefix}{class_name(fn.owner)}::{fn_name(fn)}({args})"
             case "isinstance":
                 tests = " || ".join(f"sd::isinstance_of<{class_name(c)}>(sd_obj)" for c in target.target)
                 return f"[&](const auto& sd_obj) {{ return {tests}; }}({self.expr(e.args[0])})"

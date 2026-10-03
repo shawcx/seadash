@@ -681,8 +681,9 @@ class EnumInfo:
 class StructType(Type):
     """A user `struct` (value semantics) or `class` (shared reference semantics).
 
-    Built-in exception classes are StructTypes too (builtin=True). Only
-    exception classes may have a base class (for now).
+    Built-in exception classes are StructTypes too (builtin=True). A class may have several
+    base classes (`bases`); everything inherited is looked up along its method resolution
+    order (`mro()`, Python's C3 linearization).
     """
 
     name: str
@@ -690,7 +691,7 @@ class StructType(Type):
     node: object  # ast.ClassDef (None for built-ins)
     fields: dict[str, Field] = field(default_factory=dict)  # declared here, not inherited
     methods: dict[str, FuncInfo] = field(default_factory=dict)
-    base: StructType | None = None
+    bases: list[StructType] = field(default_factory=list)
     builtin: bool = False
     cpp_name: str | None = None  # for built-ins defined in the runtime, e.g. "sd::zlib::error"
     module: str = "__main__"  # the .sd module that defines it
@@ -699,59 +700,119 @@ class StructType(Type):
     origin: str | None = None
     type_args: tuple = ()
     frozen: bool = False  # @dataclass(frozen=True): fields are read-only after construction
+    dataclass: bool = False  # @dataclass (its fields make an __init__)
     # A runtime base class whose fields are its members in C++ (BaseHTTPRequestHandler): a
     # subclass reaches them as fields, but they aren't part of its constructor or repr.
     runtime_fields: bool = False
     class_attrs: dict[str, ClassAttr] = field(default_factory=dict)  # declared here (a subclass may redefine one)
     enum: EnumInfo | None = None  # an enum class (kind 'struct', frozen: its members are immutable values)
+    _mro: list | None = field(default=None, repr=False)
+    super_calls: list = field(default_factory=list, repr=False)  # its methods' super() calls (checker.SuperCall)
 
     def __str__(self) -> str:
         return self.name
 
     @property
+    def base(self) -> StructType | None:
+        """The first base class (the only one, mostly)."""
+        return self.bases[0] if self.bases else None
+
+    @property
     def init(self) -> FuncInfo | None:
         return self.find_method("__init__")
 
+    def mro(self) -> list[StructType]:
+        """This class, then the classes it inherits from in Python's order (C3). The bases
+        must have a consistent order (the checker makes sure: c3_merge)."""
+        if self._mro is None:
+            self._mro = [self]  # (while it's worked out: a cycle, which the checker reports, ends here)
+            merged = c3_merge([[*b.mro()] for b in self.bases] + [list(self.bases)])
+            self._mro = [self, *(merged or [])]
+        return self._mro
+
     def ancestors(self) -> list[StructType]:
-        """This class, then its base, then its base's base..."""
-        chain = []
-        t: StructType | None = self
-        while t is not None:
-            chain.append(t)
-            t = t.base
-        return chain
+        """The method resolution order: this class, then its bases', nearest first."""
+        return self.mro()
 
     def is_subclass_of(self, other: StructType) -> bool:
-        return other in self.ancestors()
+        return other in self.mro()
 
     @property
     def is_exception(self) -> bool:
-        return any(t.builtin and t.name == "BaseException" for t in self.ancestors())
+        return any(t.builtin and t.name == "BaseException" for t in self.mro())
 
     def all_fields(self) -> dict[str, Field]:
-        """Inherited fields first, like a dataclass (not a runtime base class's: runtime_fields)."""
+        """Inherited fields first, in reverse MRO order like a dataclass (not a runtime base
+        class's: runtime_fields)."""
         out: dict[str, Field] = {}
-        for t in reversed(self.ancestors()):
+        mro = list(reversed(self.mro()))
+        if self.is_exception:  # (the message first, wherever a mixin puts BaseException)
+            mro.sort(key=lambda t: not t.builtin)
+        for t in mro:
             if not t.runtime_fields:
                 out.update(t.fields)
         return out
 
     def find_field(self, name: str) -> Field | None:
-        if (f := self.all_fields().get(name)) is not None:
-            return f
-        return next((t.fields[name] for t in self.ancestors() if t.runtime_fields and name in t.fields), None)
+        for t in self.mro():
+            if name in t.fields:
+                return t.fields[name]
+        return None
 
     def find_method(self, name: str) -> FuncInfo | None:
-        for t in self.ancestors():
+        for t in self.mro():
             if name in t.methods:
                 return t.methods[name]
         return None
 
     def find_class_attr(self, name: str) -> ClassAttr | None:
-        for t in self.ancestors():
+        for t in self.mro():
             if name in t.class_attrs:
                 return t.class_attrs[name]
         return None
+
+    def inherited(self, what: str, name: str):
+        """What a base class provides under `name` (what="fields", "methods" or "class_attrs"):
+        the first in the MRO after this class, or None."""
+        for t in self.mro()[1:]:
+            if name in getattr(t, what):
+                return getattr(t, what)[name]
+        return None
+
+
+def runtime_virtual(t: StructType) -> bool:
+    """Can this runtime class's C++ inherit its bases virtually? The built-in exceptions do, in a
+    program with an exception class of several bases (SD_VIRTUAL_EXCEPTIONS), so two of them can
+    be combined; a module's own exception classes and other runtime classes don't."""
+    return t.builtin and t.is_exception and t.cpp_name is None
+
+
+def c3_merge(seqs: list[list]) -> list | None:
+    """Python's C3 linearization of the given sequences, or None if there's no consistent
+    order (then c3_conflict says which classes)."""
+    seqs = [list(s) for s in seqs if s]
+    out = []
+    while seqs:
+        for s in seqs:
+            head = s[0]
+            if not any(head in other[1:] for other in seqs):
+                break
+        else:
+            return None
+        out.append(head)
+        seqs = [rest for s in seqs if (rest := s[1:] if s[0] is head else s)]
+    return out
+
+
+def c3_conflict(bases: list) -> list:
+    """The classes CPython names when C3 fails: the remaining sequences' heads, in order."""
+    seqs = [list(s) for s in [*(b.mro() for b in bases), list(bases)] if s]
+    while seqs:
+        head = next((s[0] for s in seqs if not any(s[0] in o[1:] for o in seqs)), None)
+        if head is None:
+            return list(dict.fromkeys(s[0] for s in seqs))
+        seqs = [rest for s in seqs if (rest := s[1:] if s[0] is head else s)]
+    return []
 
 
 @dataclass(frozen=True)

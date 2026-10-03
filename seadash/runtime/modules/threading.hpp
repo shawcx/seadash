@@ -231,7 +231,7 @@ public:
 
 // Base class for `class Account(threading.Synchronized)`: every method holds this lock,
 // so one instance can be shared between threads safely.
-struct Synchronized : std::enable_shared_from_this<Synchronized> {
+struct Synchronized : virtual object {
     mutable std::recursive_mutex sd_mutex;
     virtual ~Synchronized() = default;
     virtual std::string sd_repr() const { return "<Synchronized>"; }

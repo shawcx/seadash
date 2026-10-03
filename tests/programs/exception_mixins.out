@@ -1,0 +1,14 @@
+lookup: cat not found NotFound('cat not found') NotFound
+code 404 404
+exception: dog not found
+KeyError caught: BadKey('k') 'k' True
+ValueError caught: ValueError('v') v
+KeyError caught: KeyError('kk') 'kk' False
+as ValueError: BadKey True True
+Retry('again') again code 0 True
+code 0 True
+tagged <TaggedError> TaggedError('boom') <TaggedError>
+bang ErrorFirst('bang') <ErrorFirst>
+caught tagged <TaggedError>
+Corrupt bad block True
+sub 3 Sub('bad')

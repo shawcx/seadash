@@ -19,7 +19,9 @@ struct TOMLDecodeError : ValueError {
     std::string msg, doc;
     std::int64_t pos = 0, lineno = 0, colno = 0;
     TOMLDecodeError(std::string full, std::string m, std::string d, std::int64_t p, std::int64_t line, std::int64_t col)
-        : ValueError(std::move(full)), msg(std::move(m)), doc(std::move(d)), pos(p), lineno(line), colno(col) {}
+        : msg(std::move(m)), doc(std::move(d)), pos(p), lineno(line), colno(col) {
+        message = std::move(full);  // (in the body: BaseException is a virtual base)
+    }
     std::string sd_type() const override { return "tomllib.TOMLDecodeError"; }
 };
 

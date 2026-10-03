@@ -226,7 +226,7 @@ class HTTPServer;
 // The base class of a program's request handlers. The server makes one per connection;
 // handle() reads each request, and calls the do_<METHOD>() the subclass defines
 // (sd_dispatch, which codegen generates), or answers 501.
-struct BaseHTTPRequestHandler : std::enable_shared_from_this<BaseHTTPRequestHandler> {
+struct BaseHTTPRequestHandler : virtual object {
     // What the handler sees (seadash fields of the base class).
     std::string command, path, request_version = "HTTP/0.9", requestline;
     bytes raw_requestline;

@@ -1,0 +1,10 @@
+['Base', 'Right', 'Left', 'Both'] Both>Left>Right>Base.save
+['Base', 'Left'] Left>Base.save
+['Base', 'Right'] Right>Base.save
+Both>Left>Right>Base.save
+logged(Saver.save)
+AttributeError: 'super' object has no attribute 'save'
+w red 1
+c blue
+hello dear ann HELLO BOB / hello dear bob
+1 2 3

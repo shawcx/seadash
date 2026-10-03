@@ -1,0 +1,5 @@
+quiet log: "%s" 3
+200 text/plain Mixed/1.0 b'GET /hi text/plain'
+quiet log: "%s" 3
+200 text/plain Echo/2.0 b'GET /hi text/plain'
+4000 8000 Counter(count=8000)

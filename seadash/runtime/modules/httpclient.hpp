@@ -43,7 +43,9 @@ struct IncompleteRead : HTTPException {
     bytes partial;
     std::optional<std::int64_t> expected;
     IncompleteRead(bytes got, std::optional<std::int64_t> more)
-        : HTTPException(describe(got, more)), partial(std::move(got)), expected(more) {}
+        : partial(std::move(got)), expected(more) {
+        message = describe(partial, more);  // (in the body: BaseException is a virtual base)
+    }
     static std::string describe(const bytes& got, std::optional<std::int64_t> more) {
         std::string e = more ? ", " + std::to_string(*more) + " more expected" : "";
         return "IncompleteRead(" + std::to_string(got.size()) + " bytes read" + e + ")";

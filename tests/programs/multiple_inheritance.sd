@@ -1,0 +1,233 @@
+# Multiple inheritance: mixins, diamonds, the MRO deciding which method runs, isinstance
+# across classes, dataclass fields in reverse-MRO order, and copies.
+import copy
+from dataclasses import dataclass
+from typing import Iterator
+
+
+class Named:
+    name: str = "?"
+
+    def describe(self) -> str:
+        return f"named {self.name}"
+
+    def greet(self) -> str:
+        return "hello from Named"
+
+
+class Counted:
+    count: int = 0
+
+    def bump(self) -> int:
+        self.count += 1
+        return self.count
+
+    def greet(self) -> str:
+        return "hello from Counted"
+
+    def __str__(self) -> str:
+        return f"Counted({self.count})"
+
+
+class Thing(Named, Counted):
+    def __init__(self, name: str):
+        self.name = name
+
+
+t = Thing("box")
+print(t.describe(), t.bump(), t.bump(), t.greet())
+print(str(t))
+c: Counted = t
+print(c.greet(), c.bump())
+n: Named = t
+print(n.greet())
+print(isinstance(n, Counted), isinstance(c, Named))
+if isinstance(n, Counted):
+    print("cross", n.bump())
+things: list[Named] = [Named(), t]
+for x in things:
+    print(x.describe(), isinstance(x, Thing), isinstance(x, Counted))
+
+
+# A diamond
+class Base:
+    def who(self) -> str:
+        return "Base"
+
+    def chain(self) -> list[str]:
+        return ["Base"]
+
+
+class Left(Base):
+    def who(self) -> str:
+        return "Left"
+
+
+class Right(Base):
+    def who(self) -> str:
+        return "Right"
+
+    def chain(self) -> list[str]:
+        return ["Right"]
+
+
+class Bottom(Left, Right):
+    pass
+
+
+b = Bottom()
+print(b.who(), b.chain())
+r: Right = b
+print(r.who(), r.chain())
+base: Base = b
+print(base.who(), base.chain())
+print(type(b).__name__, isinstance(base, Left), isinstance(base, Right))
+
+
+@dataclass
+class A:
+    a: int = 5
+    x: int = 0
+
+
+@dataclass
+class B:
+    b: str = "b"
+
+
+@dataclass
+class C(A, B):
+    c: float = 1.5
+
+
+print(C(), C("z", 1, 2, 3.0))
+print(C(b="q", c=2.0))
+
+
+@dataclass
+class DBase:
+    base: int = 0
+
+
+@dataclass
+class DL(DBase):
+    l: int = 1
+
+
+@dataclass
+class DR(DBase):
+    r: int = 2
+
+
+@dataclass
+class DD(DL, DR):
+    d: int = 3
+
+
+print(DD(), DD(9, 8, 7, 6))
+print(DD() == DD(), DD(1) == DD())
+print([k.__name__ for k in [type(DD())]])
+
+
+class Sized:
+    def __len__(self) -> int:
+        return 0
+
+
+class Labeled:
+    label: str = "L"
+
+    def __str__(self) -> str:
+        return "label " + self.label
+
+
+class Box(Labeled, Sized):
+    pass
+
+
+box = Box()
+print(bool(box), str(box), len(box))
+if not box:
+    print("empty box")
+
+
+class Version:
+    version = "1.0"
+    kind = "base"
+
+
+class Tagged:
+    tag = "t"
+    kind = "tagged"
+
+
+class Release(Tagged, Version):
+    version = "2.0"
+
+
+rel = Release()
+print(rel.version, rel.kind, rel.tag, Release.kind)
+v: Version = rel
+print(v.kind, v.version)
+
+
+class Walker:
+    def walk(self, n: int) -> list[int]:
+        return [i for i in range(n)]
+
+    def steps(self) -> Iterator[int]:
+        for i in range(3):
+            yield i * 10
+
+
+class Talker:
+    def talk(self) -> str:
+        return "blah"
+
+    def walk(self, n: int) -> list[int]:
+        return [n]
+
+
+class Robot(Talker, Walker):
+    pass
+
+
+robot = Robot()
+print(robot.walk(3), robot.talk(), list(robot.steps()))
+w: Walker = robot
+print(w.walk(3), [s for s in w.steps()])
+
+
+def kind_of(x: Walker) -> str:
+    match x:
+        case Talker() as t:
+            return "talker " + t.talk()
+        case _:
+            return "walker"
+
+
+print(kind_of(robot), kind_of(Walker()))
+
+
+@dataclass
+class P:
+    a: int = 5
+    items: list[int] | None = None
+
+
+@dataclass
+class Q:
+    b: str = "b"
+
+
+@dataclass
+class R3(P, Q):
+    c: float = 1.5
+
+
+x = R3("q", 1, [1, 2], 2.5)
+y = copy.deepcopy(x)
+z = copy.copy(x)
+print(y, z, y == x, y is x)
+bb: Q = y
+print(bb == x, bb == Q("q"), x == y)

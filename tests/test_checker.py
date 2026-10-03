@@ -1234,7 +1234,7 @@ def test_isinstance_narrows(body):
 
 @pytest.mark.parametrize("src,msg", [
     ("def f(a: Animal):\n    a.fetch()", "Animal has no method 'fetch'"),
-    ("def f(d: Dog):\n    print(isinstance(d, Cat))", "a Dog can never be a Cat (they're unrelated classes)"),
+    ("def f(d: Dog):\n    print(isinstance(d, Cat))", "a Dog can never be a Cat (they're unrelated classes, and no class inherits from both)"),
     ("def f(n: int):\n    print(isinstance(n, Dog))", "isinstance() only works on class instances; a int always has the type int"),
     ("def f(a: Animal):\n    print(isinstance(a, int))", "isinstance() needs a class (or a tuple of classes) as its second argument"),
     ("class Bad(Animal):\n    def speak(self) -> int:\n        return 1", "Bad.speak() overrides Animal.speak(), so it must have the same parameter and return types: def speak() -> str"),
@@ -1247,6 +1247,78 @@ def test_isinstance_narrows(body):
 ])
 def test_inheritance_errors(src, msg):
     assert err(ANIMALS + src).message == msg
+
+
+SHAPES = """
+class Shape:
+    name: str
+    def __init__(self, name: str):
+        self.name = name
+class Colored(Shape):
+    def __init__(self, name: str):
+        super().__init__(name)
+"""
+
+
+@pytest.mark.parametrize("src,msg", [
+    # the method resolution order, as Python's TypeErrors say it
+    ("class A: pass\nclass B(A): pass\nclass C(A, B): pass",
+     "Cannot create a consistent method resolution order (MRO) for bases A, B"),
+    ("class X: pass\nclass Y: pass\nclass P(X, Y): pass\nclass Q(Y, X): pass\nclass R(P, Q): pass",
+     "Cannot create a consistent method resolution order (MRO) for bases X, Y"),
+    ("class A: pass\nclass D(A, A): pass", "duplicate base class A"),
+    # what two bases both define
+    ("class A:\n    x: int = 0\nclass B:\n    x: int = 1\nclass C(A, B): pass",
+     "field 'x' is defined in both A and B; C inherits both, so rename one (a field can only come from one class)"),
+    ("class A:\n    def f(self) -> int:\n        return 1\nclass B:\n    def f(self) -> str:\n        return ''\n"
+     "class C(A, B): pass",
+     "C inherits f() from both A and B, with different parameter or return types (def f() -> int and def f() -> str); "
+     "give them the same types"),
+    ("class A:\n    def f(self) -> int:\n        return 1\nclass B:\n    def f(self) -> str:\n        return ''\n"
+     "class C(A, B):\n    def f(self) -> int:\n        return 2",
+     "C.f() overrides B.f(), so it must have the same parameter and return types: def f() -> str"),
+    ("class A:\n    v = 1\nclass B:\n    v = 's'\nclass C(A, B): pass",
+     "C inherits class attribute 'v' from both A and B, with different types (int and str); give them the same type"),
+    ("class A:\n    v: int = 1\nclass B:\n    def v(self) -> int:\n        return 1\nclass C(A, B): pass",
+     "'v' is a field in A but a method in B; C inherits both, so rename one"),
+    ("class A: pass\nclass B: pass\ndef f(a: A):\n    print(isinstance(a, B))",
+     "a A can never be a B (they're unrelated classes, and no class inherits from both)"),
+    # runtime classes that can't share a base in C++ (yet)
+    ("import zlib\nclass E(zlib.error, ValueError): pass",
+     "E can't inherit from both zlib.error and ValueError (yet): in seadash's runtime, each has its own Exception"),
+    # super() reaches the next class in the *object's* MRO: each class that inherits it is checked
+    (SHAPES + "class Sized(Shape):\n    def __init__(self, name: str, size: int):\n        super().__init__(name)\n"
+     "class Widget(Colored, Sized): pass",
+     "super().__init__(...) in Colored, for a Widget (MRO: Widget, Colored, Sized, Shape), calls Sized.__init__(), "
+     "which is missing argument 'size'; make their parameters fit the call, or call the one you mean directly, like "
+     "Shape.__init__(self, ...)"),
+    ("class Mixin:\n    def __init__(self, x: int):\n        super().__init__(x)\nclass Plain: pass\n"
+     "class Both(Mixin, Plain): pass",
+     "super().__init__(...) in Mixin, for a Both (MRO: Both, Mixin, Plain), reaches no class after Mixin with an "
+     "__init__, so it calls object.__init__(), which takes no arguments; leave them out, or list a base class whose "
+     "__init__ takes them after Mixin in Both's bases"),
+    ("class A:\n    def f(self, n: int) -> int:\n        return super().f(n)\nclass B:\n    def f(self, n: int) -> int:\n"
+     "        return n\nclass Solo(A): pass\nclass Mix(A, B): pass\nclass Other:\n    def g(self, s: str) -> str:\n"
+     "        return s\nclass C(Other, A): pass\nclass D(A, B, Other): pass",
+     None),
+    ("class Mixin:\n    def go(self) -> int:\n        return super().go()",
+     "Mixin has no base class to call with super()"),
+    ("class A:\n    def f(self): pass\nclass B:\n    def g(self): pass\nclass C(A, B):\n    def h(self):\n"
+     "        super().nope()",
+     "none of C's base classes (A, B) has a method 'nope'"),
+    # explicit Base.method(self, ...)
+    ("class Greeter:\n    def hello(self) -> str:\n        return 'hi'\nclass Other:\n    def hello(self) -> str:\n"
+     "        return Greeter.hello(self)",
+     "Greeter.hello() needs a Greeter (or a subclass) as its first argument, not an Other"),
+    ("class P:\n    def __init__(self, x: int):\n        pass\nclass Q(P):\n    def __init__(self):\n"
+     "        P.__init__(self, 'x')",
+     "argument 'x' of P.__init__() must be int, not str"),
+])
+def test_multiple_inheritance_errors(src, msg):
+    if msg is None:
+        ok(src)
+    else:
+        assert err(src).message == msg
 
 
 # ---- generics -------------------------------------------------------------------

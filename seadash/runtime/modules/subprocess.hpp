@@ -100,13 +100,15 @@ inline std::string shown(const Args& a) { return a.str_ ? *a.str_ : repr(a.list_
 
 inline CalledProcessError::CalledProcessError(std::int64_t code, const Args& args, std::optional<std::string> out,
                                               std::optional<std::string> err)
-    : SubprocessError(describe(code, shown(args))), returncode(code), cmd(args.as_list()), output(out), stdout_(out),
-      stderr_(std::move(err)) {}
+    : returncode(code), cmd(args.as_list()), output(out), stdout_(out), stderr_(std::move(err)) {
+    message = describe(code, shown(args));  // (in the body: BaseException is a virtual base)
+}
 
 inline TimeoutExpired::TimeoutExpired(const Args& args, double t, std::optional<std::string> out,
                                       std::optional<std::string> err)
-    : SubprocessError("Command '" + shown(args) + "' timed out after " + float_repr(t) + " seconds"),
-      cmd(args.as_list()), timeout(t), output(out), stdout_(out), stderr_(std::move(err)) {}
+    : cmd(args.as_list()), timeout(t), output(out), stdout_(out), stderr_(std::move(err)) {
+    message = "Command '" + shown(args) + "' timed out after " + float_repr(t) + " seconds";  // (see CalledProcessError)
+}
 
 // Where a child's stdin/stdout/stderr goes: inherited, a pipe to us, /dev/null,
 // the child's stdout (for stderr), or an open file.

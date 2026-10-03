@@ -1,0 +1,26 @@
+named box 1 2 hello from Named
+Counted(2)
+hello from Named 3
+hello from Named
+True True
+cross 4
+named ? False False
+named box True True
+Left ['Right']
+Left ['Right']
+Left ['Right']
+Bottom True True
+C(b='b', a=5, x=0, c=1.5) C(b='z', a=1, x=2, c=3.0)
+C(b='q', a=5, x=0, c=2.0)
+DD(base=0, r=2, l=1, d=3) DD(base=9, r=8, l=7, d=6)
+True False
+['DD']
+False label L 0
+empty box
+2.0 tagged t tagged
+tagged 2.0
+[3] blah [0, 10, 20]
+[3] [0, 10, 20]
+talker blah walker
+R3(b='q', a=1, items=[1, 2], c=2.5) R3(b='q', a=1, items=[1, 2], c=2.5) True False
+True False True

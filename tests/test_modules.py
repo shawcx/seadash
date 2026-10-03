@@ -73,6 +73,33 @@ def test_local_module_shadows_builtin_like_python(tmp_path):
     assert "sdm::json::fake()" in translate(main.read_text(), main).cpp
 
 
+def test_super_across_modules(tmp_path):
+    # A class here puts its own class between an imported one's method and its super() call.
+    main = write(tmp_path, {
+        "main.sd": """
+            from mixlib import Base, Logged
+            class Cached(Base):
+                def save(self) -> str:
+                    return "cached(" + super().save() + ")"
+            class Store(Logged, Cached):
+                pass
+            print(Store().save())
+        """,
+        "mixlib.sd": """
+            class Base:
+                def save(self) -> str:
+                    return "Base"
+            class Logged(Base):
+                def save(self) -> str:
+                    return "logged(" + super().save() + ")"
+        """,
+    })
+    cpp = translate(main.read_text(), main).cpp
+    mine = cpp[cpp.index("namespace prog"):]
+    assert "struct Base " not in mine and "struct Logged " not in mine  # (defined with their module)
+    assert "std::string sd_next_Logged_0() override { return this->Cached::save(); }" in mine
+
+
 def test_generics_across_modules(tmp_path):
     main = write(tmp_path, {
         "main.sd": """

@@ -55,7 +55,7 @@ for _name, _value in (("server_version", "BaseHTTP/0.6"), ("sys_version", "seada
                       ("error_content_type", "text/html;charset=utf-8"), ("error_message_format", ""),
                       ("default_request_version", "HTTP/0.9")):
     HANDLER.class_attrs[_name] = ClassAttr(_name, STR, A.StrLit(_value), Loc(0, 0))
-SIMPLE_HANDLER = StructType("SimpleHTTPRequestHandler", "class", None, base=HANDLER, builtin=True, runtime_fields=True,
+SIMPLE_HANDLER = StructType("SimpleHTTPRequestHandler", "class", None, bases=[HANDLER], builtin=True, runtime_fields=True,
                             cpp_name="sd::httpserver::SimpleHTTPRequestHandler", module="http.server")
 SIMPLE_HANDLER.fields["directory"] = Field("directory", STR, None, Loc(0, 0))
 runtime_method(SIMPLE_HANDLER, "do_GET", NONE)
